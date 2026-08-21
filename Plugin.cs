@@ -30,6 +30,7 @@ public sealed class Plugin : IDalamudPlugin
         IClientState clientState,
         IPluginLog log,
         IDataManager data,
+        ITextureProvider textureProvider,
         IObjectTable objects,
         IFramework framework)
     {
@@ -58,7 +59,8 @@ public sealed class Plugin : IDalamudPlugin
             log,
             () => _pi.SavePluginConfig(_config),
             () => _exportServer.Restart(),
-            _pi.UiBuilder);
+            _pi.UiBuilder,
+            textureProvider);
         _settingsWindow = new SettingsWindow(
             _config,
             () => _pi.SavePluginConfig(_config),
@@ -109,6 +111,7 @@ public sealed class Plugin : IDalamudPlugin
         _pi.UiBuilder.Draw -= _settingsWindow.Draw;
         _pi.UiBuilder.OpenMainUi -= _window.Open;
         _pi.UiBuilder.OpenConfigUi -= _settingsWindow.Open;
+        _window.Dispose();
         _pi.SavePluginConfig(_config);
     }
 }

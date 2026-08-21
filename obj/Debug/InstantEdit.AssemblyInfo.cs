@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute(@"Lists the models currently on screen (like Penumbra's On Screen tab). Clicking a model instantly imports it into Blender's default scene via the Yet Another Addon, and the Quick Export button in Blender writes it right back to the same game path as a Penumbra mod.")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0.0+b9b94eed9194ec9dc391b72569c441ca72fd8d97")]
 [assembly: System.Reflection.AssemblyProductAttribute("InstantEdit")]
 [assembly: System.Reflection.AssemblyTitleAttribute("InstantEdit")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

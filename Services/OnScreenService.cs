@@ -229,6 +229,7 @@ public sealed class OnScreenService
             SourceState = source.State,
             SourceLabel = source.Label,
             SourceModName = source.ModName,
+            SourceRelativePath = source.RelativePath,
             SlotLabel = presentation.SlotLabel,
             ResourceSection = presentation.Section,
             SortOrder = presentation.SortOrder,

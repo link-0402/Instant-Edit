@@ -27,23 +27,24 @@ public sealed class ResourceSourceAttributor
     public ResourceSource AttributionFor(string? actualPath)
     {
         if (string.IsNullOrWhiteSpace(actualPath))
-            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null);
+            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null, null);
 
         if (!Path.IsPathRooted(actualPath))
-            return new ResourceSource(ResourceSourceState.GameData, "Game data", null);
+            return new ResourceSource(ResourceSourceState.GameData, "Game data", null, actualPath);
 
         var physicalPath = NormalizePhysicalPath(actualPath);
         if (physicalPath is null)
-            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null);
+            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null, null);
 
         foreach (var mod in GetModRoots())
         {
             if (!IsPathWithin(physicalPath, mod.Path))
                 continue;
-            return new ResourceSource(ResourceSourceState.LoadedMod, $"Loaded from: {mod.Name}", mod.Name);
+            var relativePath = Path.GetRelativePath(mod.Path, physicalPath).Replace('\\', '/');
+            return new ResourceSource(ResourceSourceState.LoadedMod, $"Loaded from: {mod.Name}", mod.Name, relativePath);
         }
 
-        return new ResourceSource(ResourceSourceState.ExternalResolvedFile, "External resolved file", null);
+        return new ResourceSource(ResourceSourceState.ExternalResolvedFile, "External resolved file", null, physicalPath);
     }
 
     private IReadOnlyList<ModRoot> GetModRoots()
@@ -121,4 +122,4 @@ public sealed class ResourceSourceAttributor
     private sealed record ModRoot(string Path, string Name);
 }
 
-public sealed record ResourceSource(ResourceSourceState State, string Label, string? ModName);
+public sealed record ResourceSource(ResourceSourceState State, string Label, string? ModName, string? RelativePath);

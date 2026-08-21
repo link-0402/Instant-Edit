@@ -1,0 +1,13 @@
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\VariantRelease\InstantEdit.deps.json
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\VariantRelease\InstantEdit.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\VariantRelease\InstantEdit.pdb
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\VariantRelease\Penumbra.Api.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.csproj.AssemblyReference.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.GeneratedMSBuildEditorConfig.editorconfig
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.AssemblyInfoInputs.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.AssemblyInfo.cs
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.csproj.CoreCompileInputs.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.sourcelink.json
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantE.778C74BA.Up2Date
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\VariantRelease\InstantEdit.pdb

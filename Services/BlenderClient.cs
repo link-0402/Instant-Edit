@@ -1,10 +1,8 @@
-using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using Dalamud.Plugin.Services;
 using InstantEdit.Models;
-using Microsoft.Win32;
 
 namespace InstantEdit.Services;
 
@@ -58,7 +56,7 @@ public sealed class BlenderClient : IDisposable
                 cancellationToken).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             return false;
         }
@@ -167,113 +165,6 @@ public sealed class BlenderClient : IDisposable
                 _contexts?.RemoveContext(context.ContextId);
             throw;
         }
-    }
-
-    /// <summary> Launch Blender with the given executable. </summary>
-    public void Launch(string blenderExe)
-    {
-        var workingDir = Path.GetDirectoryName(blenderExe) ?? Environment.CurrentDirectory;
-        Process.Start(new ProcessStartInfo
-        {
-            FileName               = blenderExe,
-            WorkingDirectory       = workingDir,
-            UseShellExecute        = true,
-        });
-    }
-
-    /// <summary>
-    /// Tries to locate blender.exe: a configured path first, then the .blend file
-    /// association, then PATH, then common install locations.
-    /// </summary>
-    public string? FindBlenderExecutable(string? configuredPath = null)
-    {
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
-                return configuredPath;
-
-            using var machineAssociation = Registry.ClassesRoot.OpenSubKey(@"blendfile\shell\open\command");
-            var fromAssociation = ParseAssociationExe(machineAssociation);
-            if (fromAssociation is not null && File.Exists(fromAssociation))
-                return fromAssociation;
-
-            using var userAssociation = Registry.CurrentUser.OpenSubKey(@"Software\Classes\blendfile\shell\open\command");
-            fromAssociation = ParseAssociationExe(userAssociation);
-            if (fromAssociation is not null && File.Exists(fromAssociation))
-                return fromAssociation;
-
-            foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-            {
-                var candidate = Path.Combine(dir.Trim(), "blender.exe");
-                if (File.Exists(candidate))
-                    return candidate;
-            }
-
-            var installRoots = new[]
-            {
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"),
-            };
-
-            var candidates = new List<string>();
-            foreach (var root in installRoots)
-            {
-                if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
-                    continue;
-
-                var blenderRoot = Path.Combine(root, "Blender Foundation");
-                if (!Directory.Exists(blenderRoot))
-                    continue;
-
-                foreach (var dir in Directory.GetDirectories(blenderRoot, "Blender*"))
-                {
-                    var exe = Path.Combine(dir, "blender.exe");
-                    if (File.Exists(exe))
-                        candidates.Add(exe);
-                }
-            }
-
-            return candidates.OrderByDescending(VersionOfFolder).FirstOrDefault();
-        }
-        catch (Exception e)
-        {
-            _log.Debug($"Could not locate Blender: {e.Message}");
-            return null;
-        }
-    }
-
-    private static string? ParseAssociationExe(RegistryKey? key)
-    {
-        try
-        {
-            var command = key?.GetValue(null) as string;
-            if (string.IsNullOrWhiteSpace(command))
-                return null;
-
-            var firstQuote = command.IndexOf('"');
-            if (firstQuote < 0)
-                return null;
-
-            var secondQuote = command.IndexOf('"', firstQuote + 1);
-            if (secondQuote < 0)
-                return null;
-
-            return command[(firstQuote + 1)..secondQuote];
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static Version VersionOfFolder(string exe)
-    {
-        var folder = Path.GetFileName(Path.GetDirectoryName(exe)) ?? "";
-        var parts  = folder.Replace("Blender", "").Trim().Split('.');
-        if (parts.Length >= 2 && int.TryParse(parts[0], out var major) && int.TryParse(parts[1], out var minor))
-            return new Version(major, minor);
-        return new Version(0, 0);
     }
 
     public void Dispose()

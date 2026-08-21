@@ -22,6 +22,7 @@ public sealed class PenumbraService
     private const string OwnershipMarkerFile = ".instant-edit-owner.json";
     private const string OwnershipSchema = "instant-edit.owner";
     private const string OwnershipOwner = "Instant Edit";
+    private const string VariantGroupDescriptionPrefix = "Managed by Instant Edit variant for: ";
 
     private readonly IDalamudPluginInterface  _pi;
     private readonly GetGameObjectResourcePaths _getPaths;
@@ -191,12 +192,27 @@ public sealed class PenumbraService
         int objectIndex)
         => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, null);
 
-    public async Task<ExportResult> ApplyExportAsync(
+    public Task<ExportResult> ApplyExportAsync(
         string modName,
         string gamePath,
         string exportedFile,
         int objectIndex,
         ActorIdentity? actorIdentity)
+        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, actorIdentity, gamePath);
+
+    /// <summary>
+    /// Writes to <paramref name="gamePath"/> after revalidating the actor against
+    /// <paramref name="sourceGamePath"/>. This permits a server-derived sibling
+    /// variant without allowing the client to choose an arbitrary validation path.
+    /// </summary>
+    public async Task<ExportResult> ApplyExportAsync(
+        string modName,
+        string gamePath,
+        string exportedFile,
+        int objectIndex,
+        ActorIdentity? actorIdentity,
+        string sourceGamePath,
+        string? penumbraVariantName = null)
     {
         if (objectIndex is < 0 or > ushort.MaxValue)
             return new ExportResult(false, "Invalid object index.");
@@ -204,6 +220,8 @@ public sealed class PenumbraService
         var validationError = ValidateExportRequest(modName, gamePath, exportedFile);
         if (validationError is not null)
             return new ExportResult(false, validationError);
+        if (!IsSafeGamePath(sourceGamePath))
+            return new ExportResult(false, "Invalid source game path.");
 
         await _exportGate.WaitAsync().ConfigureAwait(false);
 
@@ -212,7 +230,7 @@ public sealed class PenumbraService
             // Even read-only Penumbra IPC is kept on the framework thread. This
             // also makes a disconnected/reloading Penumbra a normal failed result.
             var targetError = await _framework.RunOnFrameworkThread(
-                () => ValidateTargetOnFramework(gamePath, objectIndex, actorIdentity)).ConfigureAwait(false);
+                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity)).ConfigureAwait(false);
             if (targetError is not null)
                 return new ExportResult(false, targetError);
 
@@ -227,6 +245,17 @@ public sealed class PenumbraService
             var writeError = WriteModel(modFolder, gamePath, exportedFile);
             if (writeError is not null)
                 return new ExportResult(false, writeError);
+
+            if (penumbraVariantName is not null)
+            {
+                var groupError = WriteVariantGroup(
+                    modFolder,
+                    sourceGamePath,
+                    gamePath,
+                    penumbraVariantName);
+                if (groupError is not null)
+                    return new ExportResult(false, groupError);
+            }
 
             var modState = await _framework.RunOnFrameworkThread(
                 () => GetModStateOnFramework(modName)).ConfigureAwait(false);
@@ -598,6 +627,129 @@ public sealed class PenumbraService
             defaultMod["Manipulations"] = new JsonArray();
         WriteJsonAtomic(defaultPath, defaultMod);
         return null;
+    }
+
+    /// <summary>
+    /// Create or update a legacy v3 Penumbra group that redirects the original
+    /// model path to the newly exported sibling. The first option disables the
+    /// variant and the second (the default) selects it.
+    /// </summary>
+    private static string? WriteVariantGroup(
+        string modFolder,
+        string sourceGamePath,
+        string variantGamePath,
+        string variantName)
+    {
+        try
+        {
+            if (!IsSafeGamePath(sourceGamePath) || !IsSafeGamePath(variantGamePath) ||
+                string.IsNullOrWhiteSpace(variantName) || variantName.Length > 120 ||
+                variantName.Any(char.IsControl))
+                return "invalid_penumbra_variant";
+
+            var groupFiles = Directory.EnumerateFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var marker = VariantGroupDescriptionPrefix + sourceGamePath + " -> " + variantGamePath;
+            string? existingPath = null;
+            JsonObject? existingGroup = null;
+            var highestOtherPriority = 0;
+            var highestFileIndex = 0;
+
+            foreach (var groupPath in groupFiles)
+            {
+                var fileName = Path.GetFileName(groupPath);
+                if (TryReadGroupFileIndex(fileName, out var fileIndex))
+                    highestFileIndex = Math.Max(highestFileIndex, fileIndex);
+
+                var group = LoadJsonObject(groupPath);
+                var isExisting = string.Equals(
+                    group["Description"]?.GetValue<string>(),
+                    marker,
+                    StringComparison.Ordinal);
+                if (isExisting)
+                {
+                    existingPath = groupPath;
+                    existingGroup = group;
+                    continue;
+                }
+
+                if (group["Priority"] is JsonValue priorityValue &&
+                    priorityValue.TryGetValue<int>(out var priority))
+                    highestOtherPriority = Math.Max(highestOtherPriority, priority);
+            }
+
+            if (highestOtherPriority == int.MaxValue)
+                return "penumbra_group_priority_exhausted";
+
+            var groupPriority = highestOtherPriority + 1;
+            var relativeVariantPath = "Files/" + variantGamePath;
+            var groupId = ReadGuid(existingGroup?["Id"]) ?? Guid.NewGuid();
+            var existingOptions = existingGroup?["Options"] as JsonArray;
+            var noneId = ReadGuid((existingOptions?.ElementAtOrDefault(0) as JsonObject)?["Id"]) ?? Guid.NewGuid();
+            var variantId = ReadGuid((existingOptions?.ElementAtOrDefault(1) as JsonObject)?["Id"]) ?? Guid.NewGuid();
+            var groupJson = new JsonObject
+            {
+                ["Version"] = 0,
+                ["Type"] = "Single",
+                ["Id"] = groupId,
+                ["Name"] = "Instant Edit: " + variantName,
+                ["Description"] = marker,
+                ["Priority"] = groupPriority,
+                ["DefaultSettings"] = 1,
+                ["Options"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["Id"] = noneId,
+                        ["Name"] = "None",
+                    },
+                    new JsonObject
+                    {
+                        ["Id"] = variantId,
+                        ["Name"] = variantName,
+                        ["Files"] = new JsonObject
+                        {
+                            [sourceGamePath] = relativeVariantPath,
+                        },
+                    },
+                },
+            };
+
+            var outputGroupPath = existingPath ?? Path.Combine(
+                modFolder,
+                $"group_{highestFileIndex + 1:D3}_instant_edit_{SanitizeGroupFileName(variantName)}.json");
+            WriteJsonAtomic(outputGroupPath, groupJson);
+            return null;
+        }
+        catch (Exception e)
+        {
+            return $"penumbra_group_write_failed: {e.Message}";
+        }
+    }
+
+    private static bool TryReadGroupFileIndex(string fileName, out int index)
+    {
+        index = 0;
+        if (!fileName.StartsWith("group_", StringComparison.OrdinalIgnoreCase) || fileName.Length < 10)
+            return false;
+        var separator = fileName.IndexOf('_', 6);
+        if (separator < 0)
+            return false;
+        return int.TryParse(fileName.AsSpan(6, separator - 6), out index) && index > 0;
+    }
+
+    private static Guid? ReadGuid(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<string>(out var text) && Guid.TryParse(text, out var guid)
+            ? guid
+            : null;
+
+    private static string SanitizeGroupFileName(string value)
+    {
+        var safe = new string(value.ToLowerInvariant()
+            .Select(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' ? c : '_')
+            .ToArray()).Trim('_');
+        return string.IsNullOrEmpty(safe) ? "variant" : safe;
     }
 
     private static bool HasReparsePointInPath(string root, string path)

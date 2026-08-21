@@ -29,3 +29,4 @@ C:\Users\leong\AppData\Local\Temp\opencode\InstantEditCallbackBuild\bin\Release\
 C:\Users\leong\AppData\Local\Temp\InstantEditFinal\bin\Release\InstantEdit.deps.json
 C:\Users\leong\AppData\Local\Temp\InstantEditFinal\bin\Release\InstantEdit.dll
 C:\Users\leong\AppData\Local\Temp\InstantEditFinal\bin\Release\InstantEdit.pdb
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.sourcelink.json

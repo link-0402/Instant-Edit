@@ -43,6 +43,12 @@ public sealed class ExportServer : IDisposable
 
         [JsonPropertyName("sha256")]
         public string? Sha256 { get; set; }
+
+        [JsonPropertyName("variantName")]
+        public string? VariantName { get; set; }
+
+        [JsonPropertyName("setupInPenumbra")]
+        public bool SetupInPenumbra { get; set; }
     }
 
     private sealed record HttpRequest(string Method, string Path, byte[] Body);
@@ -249,16 +255,28 @@ public sealed class ExportServer : IDisposable
                 else
                 {
                     var target = reservation.Context;
-                    var result = await _penumbra.ApplyExportAsync(
-                        target.ModName,
-                        target.GamePath,
-                        export.FilePath!,
-                        target.ObjectIndex,
-                        target.ActorIdentity).ConfigureAwait(false);
-                    receipt = new ExportReceipt(
-                        result.Success,
-                        result.Success ? "export_applied" : "apply_failed",
-                        result.Message);
+                    var destinationGamePath = target.GamePath;
+                    if (!string.IsNullOrEmpty(export.VariantName))
+                    {
+                        var directoryEnd = target.GamePath.LastIndexOf('/');
+                        if (directoryEnd < 0)
+                        {
+                            receipt = new ExportReceipt(false, "invalid_variant_name", "source model has no parent game directory");
+                        }
+                        else
+                        {
+                            destinationGamePath = target.GamePath[..(directoryEnd + 1)] + export.VariantName + ".mdl";
+                            receipt = await ApplyExport(
+                                target,
+                                destinationGamePath,
+                                export.FilePath!,
+                                export.SetupInPenumbra ? export.VariantName : null).ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        receipt = await ApplyExport(target, destinationGamePath, export.FilePath!, null).ConfigureAwait(false);
+                    }
                 }
             }
             catch (Exception e)
@@ -273,6 +291,26 @@ public sealed class ExportServer : IDisposable
         }
 
         return (404, Json(new { ok = false, error = "not found" }));
+
+        async Task<ExportReceipt> ApplyExport(
+            InstantEditImportContext target,
+            string destinationGamePath,
+            string filePath,
+            string? penumbraVariantName)
+        {
+            var result = await _penumbra.ApplyExportAsync(
+                target.ModName,
+                destinationGamePath,
+                filePath,
+                target.ObjectIndex,
+                target.ActorIdentity,
+                target.GamePath,
+                penumbraVariantName).ConfigureAwait(false);
+            return new ExportReceipt(
+                result.Success,
+                result.Success ? "export_applied" : "apply_failed",
+                result.Message);
+        }
     }
 
     private static string? ValidateEnvelope(ExportRequest request)
@@ -292,7 +330,20 @@ public sealed class ExportServer : IDisposable
             return "invalid_size";
         if (request.Sha256.Length != 64 || request.Sha256.Any(c => !Uri.IsHexDigit(c)))
             return "invalid_sha256";
+        if (request.VariantName is not null && !IsSafeVariantName(request.VariantName))
+            return "invalid_variant_name";
+        if (request.SetupInPenumbra && request.VariantName is null)
+            return "penumbra_setup_requires_variant";
         return null;
+    }
+
+    private static bool IsSafeVariantName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 120 || value is "." or ".." ||
+            value.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
+            value.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || value.Contains('/') || value.Contains('\\'))
+            return false;
+        return value.All(c => !char.IsControl(c));
     }
 
     private static async Task<(string Code, string Message)?> VerifyExportFileAsync(

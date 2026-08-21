@@ -30,9 +30,7 @@ public sealed class SettingsWindow
         ImGui.Spacing();
         ImGui.Separator(); ImGui.Text("Blender connection");
         var blenderPort = _config.BlenderPort; if (ImGui.InputInt("Blender port", ref blenderPort)) { _config.BlenderPort = blenderPort; Save(); }
-        var launch = _config.LaunchBlender; if (ImGui.Checkbox("Launch Blender when closed", ref launch)) { _config.LaunchBlender = launch; Save(); }
-        var path = _config.BlenderPath; if (ImGui.InputText("Blender path (optional)", ref path, 512)) { _config.BlenderPath = path; Save(); }
-        if (!string.IsNullOrWhiteSpace(_config.BlenderPath) && !File.Exists(_config.BlenderPath)) ImGui.TextColored(new Vector4(1, .6f, .3f, 1), "Path not found; auto-detection will be used.");
+        ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Blender and the Yet Another Addon must already be running before editing.");
         ImGui.Spacing(); ImGui.Separator(); ImGui.Text("Export target");
         var listenPort = _config.ListenPort; if (ImGui.InputInt("Listener port", ref listenPort)) { var changed = listenPort != _config.ListenPort; _config.ListenPort = listenPort; Save(); if (changed) RestartListener(); }
         ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Exports are written to this persistent Penumbra mod.");
