@@ -1,0 +1,1446 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Lumina.Excel</name>
+    </assembly>
+    <members>
+        <member name="P:Lumina.Excel.Sheets.Action.AutoAttackBehaviour">
+            <summary>
+            0 = no effect on auto attacks, 1 = typical cast (unsheathe weapon, but don't touch autos), 2 = typical weaponskill (unsheathe, start autos if action target is primary target), 3 = sleep-like effect (unsheathe, stop autos), 4 = typical point-blank aoe (unsheathe, start autos if primary target is within action range), 5 = ??? (doesn't touch weapon state), 6 = typical channeled action (unsheathe, stop autos, do not auto-face target), 7 = force sheathe and stop autos, 8 = ??? (unused)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Action.EquivalenceGroup">
+            <summary>
+            set for eg crafting actions, when different jobs have different rows, but they need to be considered interchangeable
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Action.DeadTargetBehaviour">
+            <summary>
+            0 = can not target dead, 1 = can only target dead players (+ some other conditions), 2 = ???
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Battalion.IsEnemyTo">
+            <summary>
+            Index is the other battalion.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.CharaCardDecoration.Component">
+            <summary>
+            1 = Backing, 2 = Pattern Overlay, 3 = Portrait Frame, 4 = Plate Frame, 5 = Accent
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ChocoboTaxi.TimeRequired">
+            <summary>
+            In minutes.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ClassJob.JobType">
+            <summary>
+            1 = Tank<br />
+            2 = Pure Healer<br />
+            3 = Melee<br />
+            4 = Physical Ranged<br />
+            5 = Magical Ranged<br />
+            6 = Barrier Healer
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ClassJobActionUI.ComboTreeLayout">
+            <summary>
+            Used to position the action within a combo tree diagram. Non-zero digits identify branches within the combo (eg, Hakaze -&gt; Shifu -&gt; Kasha is 100 -&gt; 120 -&gt; 121)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ClassJobActionUI.GroupedCell">
+            <summary>
+            Currently only used for MNK actions; displays a set of actions in a shared rectangular cell instead of a tree.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Condition.LogMessagePriority">
+            <summary>
+            The lower this number is, the higher the priority. Used to determine which conditions LogMessage should be printed.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Condition.IsNetworked">
+            <summary>
+            Allows this Condition to be set by a packet received from the server.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentDirectorManagedSG.LayoutId">
+            <summary>
+            Refers to an SGB instance in the level.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentFinderCondition.Unknown29">
+            <summary>
+            This would show Addon#102618, if not 0, but the row is empty.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentFinderCondition.Unknown34">
+            <summary>
+            Used to control what is displayed as player count (Addon#10806, Addon#10805, etc.). Has some weird logic behind it.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentFinderCondition.PenaltyTimestampArrayIndex">
+            <summary>
+            Index in PlayerState.PenaltyTimestamps
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentFinderCondition.FixedItemLevelSync">
+            <summary>
+            If true, the players item level is always set to ItemLevelSync (up-sync and down-sync possible).
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.AllianceRegistrationMinPlayers">
+            <summary>
+            Used as parameter for Addon#16461.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.AlliancePartyCount">
+            <summary>
+            For example, used for The Occult Crescent: South Horn, to allow queuing with alliance parties. If 0, use PartyCount.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.Unknown6">
+            <summary>
+            Unknown party count. If 0, use PartyCount.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.AllowAllianceRegistration">
+            <summary>
+            Displays Addon#10826.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.SeparatedDpsRoles">
+            <summary>
+            If true, displays MeleesPerParty and RangedPerParty separately (Addon#102593) instead of combining them (Addon#2513).
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.RoleIndependent">
+            <summary>
+            If true, displays Addon#102599 instead of Addon#2513 or Addon#102593.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.OnlyPvPTeamMembers">
+            <summary>
+            Displays Addon#102617.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentMemberType.AllowLimitedJobs">
+            <summary>
+            Displays Addon#10829.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentRoulette.Unknown1">
+            <summary>
+            This would show Addon#102618, but the row is empty.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentRoulette.TimeLimit">
+            <summary>
+            In minutes.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentRoulette.TimeLimitMax">
+            <summary>
+            In minutes. If 0, only TimeLimit is displayed.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentRoulette.PenaltyTimestampArrayIndex">
+            <summary>
+            Index in PlayerState.PenaltyTimestamps
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentRoulette.CompletionArrayIndex">
+            <summary>
+            Index in PlayerState.ContentRouletteCompletion
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentRoulette.AppliesHighestAverageDutyItemLevel">
+            <summary>
+            Displays Addon#2828.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ContentRoulette.Unknown22">
+            <summary>
+            This would show Addon#10833, but the row does not exist.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.DynamicEvent.Duration">
+            <summary>
+            In minutes.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.EventGimmickPathMove.EventRange">
+            <summary>
+            Refers to an instanced game object.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ExVersion.MenuScreen">
+            <summary>
+            Equivalent to the last quest in column 6 of ScenarioTree
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ExVersion.Icon">
+            <summary>
+            Can be used in various places for UI elements.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Fate.Location">
+            <summary>
+            Instance ID of the EventRange where this spawns.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.FittingShopCategoryItem.DisplayId">
+            <summary>
+            If not 0, the item will only appear if sent in a FittingShopUpdate packet.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GimmickRect.LayoutID">
+            <summary>
+            The EventRange to associate with.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GimmickRect.TriggerIn">
+            <summary>
+            8 = Jump
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GoldSaucerArcadeMachine.Name">
+            <summary>
+            Shown in the Duty List.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GoldSaucerArcadeMachine.PayoutExplanation">
+            <summary>
+            Shown in the Duty List below Description.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GoldSaucerArcadeMachine.Description">
+            <summary>
+            Shown in the Duty List.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GoldSaucerArcadeMachine.TotalPayoutText">
+            <summary>
+            Shown in the Duty List if this machine has multiple rounds.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GoldSaucerArcadeMachine.Timeout">
+            <summary>
+            How long until the machine shuts down, in seconds.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GoldSaucerTalk.NextTalk">
+            <summary>
+            The next GoldSaucerTalk message.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GoldSaucerTalk.ChoicesTalk">
+            <summary>
+            The next GoldSaucerTalk for the ChoicesText of the same index.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GroupPoseFrame.UnlockType">
+            <summary>
+            1 = Quest<br />
+            2 = UnlockLink<br />
+            3 = InstanceContent unlocked<br />
+            4 = InstanceContent completed<br />
+            5 = Emote unlocked<br />
+            6 = Companion unlocked<br />
+            7 = Mount unlocked<br />
+            8 = Ornament unlocked<br />
+            9 = FramersKit unlocked<br />
+            10 = Always available
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.GroupPoseStamp.UnlockType">
+            <summary>
+            1 = Quest<br />
+            2 = UnlockLink<br />
+            3 = InstanceContent unlocked<br />
+            4 = InstanceContent completed<br />
+            5 = Emote unlocked<br />
+            6 = Companion unlocked<br />
+            7 = Mount unlocked<br />
+            8 = Ornament unlocked<br />
+            9 = FramersKit unlocked<br />
+            10 = Always available
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.HousingFurniture.UsageType">
+            <summary>
+            0 = Static furnishing<br />
+            3 = Vendor Permit<br />
+            4 = Crafting Workbenche<br />
+            7 = Food<br />
+            8 = Aetherial Wheel<br />
+            9 = Triple Triad Board<br />
+            10 = Orchestrion<br />
+            11 = Flowerpot<br />
+            12 = Vase<br />
+            13 = Aquarium<br />
+            14 = Message Book<br />
+            15 = Mannequin
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.HousingFurniture.PlaceLimitType">
+            <summary>
+            Any furnishings with the same type are counted towards the limit. For example, all vendor permits are grouped together under the same key.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.HousingRenovation.Territory">
+            <summary>
+            Also links to HousingIndoorTerritory which shares a 1:1 map of ids to TerritoryType
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.HousingYardObject.UsageType">
+            <summary>
+            0 = Static furnishing<br />
+            2 = Garden Patch<br />
+            5 = Chocobo Stable<br />
+            6 = Duties Permit<br />
+            14 = Message Book<br />
+            16 = Striking Dummy
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.HousingYardObject.PlaceLimitType">
+            <summary>
+            Any furnishings with the same type are counted towards the limit. For example, all garden patches are grouped together under the same key.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.IndividualWeather.IndividualWeatherDataStruct.Unknown0">
+            <summary>
+            quest progress maybe
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.InstanceContent.LGBEventRange">
+            <summary>
+            Points to the game object ID of the exit range.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.InstanceContent.LookupIndex">
+            <summary>
+            Used for certain duties. If not 0, then the client reads from a special unlock/completed array in PlayerState.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.InstanceContentType.LookupIndex">
+            <summary>
+            Used for certain duties. If not 0, then the client reads from a special unlock/completed array in PlayerState.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Item.FilterGroup">
+            <summary>
+            1 = Physical Weapon<br />
+            2 = Magical Weapon<br />
+            3 = Shield<br />
+            4 = Gear<br />
+            5 = Meal<br />
+            6 = Medicine<br />
+            7 = Deep Dungeon Usable (Manuals, Medicine, Potions)<br />
+            8 = Potion (HP)<br />
+            9 = Ether (MP)<br />
+            10 = Elixir (HP+MP)<br />
+            11 = Crystal<br />
+            12 = Crafting Material<br />
+            13 = Materia<br />
+            14 = Housing<br />
+            15 = Stain<br />
+            16 = Misc (Various stuff)<br />
+            17 = Fishing Bait<br />
+            18 = Treasure Map<br />
+            19 = Useables (Various stuff)<br />
+            20 = Gardening Seed<br />
+            21 = Gardening Soil<br />
+            22 = Gardening Fertilizer<br />
+            23 = Secret Recipe Book<br />
+            24 = unused<br />
+            25 = Aetherial Wheel<br />
+            26 = Primed Aetherial Wheel<br />
+            27 = Triple Triad Card<br />
+            28 = Airship Component<br />
+            29 = Currency<br />
+            30 = Folklore Book<br />
+            31 = Soul Crystal<br />
+            32 = Orchestrion Roll<br />
+            33 = Aquarium Tank Trimming<br />
+            34 = Painting<br />
+            35 = Tales Of Adventure Retainer<br />
+            36 = Submersible Component<br />
+            37 = Eureka Logos Action Ingredient<br />
+            38 = Bozja Mettle<br />
+            39 = Bozja Lost Action<br />
+            40 = Bozjan Cluster<br />
+            41 = unused<br />
+            42 = unused<br />
+            43 = Placeholder Item<br />
+            44 = Belts<br />
+            45 = ArchiveItem (RowId in AdditionalData)<br />
+            46 = unused<br />
+            47 = Sanctuary Cowrie<br />
+            48 = Sanctuary Material<br />
+            49 = Adventurers Parcel<br />
+            50 = Cosmic Exploration Material<br />
+            51 = Outfit<br />
+            52 = Occult Crescent Knowledge<br />
+            53 = Occult Crescent Phantom Experience<br />
+            54 = Occult Crescent Enlightenment Piece<br />
+            55 = Cosmic Exploration Cosmocredit<br />
+            56 = Cosmic Exploration Lunar Credit<br />
+            57 = Occult Crescent Sanguine Cipher
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.LogMessage.DisplayFlags">
+            <summary>
+            1 &lt;&lt; 0 (0x1) = Print in Chat<br />
+            1 &lt;&lt; 2 (0x4) = WideText (layer 5, top)<br />
+            1 &lt;&lt; 3 (0x8) = ErrorText (not forced)<br />
+            1 &lt;&lt; 4 (0x10) = Text (no icons, no sounds)<br />
+            1 &lt;&lt; 5 (0x20) = WideText (layer 5, bottom, short)<br />
+            1 &lt;&lt; 6 (0x40) = WideText (layer 5, bottom, long)<br />
+            1 &lt;&lt; 7 (0x80) = PoisonText (layer 10)<br />
+            1 &lt;&lt; 8 (0x100) = ErrorText (forced)<br />
+            1 &lt;&lt; 9 (0x200) = WideText (layer 10, bottom, short)<br />
+            1 &lt;&lt; 10 (0x0400) = WideText (layer 10, bottom, long)<br />
+            1 &lt;&lt; 11 (0x0800) = GimmickHint (Info)<br />
+            1 &lt;&lt; 12 (0x1000) = GimmickHint (Warning)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.LogMessage.Unknown1">
+            <summary>
+            Enables a SceneFlags check to remove certain DisplayFlags (0xF883).
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.LogMessage.Duration">
+            <summary>
+            Used for GimmickHint messages.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.LogMessage.Unknown2">
+            <summary>
+            Uses the local players ScreenLogManager to print the message in chat, but only if the local player is the source. Unsure why.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.MKDData.Unknown8">
+            <summary>
+            Minimum Knowledge Level?
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.MoveControl.RpWalkTurnSpeed">
+            <summary>
+            Left/Right for the turn control scheme
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.MoveControl.RpWalkSpeed">
+            <summary>
+            Forwards/backwards
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.MoveControl.RpWalkStrafeSpeed">
+            <summary>
+            Left/Right for the strafe control scheme
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.MoveControl.BackpedalSpeed">
+            <summary>
+            Standard controls backwards or legacy back+strafe
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.MoveControl.RotationStep">
+            <summary>
+            Angle in degrees per step when turning
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.NotebookDivision.AllowedCraftTypes">
+            <summary>
+            Index is CraftType
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.PatchMark.RequirementType">
+            <summary>
+            1 = Some Housing Permission 1<br />
+            2 = Some Housing Permission 2<br />
+            3 = Quest<br />
+            4 = UnlockLink<br />
+            5 = InstanceContent 50001 unlocked, but 50003 not<br />
+            6 = LocalPlayer has a FreeCompanyTag
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.PlayerSearchSubLocation.Location">
+            <summary>
+            The UI category this appears in.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Quest.DailyQuestPool">
+            <summary>
+            1/2 - normal daily beast tribe quests, 3 - 'exclusive' (if player's rank is not greater than max rank requirement of quests offered by npc, exactly one of the available quests will be from this pool)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Quest.HideInScenarioGuide">
+            <summary>
+            Shows ??? instead.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.RaidFinderParam.SeparatedHealerRoles">
+            <summary>
+            Displays Addon#10115 instead of Addon#10093, to list pure and barrier healer count.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.RecastNavimesh.Name">
+            <summary>
+            Corresponds to Name from TerritoryType.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Role.Type">
+            <summary>
+            1 = Tank, 2 = DPS, 3 = Healer
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.SatisfactionSupplyReward.MinLevelForSecondReward">
+            <summary>
+            0 == current cap
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.SecretRecipeBookGroup.SecretRecipeBook">
+            <summary>
+            Index is CraftType, also used as bit index in PlayerState.UnlockedSecretRecipeBooks
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.SpecialShop.RequiredContentFinderConditionComplete">
+            <summary>
+            If this is true, then the CFC needs to be completed; If this is false, then the CFC just needs to be unlocked
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.SpecialShop.ItemStruct.ItemCostsStruct.CostType">
+            <summary>
+            Indicates what the Cost Id links to. 3 = SpecialBucketId, rest items?
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Status.Flags">
+            <summary>
+            actually an index of the flag
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TerritoryIntendedUse.GayaSoundId">
+            <summary>
+            Ambient noise of people talking in a crowd. Values: 0 = None, 1 = sound/strm/GAYA_LestArea_01.scd, 2 = sound/strm/GAYA_Village_01.scd
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TerritoryIntendedUse.EnableClassJobChangeCombatJobCheck">
+            <summary>
+            When true, requires that the target ClassJob is a combat job
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TerritoryIntendedUse.EnableCompanion">
+            <summary>
+            Enables summoning Chocobo Companion
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TerritoryIntendedUse.EnablePets">
+            <summary>
+            Enables summoning Summoner/Scholar pets
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TerritoryIntendedUse.Unknown31">
+            <summary>
+            Related to Idle Cam
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TerritoryIntendedUse.Unknown38">
+            <summary>
+            Related to idle timer
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TerritoryIntendedUse.Unknown41">
+            <summary>
+            Related to blocking Say/Yell/Shout of a muted player in Eureka/Bozja/OccultCrescent
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.TradeScreenImage.BannerType">
+            <summary>
+            1 = Icon 180096 ("Excellent Trade!"), 2 = Icon 180097 ("Feat Accomplished!")
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.VVDData.Series">
+            <summary>
+            RowId of VVDRouteData and VVDNotebookSeries
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.VVDData.Sequence">
+            <summary>
+            Sequence inside of the series.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WeeklyBingoMultipleOrder.Content">
+            <summary>
+            I *think* this is correct? You're welcome MidoriKami :3
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WeeklyBingoOrderData.ContentCategory">
+            <summary>
+            1= TreasureMaps<br />
+            2= PvP
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSAchievement.Category">
+            <summary>
+            Seems to be 1 for Daily and 2 for Standard
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSDevGrade.Thumbnail">
+            <summary>
+            The image displayed when entering the Cosmic Exploration zone on a server that is currently at this stage.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSDevGrade.LodestoneRank">
+            <summary>
+            The rank for a world that is currently at this stage, as displayed on the Lodestone site, minus one.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSEmergencyInfo.WKSEmergencyMissionRowId">
+            <summary>
+            Has between 5 and 6 subrows
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSEmergencyMission.WKSEmergencyMissionGroupRowId">
+            <summary>
+            As of Patch 7.31 this can always be direct queried with subrow 0 to get the follow chain to WKSMissionUnit from the sheet
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSEmergencyProblem.EmergencyInfoTeleportText1">
+            <summary>
+            The first option to teleport
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSEmergencyProblem.EmergencyInfoTeleportText2">
+            <summary>
+            The second option to teleport
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSFunction.RequiredQuests0">
+            <summary>
+            Required quest needed for function to return true
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSFunction.RequiredQuests1">
+            <summary>
+            Required quest needed for function to return true
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSFunction.RequiredQuests2">
+            <summary>
+            Best guess for now as no references are easily found in the game files
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSFunction.RequiredDevGrade">
+            <summary>
+            Needs this grade to be completed for function to be valid. Game checks for WKSManager.DevGrade &lt; RequiredDevGrade[]
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSFunction.Unknown12">
+            <summary>
+            Seems to only control one function tree for now relating to something in WKSManager but is also slated to check for '- 2 &gt;= 2' and fail
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSMissionReward.ExpModifier">
+            <summary>
+            ExpReward = ExpToNex * (lvl &lt; 50 ? ExpModifier[0] : lvl &lt; 90 ? ExpModifier[1] : ExpModifier[2]) / 100
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSMissionReward.BaseDronebits">
+            <summary>
+            Doesn't take Gold bonus in to account
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSMissionReward.Unknown19">
+            <summary>
+            Needs to match WKSEmergencyProblem.Unknown2 to be active?
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSPioneeringTrail.Thumbnail">
+            <summary>
+            The image used as thumbnail for log entry in the Infrastructure Index.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.WKSPioneeringTrail.ActivationStage">
+            <summary>
+            The stage at which the log entry is added to the Infrastructure Index.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.ZoneSharedGroup.RequirementType">
+            <summary>
+            1 = Quest<br />
+            2 = Quest with specific Sequence<br />
+            3 = AetherCurrent<br />
+            4 = EurekaStoryProgress<br />
+            5 = DomaStoryProgress
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Action.AutoAttackBehaviour">
+            <summary>
+            0 = no effect on auto attacks, 1 = typical cast (unsheathe weapon, but don't touch autos), 2 = typical weaponskill (unsheathe, start autos if action target is primary target), 3 = sleep-like effect (unsheathe, stop autos), 4 = typical point-blank aoe (unsheathe, start autos if primary target is within action range), 5 = ??? (doesn't touch weapon state), 6 = typical channeled action (unsheathe, stop autos, do not auto-face target), 7 = force sheathe and stop autos, 8 = ??? (unused)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Action.EquivalenceGroup">
+            <summary>
+            set for eg crafting actions, when different jobs have different rows, but they need to be considered interchangeable
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Action.DeadTargetBehaviour">
+            <summary>
+            0 = can not target dead, 1 = can only target dead players (+ some other conditions), 2 = ???
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Battalion.IsEnemyTo">
+            <summary>
+            Index is the other battalion.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.CharaCardDecoration.Component">
+            <summary>
+            1 = Backing, 2 = Pattern Overlay, 3 = Portrait Frame, 4 = Plate Frame, 5 = Accent
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ChocoboTaxi.TimeRequired">
+            <summary>
+            In minutes.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ClassJob.JobType">
+            <summary>
+            1 = Tank<br />
+            2 = Pure Healer<br />
+            3 = Melee<br />
+            4 = Physical Ranged<br />
+            5 = Magical Ranged<br />
+            6 = Barrier Healer
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ClassJobActionUI.ComboTreeLayout">
+            <summary>
+            Used to position the action within a combo tree diagram. Non-zero digits identify branches within the combo (eg, Hakaze -&gt; Shifu -&gt; Kasha is 100 -&gt; 120 -&gt; 121)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ClassJobActionUI.GroupedCell">
+            <summary>
+            Currently only used for MNK actions; displays a set of actions in a shared rectangular cell instead of a tree.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Condition.LogMessagePriority">
+            <summary>
+            The lower this number is, the higher the priority. Used to determine which conditions LogMessage should be printed.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Condition.IsNetworked">
+            <summary>
+            Allows this Condition to be set by a packet received from the server.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentDirectorManagedSG.LayoutId">
+            <summary>
+            Refers to an SGB instance in the level.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentFinderCondition.Unknown29">
+            <summary>
+            This would show Addon#102618, if not 0, but the row is empty.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentFinderCondition.Unknown34">
+            <summary>
+            Used to control what is displayed as player count (Addon#10806, Addon#10805, etc.). Has some weird logic behind it.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentFinderCondition.PenaltyTimestampArrayIndex">
+            <summary>
+            Index in PlayerState.PenaltyTimestamps
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentFinderCondition.FixedItemLevelSync">
+            <summary>
+            If true, the players item level is always set to ItemLevelSync (up-sync and down-sync possible).
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.AllianceRegistrationMinPlayers">
+            <summary>
+            Used as parameter for Addon#16461.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.AlliancePartyCount">
+            <summary>
+            For example, used for The Occult Crescent: South Horn, to allow queuing with alliance parties. If 0, use PartyCount.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.Unknown6">
+            <summary>
+            Unknown party count. If 0, use PartyCount.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.AllowAllianceRegistration">
+            <summary>
+            Displays Addon#10826.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.SeparatedDpsRoles">
+            <summary>
+            If true, displays MeleesPerParty and RangedPerParty separately (Addon#102593) instead of combining them (Addon#2513).
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.RoleIndependent">
+            <summary>
+            If true, displays Addon#102599 instead of Addon#2513 or Addon#102593.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.OnlyPvPTeamMembers">
+            <summary>
+            Displays Addon#102617.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentMemberType.AllowLimitedJobs">
+            <summary>
+            Displays Addon#10829.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRewardCondition.MaxLevelCondition">
+            <summary>
+            0 = Always rewarded<br />
+            1 = Character has reached current expansions max level<br />
+            2 = Character has reached at least 50<br />
+            3 = Character has reached at least 60<br />
+            4 = Character has reached at least 70<br />
+            5 = Character has reached at least 80<br />
+            6 = Character has reached at least 90
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRoulette.Unknown1">
+            <summary>
+            This would show Addon#102618, but the row is empty.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRoulette.TimeLimit">
+            <summary>
+            In minutes.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRoulette.TimeLimitMax">
+            <summary>
+            In minutes. If 0, only TimeLimit is displayed.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRoulette.PenaltyTimestampArrayIndex">
+            <summary>
+            Index in PlayerState.PenaltyTimestamps
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRoulette.CompletionArrayIndex">
+            <summary>
+            Index in PlayerState.ContentRouletteCompletion
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRoulette.AppliesHighestAverageDutyItemLevel">
+            <summary>
+            Displays Addon#2828.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRoulette.Unknown22">
+            <summary>
+            This would show Addon#10833, but the row does not exist.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRouletteRoleBonus.BaseExperience">
+            <summary>
+            Formula: BaseExperience * ParamGrow.ScaledQuestXP * ParamGrow.QuestExpModifier / 1000
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRouletteRoleBonus.GilMultiplier">
+            <summary>
+            Formula: InstanceContent.InstanceClearGil * GilMultiplier / 1000
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRouletteRoleBonus.GCSealsMultiplier">
+            <summary>
+            Formula: CurrentLevel * GCSealsMultiplier / 1000
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ContentRouletteRoleBonus.ParamsStruct.ItemMaxLevelCondition">
+            <summary>
+            0 = Always rewarded<br />
+            1 = Character has reached current expansions max level<br />
+            2 = Character has reached at least 50<br />
+            3 = Character has reached at least 60<br />
+            4 = Character has reached at least 70<br />
+            5 = Character has reached at least 80<br />
+            6 = Character has reached at least 90
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.DynamicEvent.Duration">
+            <summary>
+            In minutes.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Emote.ActionTimeline">
+            <summary>
+            0 = Standing<br />
+            1 = Start animation<br />
+            2 = Ground sit<br />
+            3 = Chair sit<br />
+            4 = Mounted (when HasMountedAnimation) / Swimming (when HasSwimmingAnimation) / Diving (when HasDivingAnimation)<br />
+            5 = Dozing<br />
+            6 = Unused
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Emote.Unknown5">
+            <summary>
+            Maybe controls whether or not the emote can be synced in GPose?!
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.EObj.AdditionalInteractRangeX">
+            <summary>
+            Used in EventFramework.CheckInteractRangeEx.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.EObj.AdditionalInteractRangeY">
+            <summary>
+            Used in EventFramework.CheckInteractRangeEx.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.EObj.LuaSetup">
+            <summary>
+            If set, EObjs managed by a QuestEventHandler calls into Lua first to set up initial shared group timeline state. This can be used by Quest scripting to animate an SGB during a specific sequence of the quest.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.EObj.SharedTimelineStateUnknown">
+            <summary>
+            Not sure what the true meaning of this field means, but its checked within EventObject.UpdateSharedTimelineState.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.EventGimmickPathMove.EventRange">
+            <summary>
+            Refers to an instanced game object.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ExVersion.MenuScreen">
+            <summary>
+            Equivalent to the last quest in column 6 of ScenarioTree
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ExVersion.Icon">
+            <summary>
+            Can be used in various places for UI elements.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Fate.Location">
+            <summary>
+            Instance ID of the EventRange where this spawns.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.FittingShopCategoryItem.DisplayId">
+            <summary>
+            If not 0, the item will only appear if sent in a FittingShopUpdate packet.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GimmickRect.LayoutID">
+            <summary>
+            The EventRange to associate with.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GimmickRect.TriggerIn">
+            <summary>
+            8 = Jump
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GoldSaucerArcadeMachine.Name">
+            <summary>
+            Shown in the Duty List.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GoldSaucerArcadeMachine.PayoutExplanation">
+            <summary>
+            Shown in the Duty List below Description.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GoldSaucerArcadeMachine.Description">
+            <summary>
+            Shown in the Duty List.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GoldSaucerArcadeMachine.TotalPayoutText">
+            <summary>
+            Shown in the Duty List if this machine has multiple rounds.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GoldSaucerArcadeMachine.Timeout">
+            <summary>
+            How long until the machine shuts down, in seconds.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GoldSaucerTalk.NextTalk">
+            <summary>
+            The next GoldSaucerTalk message.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GoldSaucerTalk.ChoicesTalk">
+            <summary>
+            The next GoldSaucerTalk for the ChoicesText of the same index.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GroupPoseFrame.UnlockType">
+            <summary>
+            1 = Quest<br />
+            2 = UnlockLink<br />
+            3 = InstanceContent unlocked<br />
+            4 = InstanceContent completed<br />
+            5 = Emote unlocked<br />
+            6 = Companion unlocked<br />
+            7 = Mount unlocked<br />
+            8 = Ornament unlocked<br />
+            9 = FramersKit unlocked<br />
+            10 = Always available
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.GroupPoseStamp.UnlockType">
+            <summary>
+            1 = Quest<br />
+            2 = UnlockLink<br />
+            3 = InstanceContent unlocked<br />
+            4 = InstanceContent completed<br />
+            5 = Emote unlocked<br />
+            6 = Companion unlocked<br />
+            7 = Mount unlocked<br />
+            8 = Ornament unlocked<br />
+            9 = FramersKit unlocked<br />
+            10 = Always available
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.HalloweenNpcSelect.Festival">
+            <summary>
+            The Festival where this option became available.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.HousingFurniture.UsageType">
+            <summary>
+            0 = Static furnishing<br />
+            3 = Vendor Permit<br />
+            4 = Crafting Workbenche<br />
+            7 = Food<br />
+            8 = Aetherial Wheel<br />
+            9 = Triple Triad Board<br />
+            10 = Orchestrion<br />
+            11 = Flowerpot<br />
+            12 = Vase<br />
+            13 = Aquarium<br />
+            14 = Message Book<br />
+            15 = Mannequin
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.HousingFurniture.PlaceLimitType">
+            <summary>
+            Any furnishings with the same type are counted towards the limit. For example, all vendor permits are grouped together under the same key.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.HousingRenovation.Territory">
+            <summary>
+            Also links to HousingIndoorTerritory which shares a 1:1 map of ids to TerritoryType
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.HousingYardObject.UsageType">
+            <summary>
+            0 = Static furnishing<br />
+            2 = Garden Patch<br />
+            5 = Chocobo Stable<br />
+            6 = Duties Permit<br />
+            14 = Message Book<br />
+            16 = Striking Dummy
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.HousingYardObject.PlaceLimitType">
+            <summary>
+            Any furnishings with the same type are counted towards the limit. For example, all garden patches are grouped together under the same key.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.IKDPlayerMissionCondition.Count">
+            <summary>
+            How many to actually catch
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.IndividualWeather.IndividualWeatherDataStruct.Unknown0">
+            <summary>
+            quest progress maybe
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.InstanceContent.LGBEventRange">
+            <summary>
+            Points to the game object ID of the exit range.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.InstanceContent.LookupIndex">
+            <summary>
+            Used for certain duties. If not 0, then the client reads from a special unlock/completed array in PlayerState.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.InstanceContentType.LookupIndex">
+            <summary>
+            Used for certain duties. If not 0, then the client reads from a special unlock/completed array in PlayerState.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Item.SubcategorySort">
+            <summary>
+            Used in conjunction with the ItemUICategory sortkeys to sort things like vendor lists
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Item.FilterGroup">
+            <summary>
+            1 = Physical Weapon<br />
+            2 = Magical Weapon<br />
+            3 = Shield<br />
+            4 = Gear<br />
+            5 = Meal<br />
+            6 = Medicine<br />
+            7 = Deep Dungeon Usable (Manuals, Medicine, Potions)<br />
+            8 = Potion (HP)<br />
+            9 = Ether (MP)<br />
+            10 = Elixir (HP+MP)<br />
+            11 = Crystal<br />
+            12 = Crafting Material<br />
+            13 = Materia<br />
+            14 = Housing<br />
+            15 = Dyes<br />
+            16 = Misc (Various stuff)<br />
+            17 = Fishing Bait<br />
+            18 = Treasure Map<br />
+            19 = Useables (Various stuff)<br />
+            20 = Gardening Seed<br />
+            21 = Gardening Soil<br />
+            22 = Gardening Fertilizer<br />
+            23 = Secret Recipe Book<br />
+            24 = unused<br />
+            25 = Aetherial Wheel<br />
+            26 = Primed Aetherial Wheel<br />
+            27 = Triple Triad Card<br />
+            28 = Airship Component<br />
+            29 = Currency<br />
+            30 = Folklore Book<br />
+            31 = Soul Crystal<br />
+            32 = Orchestrion Roll<br />
+            33 = Aquarium Tank Trimming<br />
+            34 = Painting<br />
+            35 = Tales Of Adventure Retainer<br />
+            36 = Submersible Component<br />
+            37 = Eureka Logos Action Ingredient<br />
+            38 = Bozja Mettle<br />
+            39 = Bozja Lost Action<br />
+            40 = Bozjan Cluster<br />
+            41 = unused<br />
+            42 = unused<br />
+            43 = Placeholder Item<br />
+            44 = Belts<br />
+            45 = ArchiveItem (RowId in AdditionalData)<br />
+            46 = unused<br />
+            47 = Sanctuary Cowrie<br />
+            48 = Sanctuary Material<br />
+            49 = Adventurers Parcel<br />
+            50 = Cosmic Exploration Material<br />
+            51 = Outfit<br />
+            52 = Occult Crescent Knowledge<br />
+            53 = Occult Crescent Phantom Experience<br />
+            54 = Occult Crescent Enlightenment Piece<br />
+            55 = Cosmic Exploration Cosmocredit<br />
+            56 = Cosmic Exploration Lunar Credit<br />
+            57 = Occult Crescent Sanguine Cipher<br />
+            58 = Cosmic Exploration Dronebits<br />
+            59 = Cosmic Exploration Tool Mastery Points<br />
+            60 = Old Dyes
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Item.ClassJobRepair">
+            <summary>
+            This applies to both repairs and desynthesis, so irreparable but desynthesizable items such as fish or furniture will have a ClassJobRepair value.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.LogMessage.DisplayFlags">
+            <summary>
+            1 &lt;&lt; 0 (0x1) = Print in Chat<br />
+            1 &lt;&lt; 2 (0x4) = WideText (layer 5, top)<br />
+            1 &lt;&lt; 3 (0x8) = ErrorText (not forced)<br />
+            1 &lt;&lt; 4 (0x10) = Text (no icons, no sounds)<br />
+            1 &lt;&lt; 5 (0x20) = WideText (layer 5, bottom, short)<br />
+            1 &lt;&lt; 6 (0x40) = WideText (layer 5, bottom, long)<br />
+            1 &lt;&lt; 7 (0x80) = PoisonText (layer 10)<br />
+            1 &lt;&lt; 8 (0x100) = ErrorText (forced)<br />
+            1 &lt;&lt; 9 (0x200) = WideText (layer 10, bottom, short)<br />
+            1 &lt;&lt; 10 (0x0400) = WideText (layer 10, bottom, long)<br />
+            1 &lt;&lt; 11 (0x0800) = GimmickHint (Info)<br />
+            1 &lt;&lt; 12 (0x1000) = GimmickHint (Warning)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.LogMessage.Unknown1">
+            <summary>
+            Enables a SceneFlags check to remove certain DisplayFlags (0xF883).
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.LogMessage.Duration">
+            <summary>
+            Used for GimmickHint messages.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.LogMessage.Unknown2">
+            <summary>
+            Uses the local players ScreenLogManager to print the message in chat, but only if the local player is the source. Unsure why.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.MKDData.Unknown8">
+            <summary>
+            Minimum Knowledge Level?
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.MoveControl.RpWalkTurnSpeed">
+            <summary>
+            Left/Right for the turn control scheme
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.MoveControl.RpWalkSpeed">
+            <summary>
+            Forwards/backwards
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.MoveControl.RpWalkStrafeSpeed">
+            <summary>
+            Left/Right for the strafe control scheme
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.MoveControl.BackpedalSpeed">
+            <summary>
+            Standard controls backwards or legacy back+strafe
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.MoveControl.RotationStep">
+            <summary>
+            Angle in degrees per step when turning
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.NotebookDivision.AllowedCraftTypes">
+            <summary>
+            Index is CraftType
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.PatchMark.RequirementType">
+            <summary>
+            1 = Some Housing Permission 1<br />
+            2 = Some Housing Permission 2<br />
+            3 = Quest<br />
+            4 = UnlockLink<br />
+            5 = InstanceContent 50001 unlocked, but 50003 not<br />
+            6 = LocalPlayer has a FreeCompanyTag
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.PlayerSearchSubLocation.Location">
+            <summary>
+            The UI category this appears in.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Quest.DailyQuestPool">
+            <summary>
+            1/2 - normal daily beast tribe quests, 3 - 'exclusive' (if player's rank is not greater than max rank requirement of quests offered by npc, exactly one of the available quests will be from this pool)
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Quest.HideInScenarioGuide">
+            <summary>
+            Shows ??? instead.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.RaidFinderParam.SeparatedHealerRoles">
+            <summary>
+            Displays Addon#10115 instead of Addon#10093, to list pure and barrier healer count.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.RecastNavimesh.Name">
+            <summary>
+            Corresponds to Name from TerritoryType.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Role.Type">
+            <summary>
+            1 = Tank, 2 = DPS, 3 = Healer
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.SatisfactionSupplyReward.MinLevelForSecondReward">
+            <summary>
+            0 == current cap
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.SecretRecipeBookGroup.SecretRecipeBook">
+            <summary>
+            Index is CraftType, also used as bit index in PlayerState.UnlockedSecretRecipeBooks
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.SpecialShop.RequiredContentFinderConditionComplete">
+            <summary>
+            If this is true, then the CFC needs to be completed; If this is false, then the CFC just needs to be unlocked
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.SpecialShop.ItemStruct.ItemCostsStruct.CostType">
+            <summary>
+            Indicates what the Cost Id links to. 3 = SpecialBucketId, rest items?
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.Status.Flags">
+            <summary>
+            actually an index of the flag
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TerritoryIntendedUse.GayaSoundId">
+            <summary>
+            Ambient noise of people talking in a crowd. Values: 0 = None, 1 = sound/strm/GAYA_LestArea_01.scd, 2 = sound/strm/GAYA_Village_01.scd
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TerritoryIntendedUse.EnableClassJobChangeCombatJobCheck">
+            <summary>
+            When true, requires that the target ClassJob is a combat job
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TerritoryIntendedUse.EnableCompanion">
+            <summary>
+            Enables summoning Chocobo Companion
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TerritoryIntendedUse.EnablePets">
+            <summary>
+            Enables summoning Summoner/Scholar pets
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TerritoryIntendedUse.Unknown31">
+            <summary>
+            Related to Idle Cam
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TerritoryIntendedUse.Unknown38">
+            <summary>
+            Related to idle timer
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TerritoryIntendedUse.Unknown41">
+            <summary>
+            Related to blocking Say/Yell/Shout of a muted player in Eureka/Bozja/OccultCrescent
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.TradeScreenImage.BannerType">
+            <summary>
+            1 = Icon 180096 ("Excellent Trade!"), 2 = Icon 180097 ("Feat Accomplished!")
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.VVDData.Series">
+            <summary>
+            RowId of VVDRouteData and VVDNotebookSeries
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.VVDData.Sequence">
+            <summary>
+            Sequence inside of the series.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WeeklyBingoMultipleOrder.Content">
+            <summary>
+            I *think* this is correct? You're welcome MidoriKami :3
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WeeklyBingoOrderData.ContentCategory">
+            <summary>
+            1= TreasureMaps<br />
+            2= PvP
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSAchievement.Category">
+            <summary>
+            Seems to be 1 for Daily and 2 for Standard
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSDevGrade.Thumbnail">
+            <summary>
+            The image displayed when entering the Cosmic Exploration zone on a server that is currently at this stage.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSDevGrade.LodestoneRank">
+            <summary>
+            The rank for a world that is currently at this stage, as displayed on the Lodestone site, minus one.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSEmergencyInfo.WKSEmergencyMissionRowId">
+            <summary>
+            Has between 5 and 6 subrows
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSEmergencyMission.WKSEmergencyMissionGroupRowId">
+            <summary>
+            As of Patch 7.31 this can always be direct queried with subrow 0 to get the follow chain to WKSMissionUnit from the sheet
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSEmergencyProblem.EmergencyInfoTeleportText1">
+            <summary>
+            The first option to teleport
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSEmergencyProblem.EmergencyInfoTeleportText2">
+            <summary>
+            The second option to teleport
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSFunction.RequiredQuests0">
+            <summary>
+            Required quest needed for function to return true
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSFunction.RequiredQuests1">
+            <summary>
+            Required quest needed for function to return true
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSFunction.RequiredQuests2">
+            <summary>
+            Best guess for now as no references are easily found in the game files
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSFunction.RequiredDevGrade">
+            <summary>
+            Needs this grade to be completed for function to be valid. Game checks for WKSManager.DevGrade &lt; RequiredDevGrade[]
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSFunction.Unknown12">
+            <summary>
+            Seems to only control one function tree for now relating to something in WKSManager but is also slated to check for '- 2 &gt;= 2' and fail
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSMissionReward.ExpModifier">
+            <summary>
+            ExpReward = ExpToNex * (lvl &lt; 50 ? ExpModifier[0] : lvl &lt; 90 ? ExpModifier[1] : ExpModifier[2]) / 100
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSMissionReward.BaseDronebits">
+            <summary>
+            Doesn't take Gold bonus in to account
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSMissionReward.Unknown19">
+            <summary>
+            Needs to match WKSEmergencyProblem.Unknown2 to be active?
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSPioneeringTrail.Thumbnail">
+            <summary>
+            The image used as thumbnail for log entry in the Infrastructure Index.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.WKSPioneeringTrail.ActivationStage">
+            <summary>
+            The stage at which the log entry is added to the Infrastructure Index.
+            </summary>
+        </member>
+        <member name="P:Lumina.Excel.Sheets.Experimental.ZoneSharedGroup.RequirementType">
+            <summary>
+            1 = Quest<br />
+            2 = Quest with specific Sequence<br />
+            3 = AetherCurrent<br />
+            4 = EurekaStoryProgress<br />
+            5 = DomaStoryProgress
+            </summary>
+        </member>
+    </members>
+</doc>

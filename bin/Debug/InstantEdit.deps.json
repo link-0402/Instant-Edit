@@ -1,0 +1,41 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "InstantEdit/1.0.0.0": {
+        "dependencies": {
+          "Penumbra.Api": "5.15.1"
+        },
+        "runtime": {
+          "InstantEdit.dll": {}
+        }
+      },
+      "Penumbra.Api/5.15.1": {
+        "runtime": {
+          "lib/net10.0-windows7.0/Penumbra.Api.dll": {
+            "assemblyVersion": "5.15.1.0",
+            "fileVersion": "5.15.1.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "InstantEdit/1.0.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Penumbra.Api/5.15.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-3ikk0zIOaLm2n3nZRQpW3xaRQ2cq/TOOEApNUjYXolqbyvCrZVGXhdQulcssNUbo0AMQ81l+cf7OfqRceeRBcg==",
+      "path": "penumbra.api/5.15.1",
+      "hashPath": "penumbra.api.5.15.1.nupkg.sha512"
+    }
+  }
+}

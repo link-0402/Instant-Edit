@@ -1,0 +1,18 @@
+{
+  "Author": "Instant Edit",
+  "Name": "Instant Edit",
+  "InternalName": "InstantEdit",
+  "AssemblyVersion": "1.0.0.0",
+  "Description": "Lists the models currently on screen (like Penumbra's On Screen tab). Clicking a model instantly imports it into Blender's default scene via the Yet Another Addon, and the Quick Export button in Blender writes it right back to the same game path as a Penumbra mod.",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "penumbra,blender,modding,model,utility"
+  ],
+  "DalamudApiLevel": 15,
+  "LoadRequiredState": 0,
+  "LoadSync": true,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "Punchline": "Send on-screen models straight to Blender and back.",
+  "AcceptsFeedback": false
+}

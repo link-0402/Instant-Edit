@@ -1,0 +1,31 @@
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Release\InstantEdit.deps.json
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Release\InstantEdit.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Release\InstantEdit.pdb
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.csproj.AssemblyReference.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.GeneratedMSBuildEditorConfig.editorconfig
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.AssemblyInfoInputs.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.AssemblyInfo.cs
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.csproj.CoreCompileInputs.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantEdit.pdb
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Release\Penumbra.Api.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Release\InstantE.778C74BA.Up2Date
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\ReleaseVerify\InstantEdit.deps.json
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\ReleaseVerify\InstantEdit.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\ReleaseVerify\InstantEdit.pdb
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\ReleaseVerify\Penumbra.Api.dll
+C:\Users\leong\AppData\Local\Temp\opencode\instant-edit-build\bin\Release\InstantEdit.deps.json
+C:\Users\leong\AppData\Local\Temp\opencode\instant-edit-build\bin\Release\InstantEdit.dll
+C:\Users\leong\AppData\Local\Temp\opencode\instant-edit-build\bin\Release\InstantEdit.pdb
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditBuild\Release\InstantEdit.deps.json
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditBuild\Release\InstantEdit.dll
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditBuild\Release\InstantEdit.pdb
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditRelease\bin\Release\InstantEdit.deps.json
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditRelease\bin\Release\InstantEdit.dll
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditRelease\bin\Release\InstantEdit.pdb
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditCallbackBuild\bin\Release\InstantEdit.deps.json
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditCallbackBuild\bin\Release\InstantEdit.dll
+C:\Users\leong\AppData\Local\Temp\opencode\InstantEditCallbackBuild\bin\Release\InstantEdit.pdb
+C:\Users\leong\AppData\Local\Temp\InstantEditFinal\bin\Release\InstantEdit.deps.json
+C:\Users\leong\AppData\Local\Temp\InstantEditFinal\bin\Release\InstantEdit.dll
+C:\Users\leong\AppData\Local\Temp\InstantEditFinal\bin\Release\InstantEdit.pdb

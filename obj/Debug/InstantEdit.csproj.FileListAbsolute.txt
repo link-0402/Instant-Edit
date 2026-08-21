@@ -1,0 +1,12 @@
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Debug\InstantEdit.deps.json
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Debug\InstantEdit.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Debug\InstantEdit.pdb
+H:\FFXIVmods\VSC Projects\Instant Edit\bin\Debug\Penumbra.Api.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantEdit.csproj.AssemblyReference.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantEdit.GeneratedMSBuildEditorConfig.editorconfig
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantEdit.AssemblyInfoInputs.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantEdit.AssemblyInfo.cs
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantEdit.csproj.CoreCompileInputs.cache
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantE.778C74BA.Up2Date
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantEdit.dll
+H:\FFXIVmods\VSC Projects\Instant Edit\obj\Debug\InstantEdit.pdb
