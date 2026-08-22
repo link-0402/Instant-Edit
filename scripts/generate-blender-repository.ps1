@@ -26,8 +26,8 @@ if ($null -eq $blender) {
 
 New-Item -ItemType Directory -Path $resolvedRepository -Force | Out-Null
 & $packageScript -OutputPath $packagePath
-if ($LASTEXITCODE -ne 0) {
-    throw "Blender package creation failed with exit code $LASTEXITCODE."
+if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+    throw "Blender package creation did not produce the expected archive: $packagePath"
 }
 
 & $blender.Source --background --command extension server-generate "--repo-dir=$resolvedRepository" --html
