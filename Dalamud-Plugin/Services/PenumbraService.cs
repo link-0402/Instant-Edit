@@ -23,7 +23,7 @@ public sealed class PenumbraService
 
     private const string OwnershipMarkerFile = ".instant-edit-owner.json";
     private const string OwnershipSchema = "instant-edit.owner";
-    private const string OwnershipOwner = "Instant Edit";
+    private const string OwnershipOwner = "Luci";
     private const string VariantGroupDescriptionPrefix = "Managed by Instant Edit variant for: ";
 
     private readonly IDalamudPluginInterface  _pi;
@@ -752,7 +752,7 @@ public sealed class PenumbraService
         var meta = LoadJsonObject(metaPath);
         meta["FileVersion"] = 3;
         meta["Name"] = modName;
-        meta["Author"] = "Instant Edit";
+        meta["Author"] = "Luci";
         meta["Description"] = "Managed by the Instant Edit plugin.";
         meta["Image"] = "";
         meta["Version"] = "";

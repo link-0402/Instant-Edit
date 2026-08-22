@@ -24,7 +24,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Author>Instant Edit</Author>
+    <Author>Luci</Author>
     <Name>Instant Edit</Name>
     <Punchline>Send on-screen models straight to Blender and back.</Punchline>
     <Description>Lists the models currently on screen (like Penumbra's On Screen tab). Clicking a model instantly imports it into Blender via the XIV Instant Edit addon, and the Quick Export button in Blender writes it right back to the same game path as a Penumbra mod.</Description>

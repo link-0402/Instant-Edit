@@ -4,7 +4,7 @@ id = "xiv_instant_edit"
 version = "1.0.0"
 name = "XIV Instant Edit"
 tagline = "Instant FFXIV model editing and focused model export"
-maintainer = "Instant Edit contributors"
+maintainer = "Luci"
 type = "add-on"
 
 tags = ["Import-Export", "Modeling", "Mesh", "Rigging", "User Interface"]
