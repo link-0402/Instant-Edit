@@ -1,0 +1,63 @@
+name: Publish Blender Extension Repository
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Blender-Addon/**'
+      - 'scripts/package-blender-addon.ps1'
+      - 'scripts/generate-blender-repository.ps1'
+      - '.github/workflows/blender-extension-repository.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install Blender
+        env:
+          BLENDER_VERSION: 4.5.12
+        run: |
+          curl --fail --location --retry 3 \
+            "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+            --output /tmp/blender.tar.xz
+          tar -xJf /tmp/blender.tar.xz --directory /tmp
+          echo "/tmp/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
+          blender --version
+
+      - name: Build package and repository index
+        shell: pwsh
+        run: |
+          ./scripts/generate-blender-repository.ps1 -RepositoryPath ./site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
