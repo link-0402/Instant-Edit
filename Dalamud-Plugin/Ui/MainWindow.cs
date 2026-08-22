@@ -1,0 +1,697 @@
+using System.Collections;
+using System.Reflection;
+using System.Numerics;
+using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
+using Dalamud.Interface.Textures;
+using Dalamud.Interface.Textures.TextureWraps;
+using Dalamud.Plugin.Services;
+using Dalamud.Utility;
+using InstantEdit.Models;
+using InstantEdit.Services;
+using Lumina.Data;
+
+namespace InstantEdit.Ui;
+
+/// <summary>Compact resource browser for the authoritative Penumbra resource snapshot.</summary>
+public sealed class MainWindow : IDisposable
+{
+    private readonly Configuration _config; private readonly PenumbraService _penumbra; private readonly OnScreenService _onScreen;
+    private readonly BlenderClient _blender; private readonly IDataManager _data; private readonly IChatGui _chat; private readonly IPluginLog _log;
+    private readonly Action _saveConfig;
+    private readonly object _stateLock = new();
+    private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _collapsedFiltered = new(StringComparer.Ordinal);
+    private IReadOnlyDictionary<string, IDalamudTextureWrap> _slotIcons = new Dictionary<string, IDalamudTextureWrap>();
+    private bool _open, _blenderOk, _blenderChecking; private int _editing;
+    private DateTime _lastBlenderCheck = DateTime.MinValue;
+    private string _filter = string.Empty, _resourceTypeFilter = string.Empty, _status = string.Empty; private bool _statusOk = true;
+
+    public MainWindow(Configuration config, PenumbraService penumbra, OnScreenService onScreen, BlenderClient blender,
+        IDataManager data, IChatGui chat, IPluginLog log, Action saveConfig, Action restartExportListener, IUiBuilder uiBuilder,
+        ITextureProvider textureProvider)
+    {
+        _config = config; _penumbra = penumbra; _onScreen = onScreen; _blender = blender; _data = data; _chat = chat; _log = log;
+        _saveConfig = saveConfig;
+        _ = uiBuilder.RunWhenUiPrepared(() => LoadSlotIcons(uiBuilder, textureProvider), true);
+    }
+
+    public void Dispose()
+    {
+        IReadOnlyDictionary<string, IDalamudTextureWrap> icons;
+        lock (_stateLock)
+        {
+            icons = _slotIcons;
+            _slotIcons = new Dictionary<string, IDalamudTextureWrap>();
+        }
+
+        foreach (var icon in icons.Values.Distinct())
+            icon.Dispose();
+    }
+
+    public bool IsOpen { get => _open; set => _open = value; }
+    public void Open() => _open = true; public void Close() => _open = false; public void Toggle() => _open = !_open;
+
+    public void Draw()
+    {
+        if (!_open) return;
+        if (!ImGui.Begin("Instant Edit##Main", ref _open)) { ImGui.End(); return; }
+        DrawHeader();
+        ImGui.TextColored(new Vector4(.76f, .78f, .84f, 1), "Browse the visible object hierarchy. Each resource keeps its resolved source and available actions in the same place.");
+        ImGui.Spacing();
+        ImGui.SetNextItemWidth(-1); ImGui.InputTextWithHint("##resource-filter", "Search resource names, paths, or sources…", ref _filter, 256);
+        DrawResourceTypeFilters();
+        ImGui.Spacing();
+        DrawResources();
+        DrawFeedback(); ImGui.End();
+    }
+
+    private void DrawHeader()
+    {
+        ImGui.TextColored(new Vector4(.95f, .78f, .35f, 1), "INSTANT EDIT"); ImGui.SameLine(); ImGui.TextColored(new Vector4(.56f, .58f, .65f, 1), "On Screen");
+        ImGui.SameLine(0, 12); if (ImGui.SmallButton("Refresh character list")) RequestRefresh();
+        var penumbra = false;
+        try { penumbra = _penumbra.Available; } catch (Exception e) { _log.Debug(e.Message); }
+        StartBlenderCheckIfNeeded(); bool blender; lock (_stateLock) blender = _blenderOk;
+        Status("Penumbra", penumbra, penumbra ? "OK" : "Unavailable"); ImGui.SameLine(0, 10); Status("Blender", blender, blender ? "Online" : "Offline");
+        ImGui.Separator();
+        DrawImportOptions();
+    }
+
+    private void DrawImportOptions()
+    {
+        ImGui.TextColored(new Vector4(.76f, .78f, .84f, 1), "IMPORT OPTIONS");
+        var useExistingSkeleton = _config.UseExistingSkeleton;
+        if (ImGui.Checkbox("Remove imported armature and use existing skeleton", ref useExistingSkeleton))
+        {
+            _config.UseExistingSkeleton = useExistingSkeleton;
+            SaveImportOptions();
+        }
+
+        if (_config.UseExistingSkeleton)
+        {
+            ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Imported meshes receive an Armature modifier targeting this Blender object:");
+            var skeletonName = _config.SkeletonObjectName;
+            ImGui.SetNextItemWidth(Math.Max(180, ImGui.GetContentRegionAvail().X * 0.45f));
+            if (ImGui.InputText("Skeleton object", ref skeletonName, 128))
+            {
+                _config.SkeletonObjectName = skeletonName;
+                SaveImportOptions();
+            }
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "must be an existing Blender Armature");
+        }
+        else
+        {
+            ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Each import creates its own InstantEditArmature.");
+        }
+        ImGui.Separator();
+    }
+
+    private void SaveImportOptions()
+    {
+        _config.SkeletonObjectName = string.IsNullOrWhiteSpace(_config.SkeletonObjectName)
+            ? "Skeleton"
+            : _config.SkeletonObjectName.Trim();
+        if (_config.SkeletonObjectName.Length > 128)
+            _config.SkeletonObjectName = _config.SkeletonObjectName[..128];
+        _saveConfig();
+    }
+
+    private static void Status(string name, bool good, string value)
+    { ImGui.TextColored(good ? new Vector4(.3f, .78f, .5f, 1) : new Vector4(.9f, .45f, .32f, 1), "●"); ImGui.SameLine(0, 3); ImGui.TextColored(new Vector4(.7f, .72f, .78f, 1), $"{name}: {value}"); }
+
+    private void DrawResources()
+    {
+        var actors = ReadActors().Where(ActorMatches).ToList();
+        // Keep room for the status line below the viewport. The old -5px calculation
+        // consumed the whole remaining window and clipped the refresh message.
+        var viewportHeight = Math.Max(80, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() - 8);
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(.075f, .085f, .105f, 1));
+        if (!ImGui.BeginChild("##resource-browser", new Vector2(0, viewportHeight), true)) { ImGui.EndChild(); ImGui.PopStyleColor(); return; }
+        if (_onScreen.IsRefreshing && actors.Count == 0) ImGui.TextColored(new Vector4(.65f, .68f, .75f, 1), "Refreshing resources…");
+        else if (actors.Count == 0) ImGui.TextColored(new Vector4(.65f, .68f, .75f, 1), "No snapshot loaded. Use Refresh character list to collect on-screen resources.");
+        else foreach (var actor in actors) DrawActor(actor);
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+    }
+
+    private void DrawActor(ActorView actor)
+    {
+        var actorId = SafeId($"actor:{actor.Entity.Address:X}:{actor.Entity.ObjectIndex}");
+        ImGui.PushID(actorId); DrawOpaqueRow();
+        var filteredView = IsFilteredResourceView;
+        var expanded = filteredView ? !_collapsedFiltered.Contains(actorId) : _expanded.Contains(actorId);
+        if (ImGui.Button(expanded ? "▼##actor-toggle" : "▶##actor-toggle", new Vector2(22, ImGui.GetFrameHeight()))) ToggleExpanded(actorId, expanded, filteredView);
+        ImGui.SameLine(0, 4); var header = Safe($"{actor.Category}{(string.IsNullOrWhiteSpace(actor.Name) ? string.Empty : $"  ·  {actor.Name}")}", "Player");
+        var actorLabelWidth = Math.Max(1, ImGui.GetContentRegionAvail().X);
+        if (ImGui.Selectable($"{header}##actor-label", false, ImGuiSelectableFlags.None, new Vector2(actorLabelWidth, ImGui.GetFrameHeight()))) ToggleExpanded(actorId, expanded, filteredView);
+        if (expanded)
+        {
+            var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.BordersOuter |
+                        ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp;
+            if (ImGui.BeginTable("##resource-table", 3, flags))
+            {
+                ImGui.TableSetupColumn("Slot / Item", ImGuiTableColumnFlags.WidthStretch, .36f);
+                ImGui.TableSetupColumn("Mod / Resource Path", ImGuiTableColumnFlags.WidthStretch, .64f);
+                ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 58);
+                ImGui.TableHeadersRow();
+                DrawSection(actor, ResourceSection.CharacterFeatures, "Character features", actorId + ":features");
+                DrawSection(actor, ResourceSection.Gear, "Gear", actorId + ":gear");
+                DrawSection(actor, ResourceSection.Other, "Other", actorId + ":other");
+                ImGui.EndTable();
+            }
+        }
+        ImGui.PopID();
+    }
+
+    private void DrawSection(ActorView actor, ResourceSection section, string label, string key)
+    {
+        var sectionValue = section.ToString();
+        var nodes = actor.Roots.Where(x => string.Equals(Safe(x.Section), sectionValue, StringComparison.OrdinalIgnoreCase) && HasModdedContent(x) && HasResourceTypeMatch(x));
+        nodes = section == ResourceSection.Gear
+            ? nodes.OrderBy(x => GearRank(Safe(x.Slot))).ThenBy(x => x.Order)
+            : nodes.OrderBy(x => x.Order);
+        var ordered = nodes.ToList();
+        if (ordered.Count == 0) return;
+        ImGui.PushID(SafeId(key));
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+        var filteredView = IsFilteredResourceView;
+        var expanded = filteredView ? !_collapsedFiltered.Contains(key) : _expanded.Contains(key);
+        if (ImGui.Button(expanded ? "▼##section-toggle" : "▶##section-toggle", new Vector2(22, ImGui.GetFrameHeight()))) ToggleExpanded(key, expanded, filteredView);
+        ImGui.SameLine(0, 4);
+        if (ImGui.Selectable($"{label}##section-label", false, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0, ImGui.GetFrameHeight()))) ToggleExpanded(key, expanded, filteredView);
+        if (expanded)
+        {
+            if (filteredView)
+                DrawFlatSection(ordered, key);
+            else
+                for (var i = 0; i < ordered.Count; i++) DrawNode(ordered[i], $"{key}:{i}", 2);
+        }
+        ImGui.PopID();
+    }
+
+    private void DrawFlatSection(IReadOnlyList<ResourceView> roots, string key)
+    {
+        var row = 0;
+        foreach (var root in roots)
+        {
+            foreach (var resource in Flatten(root).Where(MatchesSelectedResourceType))
+                DrawFlatNode(root, resource, $"{key}:flat:{row++}");
+        }
+    }
+
+    private void DrawFlatNode(ResourceView item, ResourceView resource, string scope)
+    {
+        ImGui.PushID(SafeId(scope));
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 18);
+        DrawSlotIcon(Safe(item.Slot, KindLabel(item.Type)), item.Icon, item.Section);
+        ImGui.SameLine(0, 6);
+        var itemName = Safe(DisplayName(item.Name, item.ActualPath), "Unnamed resource");
+        ImGui.TextUnformatted(itemName);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(Safe(item.Slot, item.Type));
+
+        ImGui.TableSetColumnIndex(1);
+        DrawResolvedPath(resource, Safe(resource.SourceLabel), Safe(resource.ActualPath), Safe(resource.GamePath));
+
+        ImGui.TableSetColumnIndex(2);
+        if (IsModel(resource) && IsSafeModel(resource))
+        {
+            if (ImGui.SmallButton("Edit##flat-node-action")) TryEditNode(resource);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Edit this model in Blender");
+        }
+        ImGui.PopID();
+    }
+
+    private void DrawNode(ResourceView node, string scope, int depth)
+    {
+        // Resource JSON is intentionally treated as untrusted display data.  Do not
+        // pass any reflected value directly to an ImGui UTF-8 overload.
+        var type = Safe(node.Type, "Resource");
+        var name = Safe(node.Name, "Unnamed resource");
+        var gamePath = Safe(node.GamePath);
+        var actualPath = Safe(node.ActualPath);
+        var source = Safe(node.SourceLabel, node.Modded == true ? "Mod" : "Source unavailable");
+        var key = SafeId($"{scope}:{type}:{name}:{gamePath}:{actualPath}");
+        ImGui.PushID(key);
+        var presentation = Safe(node.Slot, KindLabel(type));
+        var children = node.Children ?? new List<ResourceView>();
+        var hasChildren = children.Count > 0;
+        var model = IsModel(node);
+        var expanded = _expanded.Contains(key);
+        var arrow = hasChildren ? (expanded ? "▼" : "▶") : "  ";
+
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+        // ImGui's persistent Indent state is reset while changing table rows/cells.
+        // Offset this cell's cursor directly so every tree level moves right.
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0, depth - 2) * 18);
+        if (ImGui.Button(Safe($"{arrow}##expand:{key}", "  ##expand"), new Vector2(22, ImGui.GetFrameHeight())))
+            if (hasChildren) { if (expanded) _expanded.Remove(key); else _expanded.Add(key); }
+        if (ImGui.IsItemHovered() && hasChildren) ImGui.SetTooltip(expanded ? "Collapse" : "Expand");
+        ImGui.SameLine(0, 4);
+        DrawSlotIcon(presentation, node.Icon, node.Section);
+        ImGui.SameLine(0, 6);
+        var itemName = Safe(DisplayName(name, actualPath), "Unnamed resource");
+        var hovered = ImGui.Selectable($"{itemName}##label:{key}", false, ImGuiSelectableFlags.None, new Vector2(0, ImGui.GetFrameHeight()));
+        if (hovered && hasChildren) { if (expanded) _expanded.Remove(key); else _expanded.Add(key); }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{presentation}\nGame path: {(gamePath.Length == 0 ? "(none)" : gamePath)}");
+        ImGui.TableSetColumnIndex(1);
+        DrawResolvedPath(node, source, actualPath, gamePath);
+
+        ImGui.TableSetColumnIndex(2);
+        if (model && IsSafeModel(node))
+        {
+            if (ImGui.SmallButton("Edit##node-action")) TryEditNode(node);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Edit this model in Blender");
+        }
+        if (expanded && hasChildren)
+        {
+            for (var i = 0; i < children.Count; i++)
+                if (children[i] is not null && HasModdedContent(children[i])) DrawNode(children[i], $"{scope}:{i}", depth + 1);
+        }
+        ImGui.PopID();
+    }
+
+    private void DrawResolvedPath(ResourceView node, string source, string actualPath, string gamePath)
+    {
+        if (!string.IsNullOrWhiteSpace(node.SourceModName))
+        {
+            ImGui.TextColored(new Vector4(.3f, .9f, .35f, 1), $"[{node.SourceModName}]");
+            ImGui.SameLine(0, 5);
+        }
+        else if (!string.IsNullOrWhiteSpace(source))
+        {
+            ImGui.TextColored(new Vector4(.55f, .57f, .63f, 1), $"[{source}]");
+            ImGui.SameLine(0, 5);
+        }
+
+        var displayPath = Safe(node.SourceRelativePath, Safe(gamePath, actualPath));
+        ImGui.TextUnformatted(displayPath);
+        ShowPathTooltip(ImGui.IsItemHovered(), actualPath);
+    }
+
+    private void DrawSlotIcon(string slot, string resourceIcon, string section)
+    {
+        IDalamudTextureWrap? icon;
+        var key = string.Equals(section, ResourceSection.CharacterFeatures.ToString(), StringComparison.OrdinalIgnoreCase)
+            ? "Unknown"
+            : NormalizeSlotIcon(slot, resourceIcon);
+        lock (_stateLock)
+            _slotIcons.TryGetValue(key, out icon);
+
+        if (icon is null)
+        {
+            ImGui.Dummy(new Vector2(ImGui.GetFrameHeight()));
+            return;
+        }
+
+        var size = new Vector2(ImGui.GetFrameHeight());
+        ImGui.Image(icon.Handle, size);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(slot);
+    }
+
+    private void DrawResourceTypeFilters()
+    {
+        var actors = ReadActors();
+        var groups = new[] { "Everything", "Models", "Textures", "Materials" };
+        ImGui.Spacing();
+        ImGui.TextColored(new Vector4(.58f, .61f, .69f, 1), "SHOW"); ImGui.SameLine(0, 8);
+        foreach (var group in groups)
+        {
+            var filter = group == "Everything" ? string.Empty : group;
+            var count = actors.SelectMany(x => x.Roots).SelectMany(Flatten)
+                .Count(node => HasModdedContent(node) && MatchesResourceType(node, filter));
+            ImGui.PushID($"resource-type-filter:{group}");
+            var selected = _resourceTypeFilter == filter;
+            if (selected) ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(.45f, .34f, .16f, 1));
+            if (ImGui.SmallButton($"{group}  {count}")) _resourceTypeFilter = filter;
+            if (selected) ImGui.PopStyleColor();
+            if (group != groups[^1]) ImGui.SameLine(0, 6);
+            ImGui.PopID();
+        }
+        ImGui.NewLine();
+    }
+
+    private static IEnumerable<ResourceView> Flatten(ResourceView root)
+    { yield return root; foreach (var child in root.Children) foreach (var item in Flatten(child)) yield return item; }
+
+    private List<ActorView> ReadActors()
+    {
+        var result = new List<ActorView>();
+        foreach (var entity in _onScreen.Items)
+        {
+            var prop = entity.GetType().GetProperty("ResourceRoots", BindingFlags.Public | BindingFlags.Instance);
+            if (prop?.GetValue(entity) is not IEnumerable roots) continue;
+            var parsed = new List<ResourceView>(); var index = 0;
+            foreach (var raw in roots) if (raw is not null) parsed.Add(ReadNode(raw, $"entity:{entity.Address:X}:{entity.ObjectIndex}:{index++}"));
+            result.Add(new ActorView(entity, ActorCategory(entity), Safe(entity.Name), parsed));
+        }
+        return result;
+    }
+
+    private static string ActorCategory(OnScreenObject entity)
+    {
+        foreach (var name in new[] { "Category", "ActorCategory", "Type" })
+        {
+            var value = entity.GetType().GetProperty(name)?.GetValue(entity)?.ToString();
+            if (value is not null && new[] { "Player", "Minion", "Mount", "Summon" }.Contains(value, StringComparer.OrdinalIgnoreCase)) return value;
+        }
+        return "Player";
+    }
+
+    private bool ActorMatches(ActorView actor)
+        => (string.IsNullOrWhiteSpace(_filter) || actor.Category.Contains(_filter, StringComparison.OrdinalIgnoreCase) || actor.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase) || actor.Roots.Any(Matches))
+        && actor.Roots.Any(HasResourceTypeMatch);
+
+    private bool IsFilteredResourceView => !string.IsNullOrWhiteSpace(_resourceTypeFilter);
+
+    private bool HasResourceTypeMatch(ResourceView node)
+        => MatchesSelectedResourceType(node) || node.Children.Any(HasResourceTypeMatch);
+
+    private bool MatchesSelectedResourceType(ResourceView node)
+        => MatchesResourceType(node, _resourceTypeFilter);
+
+    private static bool MatchesResourceType(ResourceView node, string filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter))
+            return true;
+
+        var type = Safe(node.Type).ToLowerInvariant();
+        var gamePath = Safe(node.GamePath).ToLowerInvariant();
+        var actualPath = Safe(node.ActualPath).ToLowerInvariant();
+        return filter switch
+        {
+            "Models" => type.Contains("model") || gamePath.EndsWith(".mdl") || actualPath.EndsWith(".mdl"),
+            "Textures" => type.Contains("texture") || gamePath.EndsWith(".tex") || gamePath.EndsWith(".atex") || actualPath.EndsWith(".tex") || actualPath.EndsWith(".atex"),
+            "Materials" => type.Contains("material") || gamePath.EndsWith(".mtrl") || actualPath.EndsWith(".mtrl"),
+            _ => true,
+        };
+    }
+
+    private void ToggleExpanded(string key, bool expanded, bool defaultExpanded)
+    {
+        var set = defaultExpanded ? _collapsedFiltered : _expanded;
+        if (expanded)
+        {
+            if (defaultExpanded) set.Add(key); else set.Remove(key);
+        }
+        else
+        {
+            if (defaultExpanded) set.Remove(key); else set.Add(key);
+        }
+    }
+
+    private static ResourceView ReadNode(object raw, string scope)
+    {
+        var type = raw.GetType(); var children = new List<ResourceView>();
+        if (type.GetProperty("Children")?.GetValue(raw) is IEnumerable list) { var i = 0; foreach (var child in list) if (child is not null) children.Add(ReadNode(child, $"{scope}:{i++}")); }
+        return new ResourceView(
+            String(type, raw, "Type"),
+            String(type, raw, "Icon"),
+            String(type, raw, "Name"),
+            String(type, raw, "GamePath"),
+            String(type, raw, "ActualPath"),
+            Source(type, raw),
+            String(type, raw, nameof(ResourceNode.SourceModName)),
+            String(type, raw, nameof(ResourceNode.SourceModDirectory)),
+            String(type, raw, nameof(ResourceNode.SourceRelativePath)),
+            EnumString(type, raw, nameof(ResourceNode.ResourceSection)),
+            String(type, raw, nameof(ResourceNode.SlotLabel)),
+            Int(type, raw, nameof(ResourceNode.SortOrder)),
+            Bool(type, raw, nameof(ResourceNode.IsModdedSubtree)),
+            children);
+    }
+
+    private static string String(Type type, object value, string name) => type.GetProperty(name)?.GetValue(value) as string ?? string.Empty;
+    private static string EnumString(Type type, object value, string name) => type.GetProperty(name)?.GetValue(value)?.ToString() ?? string.Empty;
+    private static string Source(Type type, object value)
+    { foreach (var name in new[] { "SourceLabel", "Source", "SourceState", "State" }) { var valueText = String(type, value, name); if (!string.IsNullOrWhiteSpace(valueText)) return valueText; } return "Source unavailable"; }
+    private static int Int(Type type, object value, string name) => int.TryParse(type.GetProperty(name)?.GetValue(value)?.ToString(), out var result) ? result : int.MaxValue;
+    private static bool? Bool(Type type, object value, string name) { var raw = type.GetProperty(name)?.GetValue(value); return raw is bool valueBool ? valueBool : null; }
+    private static string KindLabel(string type) => string.IsNullOrWhiteSpace(type) ? "Resource" : type;
+    private static string DisplayName(string name, string actualPath)
+    {
+        if (!string.IsNullOrWhiteSpace(name)) return name;
+        return Safe(Path.GetFileName(actualPath), "Unnamed resource");
+    }
+    private static bool IsModel(ResourceView node) => node.Type.Contains("model", StringComparison.OrdinalIgnoreCase) || node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) || node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase);
+    private static bool IsSafeModel(ResourceView node)
+        => IsModel(node) && node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
+           node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
+           Path.IsPathRooted(node.ActualPath) && !string.IsNullOrWhiteSpace(node.SourceModDirectory);
+    private static bool HasModdedContent(ResourceView node) => node.Modded != false || node.Children.Any(HasModdedContent);
+    private bool Matches(ResourceView node)
+    {
+        var filter = Safe(_filter);
+        var children = node.Children ?? new List<ResourceView>();
+        return string.IsNullOrWhiteSpace(filter) || Safe(node.Name).Contains(filter, StringComparison.OrdinalIgnoreCase) || Safe(node.Type).Contains(filter, StringComparison.OrdinalIgnoreCase) || Safe(node.SourceLabel).Contains(filter, StringComparison.OrdinalIgnoreCase) || Safe(node.ActualPath).Contains(filter, StringComparison.OrdinalIgnoreCase) || children.Any(Matches);
+    }
+    private static int GearRank(string slot)
+    {
+        return slot.ToLowerInvariant() switch
+        {
+            "head" => 0, "body" => 1, "hands" => 2, "legs" => 3, "feet" => 4,
+            "earrings" or "ears" => 5, "necklace" or "neck" => 6, "bracelet" or "wrists" => 7,
+            "right ring" or "right finger" => 8, "left ring" or "left finger" => 9, _ => 100,
+        };
+    }
+
+    private bool LoadSlotIcons(IUiBuilder uiBuilder, ITextureProvider textureProvider)
+    {
+        using var armoury = uiBuilder.LoadUld("ui/uld/ArmouryBoard.uld");
+        if (!armoury.Valid)
+            return false;
+
+        var icons = new Dictionary<string, IDalamudTextureWrap>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            void Add(string slot, int part)
+            {
+                var texture = armoury.LoadTexturePart("ui/uld/ArmouryBoard_hr1.tex", part);
+                if (texture is not null)
+                    icons.Add(slot, texture);
+            }
+
+            Add("Mainhand", 0);
+            Add("Head", 1);
+            Add("Body", 2);
+            Add("Hands", 3);
+            Add("Legs", 5);
+            Add("Feet", 6);
+            Add("Offhand", 7);
+            Add("Ears", 8);
+            Add("Neck", 9);
+            Add("Wrists", 10);
+            Add("Finger", 11);
+
+            var unknown = LoadUnknownSlotIcon(textureProvider);
+            if (unknown is not null)
+                icons.Add("Unknown", unknown);
+
+            lock (_stateLock)
+                _slotIcons = icons;
+            return true;
+        }
+        catch (Exception e)
+        {
+            foreach (var icon in icons.Values)
+                icon.Dispose();
+            _log.Debug($"Could not load armoury slot icons: {e.Message}");
+            return false;
+        }
+    }
+
+    private IDalamudTextureWrap? LoadUnknownSlotIcon(ITextureProvider textureProvider)
+    {
+        var texture = _data.GetFile<Lumina.Data.Files.TexFile>("ui/uld/levelup2_hr1.tex");
+        if (texture is null)
+            return null;
+
+        // This is the same square crop Penumbra uses for its unknown-slot '?' icon.
+        var source = texture.GetRgbaImageData();
+        var size = texture.Header.Height;
+        var bytes = new byte[size * size * 4];
+        var horizontalOffset = 2 * (texture.Header.Height - texture.Header.Width);
+        for (var y = 0; y < size; ++y)
+            source.AsSpan(4 * y * texture.Header.Width, 4 * texture.Header.Width)
+                .CopyTo(bytes.AsSpan(4 * y * size + horizontalOffset));
+
+        return textureProvider.CreateFromRaw(RawImageSpecification.Rgba32(size, size), bytes, "InstantEdit.UnknownSlotIcon");
+    }
+
+    private static string NormalizeSlotIcon(string slot, string resourceIcon)
+    {
+        var value = $"{slot} {resourceIcon}".ToLowerInvariant();
+        if (value.Contains("mainhand") || value.Contains("weapon")) return "Mainhand";
+        if (value.Contains("offhand")) return "Offhand";
+        if (value.Contains("head")) return "Head";
+        if (value.Contains("body")) return "Body";
+        if (value.Contains("hand")) return "Hands";
+        if (value.Contains("leg")) return "Legs";
+        if (value.Contains("feet") || value.Contains("foot")) return "Feet";
+        if (value.Contains("earring") || value.Contains("ears")) return "Ears";
+        if (value.Contains("neck")) return "Neck";
+        if (value.Contains("bracelet") || value.Contains("wrist")) return "Wrists";
+        if (value.Contains("ring") || value.Contains("finger")) return "Finger";
+        return string.Empty;
+    }
+
+    private void DrawOpaqueRow()
+    { var p = ImGui.GetCursorScreenPos(); ImGui.GetWindowDrawList().AddRectFilled(p, p + new Vector2(ImGui.GetContentRegionAvail().X, ImGui.GetFrameHeight()), ImGui.GetColorU32(new Vector4(.11f, .12f, .15f, 1)), 2); }
+    private static void ShowPathTooltip(bool hovered, string path)
+    {
+        if (!hovered) return;
+        var safePath = Safe(path);
+        ImGui.SetTooltip(string.IsNullOrWhiteSpace(safePath) ? "No resolved path" : $"{safePath}\nRight-click to copy");
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) ImGui.SetClipboardText(safePath);
+    }
+
+    private void TryEditNode(ResourceView node)
+    {
+        foreach (var entity in _onScreen.Items)
+            foreach (var model in entity.Models)
+                if (string.Equals(model.GamePath, node.GamePath, StringComparison.OrdinalIgnoreCase) || string.Equals(model.LocalPath, node.ActualPath, StringComparison.OrdinalIgnoreCase)) { EditModel(entity, model, node); return; }
+        SetStatus("This model is no longer available.", false);
+    }
+
+    private void RequestRefresh() { try { SetStatus(string.Empty, true); _onScreen.RequestRefresh(); } catch (Exception e) { _log.Debug(e.Message); SetStatus("Refresh unavailable. Is Penumbra running?", false); } }
+    private void EditModel(OnScreenObject item, MdlFile model, ResourceView source)
+    {
+        if (Interlocked.CompareExchange(ref _editing, 1, 0) != 0)
+        {
+            SetStatus("Another model is already being sent.", false);
+            return;
+        }
+
+        var importOptions = CurrentImportOptions();
+        _ = Task.Run(() => EditModelAsync(item, model, source, _config.BlenderPort, _config.ListenPort, importOptions));
+    }
+
+    private BlenderImportOptions CurrentImportOptions()
+        => _config.UseExistingSkeleton
+            ? BlenderImportOptions.Existing(_config.SkeletonObjectName)
+            : BlenderImportOptions.Generated;
+
+    private async Task EditModelAsync(
+        OnScreenObject item,
+        MdlFile model,
+        ResourceView source,
+        int blenderPort,
+        int listenPort,
+        BlenderImportOptions importOptions)
+    {
+        try
+        {
+            if (!await CheckBlenderAsync(blenderPort).ConfigureAwait(false))
+                throw new InvalidOperationException("Blender is offline. Start Blender and enable the XIV Instant Edit addon before editing.");
+            if (importOptions.ArmatureMode == BlenderImportOptions.ExistingMode &&
+                !await _blender.SupportsImportOptionsAsync(blenderPort).ConfigureAwait(false))
+                throw new InvalidOperationException("The XIV Instant Edit addon is too old for custom import options. Update the add-on and restart Blender.");
+
+            var bytes = model.IsFilePath
+                ? await File.ReadAllBytesAsync(model.LocalPath).ConfigureAwait(false)
+                : (await _data.GetFileAsync<FileResource>(model.LocalPath, CancellationToken.None).ConfigureAwait(false))?.Data
+                    ?? throw new InvalidOperationException($"Game file not found: {model.LocalPath}");
+            var dir = Path.Combine(Path.GetTempPath(), "InstantEdit");
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, $"{Sanitize(item.Name)}-{item.ObjectIndex}-{model.FileName}");
+            await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
+            await _blender.SendSourceImportAsync(
+                blenderPort,
+                file,
+                model.GamePath,
+                item.ObjectIndex,
+                $"{item.Name} {model.FileName}",
+                listenPort,
+                source.ActualPath,
+                source.SourceModDirectory,
+                source.SourceModName,
+                importOptions: importOptions).ConfigureAwait(false);
+            SetStatus($"Sent {model.FileName} to Blender.", true);
+            _chat.Print($"Instant Edit: {model.FileName} sent to Blender.");
+        }
+        catch (Exception e)
+        {
+            _log.Error(e, "Failed to send model to Blender.");
+            SetStatus($"Failed: {e.Message}", false);
+            _chat.PrintError($"Instant Edit: could not send model to Blender: {e.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _editing, 0);
+        }
+    }
+
+    private async Task<bool> CheckBlenderAsync(int port)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        return await _blender.IsReachableAsync(port, timeout.Token).ConfigureAwait(false);
+    }
+
+    private void StartBlenderCheckIfNeeded()
+    {
+        lock (_stateLock)
+        {
+            if (_blenderChecking || (DateTime.UtcNow - _lastBlenderCheck).TotalSeconds <= 5)
+                return;
+            _blenderChecking = true;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            var ok = false;
+            try
+            {
+                ok = await CheckBlenderAsync(_config.BlenderPort).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _log.Debug($"Blender status check failed: {e.Message}");
+            }
+            finally
+            {
+                lock (_stateLock)
+                {
+                    _blenderOk = ok;
+                    _blenderChecking = false;
+                    _lastBlenderCheck = DateTime.UtcNow;
+                }
+            }
+        });
+    }
+    private void DrawFeedback() { string text; bool ok; lock (_stateLock) { text = _status; ok = _statusOk; } if (text.Length > 0) ImGui.TextColored(ok ? new Vector4(.4f, .85f, .6f, 1) : new Vector4(1, .55f, .3f, 1), text); }
+    private void SetStatus(string text, bool ok) { lock (_stateLock) { _status = text; _statusOk = ok; } }
+    private static string Sanitize(string name) { var invalid = Path.GetInvalidFileNameChars(); var value = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim(); return value.Length == 0 ? "Object" : value; }
+
+    private static string Safe(string? value, string fallback = "")
+        => string.IsNullOrWhiteSpace(value) ? fallback : value;
+
+    private static string SafeId(string? value)
+    {
+        var id = Safe(value, "resource");
+        return id.Replace("\0", string.Empty, StringComparison.Ordinal);
+    }
+
+    private sealed record ActorView(OnScreenObject Entity, string Category, string Name, List<ResourceView> Roots);
+    private sealed record ResourceView(
+        string Type,
+        string Icon,
+        string Name,
+        string GamePath,
+        string ActualPath,
+        string SourceLabel,
+        string SourceModName,
+        string SourceModDirectory,
+        string SourceRelativePath,
+        string Section,
+        string Slot,
+        int Order,
+        bool? Modded,
+        List<ResourceView> Children);
+}

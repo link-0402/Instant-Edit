@@ -1,0 +1,28 @@
+[
+  {
+    "Author": "Instant Edit contributors",
+    "Name": "Instant Edit",
+    "InternalName": "InstantEdit",
+    "AssemblyVersion": "1.0.0.0",
+    "Description": "Lists models currently on screen and sends them to Blender through the XIV Instant Edit add-on. Quick Export writes edited models back to their original Penumbra mod path.",
+    "Punchline": "Send on-screen models straight to Blender and back.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/link-0402/Instant-Edit",
+    "DalamudApiLevel": 15,
+    "LoadRequiredState": 0,
+    "LoadSync": true,
+    "CanUnloadAsync": false,
+    "LoadPriority": 0,
+    "AcceptsFeedback": false,
+    "DownloadLinkInstall": "https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Dalamud-Plugin/bin/Release/InstantEdit/latest.zip",
+    "DownloadLinkUpdate": "https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Dalamud-Plugin/bin/Release/InstantEdit/latest.zip",
+    "DownloadLinkTesting": "https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Dalamud-Plugin/bin/Release/InstantEdit/latest.zip",
+    "Tags": [
+      "Penumbra",
+      "Blender",
+      "Modding",
+      "Model",
+      "Utility"
+    ]
+  }
+]

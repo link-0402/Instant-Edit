@@ -1,0 +1,26 @@
+schema_version = "1.0.0"
+
+id = "xiv_instant_edit"
+version = "1.0.0"
+name = "XIV Instant Edit"
+tagline = "Instant FFXIV model editing and focused model export"
+maintainer = "Instant Edit contributors"
+type = "add-on"
+
+tags = ["Import-Export", "Modeling", "Mesh", "Rigging", "User Interface"]
+blender_version_min = "4.5.0"
+blender_version_max = "5.3.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Import and export FFXIV model files"
+network = "Exchange local import/export requests with the Dalamud plugin"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.*",
+  "/*.zip",
+  "testing/",
+  "*.ps1"
+]
