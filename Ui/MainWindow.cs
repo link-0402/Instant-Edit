@@ -368,7 +368,21 @@ public sealed class MainWindow : IDisposable
     {
         var type = raw.GetType(); var children = new List<ResourceView>();
         if (type.GetProperty("Children")?.GetValue(raw) is IEnumerable list) { var i = 0; foreach (var child in list) if (child is not null) children.Add(ReadNode(child, $"{scope}:{i++}")); }
-        return new ResourceView(String(type, raw, "Type"), String(type, raw, "Icon"), String(type, raw, "Name"), String(type, raw, "GamePath"), String(type, raw, "ActualPath"), Source(type, raw), String(type, raw, nameof(ResourceNode.SourceModName)), String(type, raw, nameof(ResourceNode.SourceRelativePath)), EnumString(type, raw, nameof(ResourceNode.ResourceSection)), String(type, raw, nameof(ResourceNode.SlotLabel)), Int(type, raw, nameof(ResourceNode.SortOrder)), Bool(type, raw, nameof(ResourceNode.IsModdedSubtree)), children);
+        return new ResourceView(
+            String(type, raw, "Type"),
+            String(type, raw, "Icon"),
+            String(type, raw, "Name"),
+            String(type, raw, "GamePath"),
+            String(type, raw, "ActualPath"),
+            Source(type, raw),
+            String(type, raw, nameof(ResourceNode.SourceModName)),
+            String(type, raw, nameof(ResourceNode.SourceModDirectory)),
+            String(type, raw, nameof(ResourceNode.SourceRelativePath)),
+            EnumString(type, raw, nameof(ResourceNode.ResourceSection)),
+            String(type, raw, nameof(ResourceNode.SlotLabel)),
+            Int(type, raw, nameof(ResourceNode.SortOrder)),
+            Bool(type, raw, nameof(ResourceNode.IsModdedSubtree)),
+            children);
     }
 
     private static string String(Type type, object value, string name) => type.GetProperty(name)?.GetValue(value) as string ?? string.Empty;
@@ -384,7 +398,10 @@ public sealed class MainWindow : IDisposable
         return Safe(Path.GetFileName(actualPath), "Unnamed resource");
     }
     private static bool IsModel(ResourceView node) => node.Type.Contains("model", StringComparison.OrdinalIgnoreCase) || node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) || node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase);
-    private static bool IsSafeModel(ResourceView node) => IsModel(node) && (node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) || node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase));
+    private static bool IsSafeModel(ResourceView node)
+        => IsModel(node) && node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
+           node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
+           Path.IsPathRooted(node.ActualPath) && !string.IsNullOrWhiteSpace(node.SourceModDirectory);
     private static bool HasModdedContent(ResourceView node) => node.Modded != false || node.Children.Any(HasModdedContent);
     private bool Matches(ResourceView node)
     {
@@ -496,12 +513,12 @@ public sealed class MainWindow : IDisposable
     {
         foreach (var entity in _onScreen.Items)
             foreach (var model in entity.Models)
-                if (string.Equals(model.GamePath, node.GamePath, StringComparison.OrdinalIgnoreCase) || string.Equals(model.LocalPath, node.ActualPath, StringComparison.OrdinalIgnoreCase)) { EditModel(entity, model); return; }
+                if (string.Equals(model.GamePath, node.GamePath, StringComparison.OrdinalIgnoreCase) || string.Equals(model.LocalPath, node.ActualPath, StringComparison.OrdinalIgnoreCase)) { EditModel(entity, model, node); return; }
         SetStatus("This model is no longer available.", false);
     }
 
     private void RequestRefresh() { try { SetStatus(string.Empty, true); _onScreen.RequestRefresh(); } catch (Exception e) { _log.Debug(e.Message); SetStatus("Refresh unavailable. Is Penumbra running?", false); } }
-    private void EditModel(OnScreenObject item, MdlFile model)
+    private void EditModel(OnScreenObject item, MdlFile model, ResourceView source)
     {
         if (Interlocked.CompareExchange(ref _editing, 1, 0) != 0)
         {
@@ -509,10 +526,15 @@ public sealed class MainWindow : IDisposable
             return;
         }
 
-        _ = Task.Run(() => EditModelAsync(item, model, _config.BlenderPort, _config.ListenPort, _config.ModName));
+        _ = Task.Run(() => EditModelAsync(item, model, source, _config.BlenderPort, _config.ListenPort));
     }
 
-    private async Task EditModelAsync(OnScreenObject item, MdlFile model, int blenderPort, int listenPort, string modName)
+    private async Task EditModelAsync(
+        OnScreenObject item,
+        MdlFile model,
+        ResourceView source,
+        int blenderPort,
+        int listenPort)
     {
         try
         {
@@ -527,7 +549,16 @@ public sealed class MainWindow : IDisposable
             Directory.CreateDirectory(dir);
             var file = Path.Combine(dir, $"{Sanitize(item.Name)}-{item.ObjectIndex}-{model.FileName}");
             await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
-            await _blender.SendImportAsync(blenderPort, file, model.GamePath, item.ObjectIndex, $"{item.Name} {model.FileName}", listenPort, modName).ConfigureAwait(false);
+            await _blender.SendSourceImportAsync(
+                blenderPort,
+                file,
+                model.GamePath,
+                item.ObjectIndex,
+                $"{item.Name} {model.FileName}",
+                listenPort,
+                source.ActualPath,
+                source.SourceModDirectory,
+                source.SourceModName).ConfigureAwait(false);
             SetStatus($"Sent {model.FileName} to Blender.", true);
             _chat.Print($"Instant Edit: {model.FileName} sent to Blender.");
         }
@@ -594,5 +625,19 @@ public sealed class MainWindow : IDisposable
     }
 
     private sealed record ActorView(OnScreenObject Entity, string Category, string Name, List<ResourceView> Roots);
-    private sealed record ResourceView(string Type, string Icon, string Name, string GamePath, string ActualPath, string SourceLabel, string SourceModName, string SourceRelativePath, string Section, string Slot, int Order, bool? Modded, List<ResourceView> Children);
+    private sealed record ResourceView(
+        string Type,
+        string Icon,
+        string Name,
+        string GamePath,
+        string ActualPath,
+        string SourceLabel,
+        string SourceModName,
+        string SourceModDirectory,
+        string SourceRelativePath,
+        string Section,
+        string Slot,
+        int Order,
+        bool? Modded,
+        List<ResourceView> Children);
 }

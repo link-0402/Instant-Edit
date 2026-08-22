@@ -19,6 +19,8 @@ public sealed record ExportResult(bool Success, string Message);
 /// </summary>
 public sealed class PenumbraService
 {
+    private sealed record SourceModTarget(string Directory, string Folder, string FilePath);
+
     private const string OwnershipMarkerFile = ".instant-edit-owner.json";
     private const string OwnershipSchema = "instant-edit.owner";
     private const string OwnershipOwner = "Instant Edit";
@@ -251,7 +253,7 @@ public sealed class PenumbraService
                 var groupError = WriteVariantGroup(
                     modFolder,
                     sourceGamePath,
-                    gamePath,
+                    "Files/" + gamePath,
                     penumbraVariantName);
                 if (groupError is not null)
                     return new ExportResult(false, groupError);
@@ -289,6 +291,170 @@ public sealed class PenumbraService
         finally
         {
             _exportGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Write an export back to the resolved file in its original Penumbra mod.
+    /// The destination was captured in the server-owned import context and is
+    /// revalidated against Penumbra's current mod list before every write.
+    /// </summary>
+    public async Task<ExportResult> ApplySourceExportAsync(
+        string sourceModDirectory,
+        string sourceFilePath,
+        string sourceGamePath,
+        string exportedFile,
+        int objectIndex,
+        ActorIdentity? actorIdentity,
+        string? variantName,
+        bool setupVariantInPenumbra)
+    {
+        if (objectIndex is < 0 or > ushort.MaxValue)
+            return new ExportResult(false, "Invalid object index.");
+        if (!IsSafeModName(sourceModDirectory) || !IsSafeGamePath(sourceGamePath) ||
+            !IsSafeLocalModelPath(sourceFilePath))
+            return new ExportResult(false, "The original Penumbra model destination is invalid.");
+        var validationError = ValidateExportRequest(sourceModDirectory, sourceGamePath, exportedFile);
+        if (validationError is not null)
+            return new ExportResult(false, validationError);
+        if (variantName is not null && !IsSafeVariantName(variantName))
+            return new ExportResult(false, "Invalid variant name.");
+        if (setupVariantInPenumbra && variantName is null)
+            return new ExportResult(false, "Penumbra variant setup requires Save as Variant.");
+
+        await _exportGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var actorError = await _framework.RunOnFrameworkThread(
+                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity, sourceFilePath)).ConfigureAwait(false);
+            if (actorError is not null)
+                return new ExportResult(false, actorError);
+
+            var resolved = await _framework.RunOnFrameworkThread(
+                () => ResolveSourceModTargetOnFramework(sourceModDirectory, sourceFilePath)).ConfigureAwait(false);
+            if (resolved.Target is null)
+                return new ExportResult(false, resolved.Error ?? "The original Penumbra mod is no longer available.");
+
+            var targetFile = variantName is null
+                ? resolved.Target.FilePath
+                : Path.Combine(Path.GetDirectoryName(resolved.Target.FilePath)!, variantName + ".mdl");
+            var writeError = WriteModelToOriginalLocation(
+                resolved.Target.Folder,
+                targetFile,
+                exportedFile);
+            if (writeError is not null)
+                return new ExportResult(false, writeError);
+
+            if (setupVariantInPenumbra)
+            {
+                var relativeVariantPath = Path.GetRelativePath(resolved.Target.Folder, targetFile).Replace('\\', '/');
+                var groupError = WriteVariantGroup(
+                    resolved.Target.Folder,
+                    sourceGamePath,
+                    relativeVariantPath,
+                    variantName!);
+                if (groupError is not null)
+                    return new ExportResult(false, groupError);
+            }
+
+            var reloadError = await _framework.RunOnFrameworkThread(
+                () => ReloadModOnFramework(resolved.Target.Directory)).ConfigureAwait(false);
+            if (reloadError is not null)
+                return reloadError;
+
+            return await _framework.RunOnFrameworkThread(() =>
+            {
+                try
+                {
+                    _redrawObject.Invoke(objectIndex);
+                    return new ExportResult(true, $"Exported to {targetFile} and reloaded {resolved.Target.Directory}.");
+                }
+                catch (Exception e)
+                {
+                    _log.Error(e, "Penumbra redraw failed after exporting to the source mod.");
+                    return new ExportResult(false, $"Export succeeded, but redraw failed: {e.Message}");
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            _log.Error(e, "Failed to export to the original Penumbra mod.");
+            return new ExportResult(false, $"Failed to export to the original mod: {e.Message}");
+        }
+        finally
+        {
+            _exportGate.Release();
+        }
+    }
+
+    private (SourceModTarget? Target, string? Error) ResolveSourceModTargetOnFramework(
+        string sourceModDirectory,
+        string sourceFilePath)
+    {
+        var root = GetModDirectory();
+        if (string.IsNullOrWhiteSpace(root))
+            return (null, "Couldn't retrieve the Penumbra mod directory.");
+        if (!TryGetModList(out var modList))
+            return (null, "Could not retrieve the Penumbra mod list.");
+
+        var registeredDirectory = modList.Keys.FirstOrDefault(directory =>
+            string.Equals(directory, sourceModDirectory, StringComparison.OrdinalIgnoreCase));
+        if (registeredDirectory is null)
+            return (null, "The source mod is no longer registered in Penumbra.");
+
+        try
+        {
+            var modRoot = Path.GetFullPath(root);
+            var modFolder = Path.GetFullPath(Path.Combine(modRoot, registeredDirectory));
+            var modelFile = Path.GetFullPath(sourceFilePath);
+            if (!IsPathWithin(modFolder, modRoot) || !IsPathWithin(modelFile, modFolder) ||
+                !File.Exists(modelFile) || !IsSafeLocalModelPath(modelFile))
+                return (null, "The original model is no longer a valid file inside its Penumbra mod.");
+            if (HasReparsePointInPath(modFolder, Path.GetDirectoryName(modelFile)!) ||
+                (File.GetAttributes(modelFile) & FileAttributes.ReparsePoint) != 0)
+                return (null, "The original model path contains an unsupported reparse point.");
+
+            return (new SourceModTarget(registeredDirectory, modFolder, modelFile), null);
+        }
+        catch (Exception e)
+        {
+            return (null, $"Could not validate the original model destination: {e.Message}");
+        }
+    }
+
+    private static string? WriteModelToOriginalLocation(
+        string modFolder,
+        string targetFile,
+        string exportedFile)
+    {
+        try
+        {
+            var fullTarget = Path.GetFullPath(targetFile);
+            var parent = Path.GetDirectoryName(fullTarget);
+            if (parent is null || !IsPathWithin(fullTarget, modFolder) ||
+                !string.Equals(Path.GetExtension(fullTarget), ".mdl", StringComparison.OrdinalIgnoreCase) ||
+                HasReparsePointInPath(modFolder, parent) ||
+                (File.Exists(fullTarget) && (File.GetAttributes(fullTarget) & FileAttributes.ReparsePoint) != 0))
+                return "The original mod destination is unsafe.";
+
+            Directory.CreateDirectory(parent);
+            var temporary = Path.Combine(parent, $".instant-edit-{Guid.NewGuid():N}.tmp");
+            try
+            {
+                File.Copy(exportedFile, temporary, true);
+                File.Move(temporary, fullTarget, true);
+            }
+            finally
+            {
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
+            }
+
+            return null;
+        }
+        catch (Exception e)
+        {
+            return $"Could not write the original model file: {e.Message}";
         }
     }
 
@@ -467,7 +633,11 @@ public sealed class PenumbraService
     }
 
 
-    private string? ValidateTargetOnFramework(string gamePath, int objectIndex, ActorIdentity? expectedActor)
+    private string? ValidateTargetOnFramework(
+        string gamePath,
+        int objectIndex,
+        ActorIdentity? expectedActor,
+        string? expectedResolvedPath = null)
     {
         if (_objects is null || expectedActor is null)
             return null;
@@ -483,8 +653,9 @@ public sealed class PenumbraService
 
             var paths = _getPaths.Invoke((ushort)objectIndex);
             if (paths is null || paths.Length == 0 ||
-                !paths.Any(dictionary => dictionary is not null && dictionary.Values.Any(gamePaths =>
-                    gamePaths.Any(path => string.Equals(path, gamePath, StringComparison.OrdinalIgnoreCase)))))
+                !paths.Any(dictionary => dictionary is not null && dictionary.Any(resource =>
+                    (expectedResolvedPath is null || PathsEqual(resource.Key, expectedResolvedPath)) &&
+                    resource.Value.Any(path => string.Equals(path, gamePath, StringComparison.OrdinalIgnoreCase)))))
                 return "target_path_changed";
         }
         catch (Exception e)
@@ -494,6 +665,18 @@ public sealed class PenumbraService
         }
 
         return null;
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private static string? EnsureOwnedModFolder(string modFolder, string modName)
@@ -630,27 +813,78 @@ public sealed class PenumbraService
     }
 
     /// <summary>
-    /// Create or update a legacy v3 Penumbra group that redirects the original
-    /// model path to the newly exported sibling. The first option disables the
-    /// variant and the second (the default) selects it.
+    /// Create or update a Penumbra group that redirects the original model path
+    /// to the newly exported sibling. Both legacy v3 group files and current v4
+    /// embedded groups are supported without rewriting unrelated mod data.
     /// </summary>
     private static string? WriteVariantGroup(
         string modFolder,
         string sourceGamePath,
-        string variantGamePath,
+        string relativeVariantPath,
         string variantName)
     {
         try
         {
-            if (!IsSafeGamePath(sourceGamePath) || !IsSafeGamePath(variantGamePath) ||
+            relativeVariantPath = relativeVariantPath.Replace('\\', '/');
+            if (!IsSafeGamePath(sourceGamePath) || !IsSafeRelativeModPath(relativeVariantPath) ||
                 string.IsNullOrWhiteSpace(variantName) || variantName.Length > 120 ||
                 variantName.Any(char.IsControl))
                 return "invalid_penumbra_variant";
 
+            var marker = VariantGroupDescriptionPrefix + sourceGamePath + " -> " + relativeVariantPath;
+            var metaPath = Path.Combine(modFolder, "meta.json");
+            var meta = LoadJsonObjectStrict(metaPath);
+            var fileVersion = meta["FileVersion"] is JsonValue versionValue &&
+                              versionValue.TryGetValue<int>(out var version)
+                ? version
+                : 3;
+
+            if (fileVersion >= 4)
+            {
+                var groups = meta["Groups"] as JsonArray;
+                if (groups is null)
+                {
+                    groups = new JsonArray();
+                    meta["Groups"] = groups;
+                }
+                JsonObject? embeddedExistingGroup = null;
+                var existingIndex = -1;
+                var embeddedHighestOtherPriority = 0;
+                for (var index = 0; index < groups.Count; ++index)
+                {
+                    if (groups[index] is not JsonObject group)
+                        continue;
+                    if (string.Equals(JsonString(group["Description"]), marker, StringComparison.Ordinal))
+                    {
+                        embeddedExistingGroup = group;
+                        existingIndex = index;
+                        continue;
+                    }
+
+                    embeddedHighestOtherPriority = Math.Max(embeddedHighestOtherPriority, JsonInt(group["Priority"]));
+                }
+
+                if (embeddedHighestOtherPriority == int.MaxValue)
+                    return "penumbra_group_priority_exhausted";
+                var embeddedGroupJson = BuildVariantGroup(
+                    embeddedExistingGroup,
+                    marker,
+                    sourceGamePath,
+                    relativeVariantPath,
+                    variantName,
+                    embeddedHighestOtherPriority + 1);
+                if (existingIndex >= 0)
+                    groups[existingIndex] = embeddedGroupJson;
+                else
+                    groups.Add(embeddedGroupJson);
+                meta["LastWrite"] = DateTime.UtcNow;
+                WriteJsonAtomic(metaPath, meta);
+                return null;
+            }
+
             var groupFiles = Directory.EnumerateFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            var marker = VariantGroupDescriptionPrefix + sourceGamePath + " -> " + variantGamePath;
             string? existingPath = null;
             JsonObject? existingGroup = null;
             var highestOtherPriority = 0;
@@ -662,9 +896,9 @@ public sealed class PenumbraService
                 if (TryReadGroupFileIndex(fileName, out var fileIndex))
                     highestFileIndex = Math.Max(highestFileIndex, fileIndex);
 
-                var group = LoadJsonObject(groupPath);
+                var group = LoadJsonObjectStrict(groupPath);
                 var isExisting = string.Equals(
-                    group["Description"]?.GetValue<string>(),
+                    JsonString(group["Description"]),
                     marker,
                     StringComparison.Ordinal);
                 if (isExisting)
@@ -674,47 +908,19 @@ public sealed class PenumbraService
                     continue;
                 }
 
-                if (group["Priority"] is JsonValue priorityValue &&
-                    priorityValue.TryGetValue<int>(out var priority))
-                    highestOtherPriority = Math.Max(highestOtherPriority, priority);
+                highestOtherPriority = Math.Max(highestOtherPriority, JsonInt(group["Priority"]));
             }
 
             if (highestOtherPriority == int.MaxValue)
                 return "penumbra_group_priority_exhausted";
 
-            var groupPriority = highestOtherPriority + 1;
-            var relativeVariantPath = "Files/" + variantGamePath;
-            var groupId = ReadGuid(existingGroup?["Id"]) ?? Guid.NewGuid();
-            var existingOptions = existingGroup?["Options"] as JsonArray;
-            var noneId = ReadGuid((existingOptions?.ElementAtOrDefault(0) as JsonObject)?["Id"]) ?? Guid.NewGuid();
-            var variantId = ReadGuid((existingOptions?.ElementAtOrDefault(1) as JsonObject)?["Id"]) ?? Guid.NewGuid();
-            var groupJson = new JsonObject
-            {
-                ["Version"] = 0,
-                ["Type"] = "Single",
-                ["Id"] = groupId,
-                ["Name"] = "Instant Edit: " + variantName,
-                ["Description"] = marker,
-                ["Priority"] = groupPriority,
-                ["DefaultSettings"] = 1,
-                ["Options"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["Id"] = noneId,
-                        ["Name"] = "None",
-                    },
-                    new JsonObject
-                    {
-                        ["Id"] = variantId,
-                        ["Name"] = variantName,
-                        ["Files"] = new JsonObject
-                        {
-                            [sourceGamePath] = relativeVariantPath,
-                        },
-                    },
-                },
-            };
+            var groupJson = BuildVariantGroup(
+                existingGroup,
+                marker,
+                sourceGamePath,
+                relativeVariantPath,
+                variantName,
+                highestOtherPriority + 1);
 
             var outputGroupPath = existingPath ?? Path.Combine(
                 modFolder,
@@ -727,6 +933,53 @@ public sealed class PenumbraService
             return $"penumbra_group_write_failed: {e.Message}";
         }
     }
+
+    private static JsonObject BuildVariantGroup(
+        JsonObject? existingGroup,
+        string marker,
+        string sourceGamePath,
+        string relativeVariantPath,
+        string variantName,
+        int priority)
+    {
+        var groupId = ReadGuid(existingGroup?["Id"]) ?? Guid.NewGuid();
+        var existingOptions = existingGroup?["Options"] as JsonArray;
+        var noneId = ReadGuid((existingOptions?.ElementAtOrDefault(0) as JsonObject)?["Id"]) ?? Guid.NewGuid();
+        var variantId = ReadGuid((existingOptions?.ElementAtOrDefault(1) as JsonObject)?["Id"]) ?? Guid.NewGuid();
+        return new JsonObject
+        {
+            ["Version"] = 0,
+            ["Type"] = "Single",
+            ["Id"] = groupId,
+            ["Name"] = "Instant Edit: " + variantName,
+            ["Description"] = marker,
+            ["Priority"] = priority,
+            ["DefaultSettings"] = 1,
+            ["Options"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["Id"] = noneId,
+                    ["Name"] = "None",
+                },
+                new JsonObject
+                {
+                    ["Id"] = variantId,
+                    ["Name"] = variantName,
+                    ["Files"] = new JsonObject
+                    {
+                        [sourceGamePath] = relativeVariantPath,
+                    },
+                },
+            },
+        };
+    }
+
+    private static string? JsonString(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+    private static int JsonInt(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<int>(out var number) ? number : 0;
 
     private static bool TryReadGroupFileIndex(string fileName, out int index)
     {
@@ -791,6 +1044,14 @@ public sealed class PenumbraService
         }
     }
 
+    private static JsonObject LoadJsonObjectStrict(string path)
+    {
+        if (!File.Exists(path))
+            throw new FileNotFoundException("Required Penumbra metadata file was not found.", path);
+        return JsonNode.Parse(File.ReadAllText(path)) as JsonObject
+            ?? throw new InvalidDataException($"Penumbra metadata is not a JSON object: {path}");
+    }
+
     private static void WriteJsonAtomic(string path, JsonObject value)
     {
         var tempPath = path + ".tmp." + Guid.NewGuid().ToString("N");
@@ -849,6 +1110,54 @@ public sealed class PenumbraService
         }
 
         return true;
+    }
+
+    internal static bool IsSafeLocalModelPath(string? filePath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || filePath.Length > 4096 || filePath.Contains('\0') ||
+                !Path.IsPathRooted(filePath) || filePath.StartsWith("\\\\", StringComparison.Ordinal) ||
+                !string.Equals(Path.GetExtension(filePath), ".mdl", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var fullPath = Path.GetFullPath(filePath);
+            return filePath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries)
+                .All(segment => segment is not ("." or "..")) &&
+                !string.Equals(fullPath, Path.GetPathRoot(fullPath), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsSafeVariantName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 120 || value is "." or ".." ||
+            value.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
+            value.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || value.Contains('/') || value.Contains('\\'))
+            return false;
+        return value.All(c => !char.IsControl(c));
+    }
+
+    private static bool IsSafeRelativeModPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.Length > 4096 || path.Contains('\0') ||
+            Path.IsPathRooted(path) || path.Contains('\\') ||
+            !string.Equals(Path.GetExtension(path), ".mdl", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return path.Split('/').All(segment => segment.Length > 0 && segment is not ("." or ".."));
+    }
+
+    private static bool IsPathWithin(string path, string root)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase))
+            return true;
+        return fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+               fullPath.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     internal static bool IsSafeModName(string? modName)

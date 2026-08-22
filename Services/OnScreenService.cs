@@ -229,6 +229,8 @@ public sealed class OnScreenService
             SourceState = source.State,
             SourceLabel = source.Label,
             SourceModName = source.ModName,
+            SourceModDirectory = source.ModDirectory,
+            SourceModRootPath = source.ModRootPath,
             SourceRelativePath = source.RelativePath,
             SlotLabel = presentation.SlotLabel,
             ResourceSection = presentation.Section,

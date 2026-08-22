@@ -27,24 +27,30 @@ public sealed class ResourceSourceAttributor
     public ResourceSource AttributionFor(string? actualPath)
     {
         if (string.IsNullOrWhiteSpace(actualPath))
-            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null, null);
+            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null, null, null, null);
 
         if (!Path.IsPathRooted(actualPath))
-            return new ResourceSource(ResourceSourceState.GameData, "Game data", null, actualPath);
+            return new ResourceSource(ResourceSourceState.GameData, "Game data", null, null, null, actualPath);
 
         var physicalPath = NormalizePhysicalPath(actualPath);
         if (physicalPath is null)
-            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null, null);
+            return new ResourceSource(ResourceSourceState.SourceUnavailable, "Source unavailable", null, null, null, null);
 
         foreach (var mod in GetModRoots())
         {
             if (!IsPathWithin(physicalPath, mod.Path))
                 continue;
             var relativePath = Path.GetRelativePath(mod.Path, physicalPath).Replace('\\', '/');
-            return new ResourceSource(ResourceSourceState.LoadedMod, $"Loaded from: {mod.Name}", mod.Name, relativePath);
+            return new ResourceSource(
+                ResourceSourceState.LoadedMod,
+                $"Loaded from: {mod.Name}",
+                mod.Name,
+                mod.Directory,
+                mod.Path,
+                relativePath);
         }
 
-        return new ResourceSource(ResourceSourceState.ExternalResolvedFile, "External resolved file", null, physicalPath);
+        return new ResourceSource(ResourceSourceState.ExternalResolvedFile, "External resolved file", null, null, null, physicalPath);
     }
 
     private IReadOnlyList<ModRoot> GetModRoots()
@@ -80,7 +86,7 @@ public sealed class ResourceSourceAttributor
 
                 var path = NormalizePhysicalPath(Path.Combine(modRoot, directory));
                 if (path is not null && IsPathWithin(path, modRoot))
-                    roots.Add(new ModRoot(path, modName));
+                    roots.Add(new ModRoot(path, directory, modName));
             }
 
             return roots.OrderByDescending(root => root.Path.Length).ToArray();
@@ -119,7 +125,13 @@ public sealed class ResourceSourceAttributor
         return path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 
-    private sealed record ModRoot(string Path, string Name);
+    private sealed record ModRoot(string Path, string Directory, string Name);
 }
 
-public sealed record ResourceSource(ResourceSourceState State, string Label, string? ModName, string? RelativePath);
+public sealed record ResourceSource(
+    ResourceSourceState State,
+    string Label,
+    string? ModName,
+    string? ModDirectory,
+    string? ModRootPath,
+    string? RelativePath);

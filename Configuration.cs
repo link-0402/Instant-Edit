@@ -13,7 +13,7 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary> Port this plugin listens on for export results coming from Blender. </summary>
     public int ListenPort { get; set; } = 42428;
 
-    /// <summary> Directory name of the persistent mod used to apply exports. </summary>
+    /// <summary>Legacy managed-mod setting retained for configuration compatibility.</summary>
     public string ModName { get; set; } = "InstantEdit";
 
 }

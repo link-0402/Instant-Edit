@@ -31,10 +31,9 @@ public sealed class SettingsWindow
         ImGui.Separator(); ImGui.Text("Blender connection");
         var blenderPort = _config.BlenderPort; if (ImGui.InputInt("Blender port", ref blenderPort)) { _config.BlenderPort = blenderPort; Save(); }
         ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Blender and the Yet Another Addon must already be running before editing.");
-        ImGui.Spacing(); ImGui.Separator(); ImGui.Text("Export target");
+        ImGui.Spacing(); ImGui.Separator(); ImGui.Text("Export connection");
         var listenPort = _config.ListenPort; if (ImGui.InputInt("Listener port", ref listenPort)) { var changed = listenPort != _config.ListenPort; _config.ListenPort = listenPort; Save(); if (changed) RestartListener(); }
-        ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Exports are written to this persistent Penumbra mod.");
-        var modName = _config.ModName; if (ImGui.InputText("Persistent mod name", ref modName, 64)) { _config.ModName = modName; Save(); }
+        ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Quick Export writes back to the model's original Penumbra mod.");
         ImGui.End();
     }
 

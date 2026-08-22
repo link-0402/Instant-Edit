@@ -191,7 +191,7 @@ public sealed class ExportServer : IDisposable
         var path   = request.Path;
 
         if (method == "GET" && path.TrimEnd('/') == "/status")
-            return (200, Json(new { ok = true, running = true, mod = _config.ModName }));
+            return (200, Json(new { ok = true, running = true, target = "original_source_mod" }));
 
         if (method == "POST" && path.TrimEnd('/') == "/export")
         {
@@ -255,28 +255,11 @@ public sealed class ExportServer : IDisposable
                 else
                 {
                     var target = reservation.Context;
-                    var destinationGamePath = target.GamePath;
-                    if (!string.IsNullOrEmpty(export.VariantName))
-                    {
-                        var directoryEnd = target.GamePath.LastIndexOf('/');
-                        if (directoryEnd < 0)
-                        {
-                            receipt = new ExportReceipt(false, "invalid_variant_name", "source model has no parent game directory");
-                        }
-                        else
-                        {
-                            destinationGamePath = target.GamePath[..(directoryEnd + 1)] + export.VariantName + ".mdl";
-                            receipt = await ApplyExport(
-                                target,
-                                destinationGamePath,
-                                export.FilePath!,
-                                export.SetupInPenumbra ? export.VariantName : null).ConfigureAwait(false);
-                        }
-                    }
-                    else
-                    {
-                        receipt = await ApplyExport(target, destinationGamePath, export.FilePath!, null).ConfigureAwait(false);
-                    }
+                    receipt = await ApplyExport(
+                        target,
+                        export.FilePath!,
+                        export.VariantName,
+                        export.SetupInPenumbra).ConfigureAwait(false);
                 }
             }
             catch (Exception e)
@@ -294,18 +277,23 @@ public sealed class ExportServer : IDisposable
 
         async Task<ExportReceipt> ApplyExport(
             InstantEditImportContext target,
-            string destinationGamePath,
             string filePath,
-            string? penumbraVariantName)
+            string? variantName,
+            bool setupVariantInPenumbra)
         {
-            var result = await _penumbra.ApplyExportAsync(
-                target.ModName,
-                destinationGamePath,
+            if (string.IsNullOrWhiteSpace(target.TargetFilePath) ||
+                string.IsNullOrWhiteSpace(target.SourceModDirectory))
+                return new ExportReceipt(false, "missing_source_target", "the import has no original Penumbra mod destination");
+
+            var result = await _penumbra.ApplySourceExportAsync(
+                target.SourceModDirectory,
+                target.TargetFilePath,
+                target.GamePath,
                 filePath,
                 target.ObjectIndex,
                 target.ActorIdentity,
-                target.GamePath,
-                penumbraVariantName).ConfigureAwait(false);
+                variantName,
+                setupVariantInPenumbra).ConfigureAwait(false);
             return new ExportReceipt(
                 result.Success,
                 result.Success ? "export_applied" : "apply_failed",

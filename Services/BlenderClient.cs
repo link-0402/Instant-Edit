@@ -167,6 +167,81 @@ public sealed class BlenderClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// Send an import whose Quick Export authority is the resolved file inside
+    /// the original Penumbra mod. The physical path is retained in the shared
+    /// registry, so Blender can display it but cannot substitute another target.
+    /// </summary>
+    public async Task SendSourceImportAsync(
+        int port,
+        string importFilePath,
+        string gamePath,
+        int objectIndex,
+        string name,
+        int callbackPort,
+        string targetFilePath,
+        string sourceModDirectory,
+        string sourceModName,
+        CancellationToken cancellationToken = default)
+    {
+        if (port is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port));
+        if (callbackPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(callbackPort));
+        if (string.IsNullOrWhiteSpace(sourceModDirectory))
+            throw new ArgumentException("A source Penumbra mod directory is required.", nameof(sourceModDirectory));
+        if (string.IsNullOrWhiteSpace(targetFilePath))
+            throw new ArgumentException("An original model path is required.", nameof(targetFilePath));
+
+        InstantEditImportContext? context = null;
+        if (_contexts is not null)
+        {
+            var actorIdentity = _actorIdentityProvider?.Invoke(objectIndex);
+            context = _contexts.CreateContext(
+                gamePath,
+                objectIndex,
+                sourceModDirectory,
+                targetFilePath,
+                sourceModName,
+                callbackPort,
+                actorIdentity);
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                schema = "instant-edit.import",
+                version = 1,
+                command = "import",
+                context,
+                filePath = importFilePath,
+                gamePath,
+                objectIndex,
+                name,
+                callbackPort,
+                modName = sourceModDirectory,
+                targetFilePath,
+                targetFolder = Path.GetDirectoryName(targetFilePath),
+                sourceModDirectory,
+                sourceModName,
+            });
+
+            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            using var resp = await _http.PostAsync(
+                $"http://127.0.0.1:{port}/import",
+                content,
+                cancellationToken).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+        }
+        catch
+        {
+            if (context is not null)
+                _contexts?.RemoveContext(context.ContextId);
+            throw;
+        }
+    }
+
     public void Dispose()
         => _http.Dispose();
 }

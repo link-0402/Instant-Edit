@@ -46,6 +46,21 @@ public sealed record InstantEditImportContext
     [JsonPropertyName("modName")]
     public required string ModName { get; init; }
 
+    /// <summary>Original resolved model file inside the source Penumbra mod.</summary>
+    [JsonPropertyName("targetFilePath")]
+    public required string TargetFilePath { get; init; }
+
+    /// <summary>Physical directory displayed in Blender as the Quick Export target.</summary>
+    [JsonPropertyName("managedDestination")]
+    public required string TargetFolder { get; init; }
+
+    /// <summary>Penumbra's directory key, used by ReloadMod.</summary>
+    [JsonPropertyName("sourceModDirectory")]
+    public required string SourceModDirectory { get; init; }
+
+    [JsonPropertyName("sourceModName")]
+    public required string SourceModName { get; init; }
+
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
 }

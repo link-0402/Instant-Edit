@@ -60,10 +60,36 @@ public sealed class ExportContextRegistry : IDisposable
         string modName,
         int callbackPort,
         ActorIdentity? actorIdentity)
+        => CreateContext(gamePath, objectIndex, modName, string.Empty, modName, callbackPort, actorIdentity);
+
+    public InstantEditImportContext CreateContext(
+        string gamePath,
+        int objectIndex,
+        string sourceModDirectory,
+        string targetFilePath,
+        string sourceModName,
+        int callbackPort,
+        ActorIdentity? actorIdentity)
     {
         if (!PenumbraService.IsSafeGamePath(gamePath) || objectIndex is < 0 or > ushort.MaxValue ||
-            !PenumbraService.IsSafeModName(modName) || callbackPort is < 1 or > 65535)
+            !PenumbraService.IsSafeModName(sourceModDirectory) || callbackPort is < 1 or > 65535)
             throw new ArgumentException("The import target is not safe.");
+
+        string targetFolder;
+        if (string.IsNullOrEmpty(targetFilePath))
+        {
+            // Compatibility contexts can still import, but the server will not
+            // authorize Quick Export without an original physical destination.
+            targetFolder = sourceModDirectory;
+        }
+        else
+        {
+            if (!PenumbraService.IsSafeLocalModelPath(targetFilePath))
+                throw new ArgumentException("The original model path is not a safe local .mdl file.");
+            targetFilePath = Path.GetFullPath(targetFilePath);
+            targetFolder = Path.GetDirectoryName(targetFilePath)
+                ?? throw new ArgumentException("The original model has no parent directory.");
+        }
 
         if (actorIdentity is not null && actorIdentity.ObjectIndex != objectIndex)
             throw new ArgumentException("The actor identity does not match the object index.");
@@ -77,7 +103,11 @@ public sealed class ExportContextRegistry : IDisposable
             GamePath = gamePath,
             ObjectIndex = (ushort)objectIndex,
             ActorIdentity = actorIdentity,
-            ModName = modName,
+            ModName = sourceModDirectory,
+            TargetFilePath = targetFilePath,
+            TargetFolder = targetFolder,
+            SourceModDirectory = sourceModDirectory,
+            SourceModName = string.IsNullOrWhiteSpace(sourceModName) ? sourceModDirectory : sourceModName,
             CallbackPort = callbackPort,
         };
 
