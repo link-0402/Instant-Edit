@@ -39,7 +39,7 @@ jobs:
             --output /tmp/blender.tar.xz
           tar -xJf /tmp/blender.tar.xz --directory /tmp
           echo "/tmp/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
-          blender --version
+          "/tmp/blender-${BLENDER_VERSION}-linux-x64/blender" --version
 
       - name: Build package and repository index
         shell: pwsh
