@@ -20,7 +20,7 @@ animation editing are not included.
 2. Click **Repositories**, click **+**, and choose **Add Remote Repository**.
 3. Add this repository URL:
 
-   `https://link-0402.github.io/Instant-Edit/index.json`
+   `https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Blender-Addon/blender_repo/index.json`
 
 4. Find **XIV Instant Edit** and install it if it hasn't already.
 
