@@ -12,6 +12,8 @@ Modifications made in 2026 include:
 - adding generated-armature and existing-scene-armature import modes;
 - adapting Yet Another Addon's Mesh Studio overview for compact per-mesh
   object, part, attribute, material, and flow-data controls;
+- replacing mesh-group and part reorder arrows with cancellable vertical drag
+  handles;
 - allowing Quick Export to include all visible, name-defined mesh parts and groups;
 - allowing duplicated Instant Edit meshes to be moved outside their source collection;
 - adding SELF, ALL, and Glamourer-assisted redraw modes for Quick Export;

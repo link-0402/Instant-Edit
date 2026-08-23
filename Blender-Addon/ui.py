@@ -120,7 +120,7 @@ class XIVIE_PT_main(Panel):
             column.label(text=title)
 
         total_triangles = 0
-        for position, group in enumerate(groups):
+        for group in groups:
             paths = material_paths(group.objects)
             lod_zero = lod_zero_objects(group.objects)
             vertices = sum(len(obj.data.vertices) for obj in lod_zero)
@@ -130,28 +130,14 @@ class XIVIE_PT_main(Panel):
             mesh_header = mesh_box.row(align=True).split(factor=0.3, align=True)
             mesh_id_row = mesh_header.row(align=True)
             mesh_id_row.label(text=f"Mesh #{group.mesh_index}")
-            if position > 0:
-                move = mesh_id_row.operator(
-                    "xiv_ie.move_mesh_group",
-                    text="",
-                    icon="TRIA_UP",
-                    emboss=False,
-                )
-                move.mesh_group = group.mesh_index
-                move.direction = "UP"
-            else:
-                mesh_id_row.label(text="", icon="BLANK1")
-            if position + 1 < len(groups):
-                move = mesh_id_row.operator(
-                    "xiv_ie.move_mesh_group",
-                    text="",
-                    icon="TRIA_DOWN",
-                    emboss=False,
-                )
-                move.mesh_group = group.mesh_index
-                move.direction = "DOWN"
-            else:
-                mesh_id_row.label(text="", icon="BLANK1")
+            drag = mesh_id_row.operator(
+                "xiv_ie.drag_mesh_order",
+                text="",
+                icon="GRIP_V",
+                emboss=False,
+            )
+            drag.scope = "GROUP"
+            drag.mesh_group = group.mesh_index
             vertex_row = mesh_header.row(align=True)
             vertex_row.alignment = "RIGHT"
             if vertices > 65536:
@@ -162,7 +148,7 @@ class XIVIE_PT_main(Panel):
 
             mesh_box.separator(type="LINE", factor=0.2)
             mesh_column = mesh_box.column(align=True)
-            for part_position, part in enumerate(group.parts):
+            for part in group.parts:
                 part_objects = mesh_part_objects(group.objects, group.mesh_index, part)
                 display_objects = lod_zero_objects(part_objects)
                 representative = display_objects[0]
@@ -181,32 +167,16 @@ class XIVIE_PT_main(Panel):
 
                 part_row = object_row.row(align=True)
                 part_row.label(text="", icon="ERROR" if duplicate_ids else "BLANK1")
-                if part_position > 0:
-                    move = part_row.operator(
-                        "xiv_ie.move_mesh_part",
-                        text="",
-                        icon="TRIA_UP",
-                        emboss=False,
-                    )
-                    move.mesh_group = group.mesh_index
-                    move.mesh_part = part
-                    move.direction = "UP"
-                else:
-                    part_row.label(text="", icon="BLANK1")
                 part_row.label(text=str(part))
-                if part_position + 1 < len(group.parts):
-                    move = part_row.operator(
-                        "xiv_ie.move_mesh_part",
-                        text="",
-                        icon="TRIA_DOWN",
-                        emboss=False,
-                    )
-                    move.mesh_group = group.mesh_index
-                    move.mesh_part = part
-                    move.direction = "DOWN"
-                else:
-                    part_row.label(text="", icon="BLANK1")
-                part_row.label(text="", icon="BLANK1")
+                drag = part_row.operator(
+                    "xiv_ie.drag_mesh_order",
+                    text="",
+                    icon="GRIP_V",
+                    emboss=False,
+                )
+                drag.scope = "PART"
+                drag.mesh_group = group.mesh_index
+                drag.mesh_part = part
 
                 attribute_row = object_row.row(align=True)
                 attribute_row.alignment = "EXPAND"

@@ -78,6 +78,7 @@ def run() -> None:
         bpy.context.collection.objects.link(added_group)
 
         materials = importlib.import_module(f"{addon.__name__}.materials")
+        operators = importlib.import_module(f"{addon.__name__}.operators")
         groups = materials.group_mesh_objects([obj, second])
         if len(groups) != 1 or groups[0].mesh_index != 0 or len(groups[0].objects) != 2:
             raise AssertionError("Mesh material grouping did not collect both submeshes")
@@ -248,10 +249,17 @@ def run() -> None:
         if materials.mesh_flow_enabled([obj, second]):
             raise AssertionError("Mesh Studio flow operator did not disable export")
         bpy.ops.xiv_ie.mesh_flow(mesh_group=0, action="TOGGLE")
-        materials.swap_mesh_groups([obj, second, added_group], 0, 1)
+        moved_part = operators._move_mesh_part_once(0, 1, "UP")
+        if moved_part != 0 or not second.name.startswith("0.0 "):
+            raise AssertionError("Mesh Studio part drag did not move the part upward")
+        if operators._move_mesh_part_once(0, 0, "DOWN") != 1:
+            raise AssertionError("Mesh Studio part drag did not restore the part order")
+        moved_group = operators._move_mesh_group_once(0, "DOWN")
+        if moved_group != 1:
+            raise AssertionError("Mesh Studio group drag did not move the group downward")
         if not obj.name.startswith("1.0 ") or not added_group.name.startswith("0.0 "):
-            raise AssertionError("Mesh group priority swap did not preserve part IDs")
-        print("[PASS] Mesh Studio rename, attributes, flow, and priority controls")
+            raise AssertionError("Mesh Studio group drag did not preserve part IDs")
+        print("[PASS] Mesh Studio rename, attributes, flow, and drag reordering")
     finally:
         addon.unregister()
 

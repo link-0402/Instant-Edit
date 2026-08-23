@@ -3,17 +3,22 @@
   "blocklist": [],
   "data": [
     {
+      "schema_version": "1.0.0",
       "id": "xiv_instant_edit",
       "name": "XIV Instant Edit",
       "tagline": "Instant FFXIV model editing and focused model export",
       "version": "1.0.0",
       "type": "add-on",
-      "archive_size": 113952,
-      "archive_hash": "sha256:3da58909623f9b592364b8339f15c2fa6f2632725b3fa73ca777b88a82b60cbf",
-      "archive_url": "https://link-0402.github.io/Instant-Edit/XIV-Instant-Edit.zip",
+      "maintainer": "Luci",
+      "license": [
+        "SPDX:GPL-3.0-or-later"
+      ],
       "blender_version_min": "4.5.0",
       "blender_version_max": "5.3.0",
-      "maintainer": "Luci",
+      "permissions": {
+        "files": "Import and export FFXIV model files",
+        "network": "Exchange local import/export requests with the Dalamud plugin"
+      },
       "tags": [
         "Import-Export",
         "Modeling",
@@ -21,11 +26,9 @@
         "Rigging",
         "User Interface"
       ],
-      "license": [
-        "SPDX:GPL-3.0-or-later"
-      ],
-      "website": "https://github.com/link-0402/Instant-Edit",
-      "schema_version": "1.0.0"
+      "archive_url": "./XIV-Instant-Edit.zip",
+      "archive_size": 122525,
+      "archive_hash": "sha256:df45839dcb6b50bce91a639d4c308aab8c88c9f42367c60705515e8121bb86fc"
     }
   ]
 }

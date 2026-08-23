@@ -4,6 +4,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Context, Operator
 
+from .instant_edit.context import mesh_ids_from_name
 from .materials import (
     assign_material_path,
     ensure_flow_data,
@@ -31,6 +32,41 @@ def _redraw(context: Context) -> None:
     if context.screen:
         for area in context.screen.areas:
             area.tag_redraw()
+
+
+def _move_mesh_group_once(mesh_group: int, direction: str) -> int | None:
+    groups = visible_material_groups()
+    position = next(
+        (index for index, group in enumerate(groups) if group.mesh_index == mesh_group),
+        -1,
+    )
+    neighbor = position + (-1 if direction == "UP" else 1)
+    if position < 0 or neighbor < 0 or neighbor >= len(groups):
+        return None
+    new_group = groups[neighbor].mesh_index
+    swap_mesh_groups(visible_meshobj(), mesh_group, new_group)
+    return new_group
+
+
+def _move_mesh_part_once(
+    mesh_group: int,
+    mesh_part: int,
+    direction: str,
+) -> int | None:
+    group = next(
+        (item for item in visible_material_groups() if item.mesh_index == mesh_group),
+        None,
+    )
+    if group is None or mesh_part not in group.parts:
+        return None
+    parts = list(group.parts)
+    position = parts.index(mesh_part)
+    neighbor = position + (-1 if direction == "UP" else 1)
+    if neighbor < 0 or neighbor >= len(parts):
+        return None
+    new_part = parts[neighbor]
+    swap_mesh_parts(visible_meshobj(), mesh_group, mesh_part, new_part)
+    return new_part
 
 
 class XIVIE_OT_simple_export(Operator):
@@ -75,54 +111,119 @@ class XIVIE_OT_simple_export(Operator):
         return {"FINISHED"}
 
 
-class XIVIE_OT_move_mesh_group(Operator):
-    bl_idname = "xiv_ie.move_mesh_group"
-    bl_label = "Move Mesh Group"
-    bl_description = "Change the priority of this mesh group"
-    bl_options = {"REGISTER", "UNDO"}
+class XIVIE_OT_drag_mesh_order(Operator):
+    bl_idname = "xiv_ie.drag_mesh_order"
+    bl_label = "Drag to Reorder"
+    bl_description = "Drag vertically to reorder this mesh group or part"
+    bl_options = {"REGISTER", "UNDO", "BLOCKING"}
 
-    mesh_group: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
-    direction: StringProperty(default="UP", options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
-
-    def execute(self, context: Context):
-        groups = visible_material_groups()
-        position = next((index for index, group in enumerate(groups) if group.mesh_index == self.mesh_group), -1)
-        if position < 0:
-            self.report({"ERROR"}, f"Mesh group {self.mesh_group} is no longer visible.")
-            return {"CANCELLED"}
-        offset = -1 if self.direction == "UP" else 1
-        neighbor = position + offset
-        if neighbor < 0 or neighbor >= len(groups):
-            return {"CANCELLED"}
-        swap_mesh_groups(visible_meshobj(), self.mesh_group, groups[neighbor].mesh_index)
-        _redraw(context)
-        return {"FINISHED"}
-
-
-class XIVIE_OT_move_mesh_part(Operator):
-    bl_idname = "xiv_ie.move_mesh_part"
-    bl_label = "Move Mesh Part"
-    bl_description = "Change the priority of this mesh part"
-    bl_options = {"REGISTER", "UNDO"}
-
+    scope: EnumProperty(
+        items=(
+            ("GROUP", "Mesh Group", "Reorder the complete mesh group"),
+            ("PART", "Mesh Part", "Reorder this part inside its mesh group"),
+        ),
+        default="GROUP",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )  # type: ignore
     mesh_group: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
     mesh_part: IntProperty(default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
-    direction: StringProperty(default="UP", options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
 
-    def execute(self, context: Context):
-        group = find_material_group(context, self.mesh_group)
-        if group is None or self.mesh_part not in group.parts:
-            self.report({"ERROR"}, f"Mesh part {self.mesh_group}.{self.mesh_part} is no longer visible.")
+    @classmethod
+    def poll(cls, context: Context):
+        return context.mode == "OBJECT"
+
+    @classmethod
+    def description(cls, context, properties):
+        item = "mesh group" if properties.scope == "GROUP" else "mesh part"
+        return f"Drag vertically to reorder this {item}; Esc or right-click cancels"
+
+    def invoke(self, context: Context, event):
+        if self.scope == "GROUP":
+            group = find_material_group(context, self.mesh_group)
+            targets = group.objects if group is not None else ()
+        else:
+            targets = mesh_part_objects(
+                visible_meshobj(),
+                self.mesh_group,
+                self.mesh_part,
+            )
+        if not targets:
+            self.report({"ERROR"}, "The mesh item is no longer visible.")
             return {"CANCELLED"}
-        parts = list(group.parts)
-        position = parts.index(self.mesh_part)
-        offset = -1 if self.direction == "UP" else 1
-        neighbor = position + offset
-        if neighbor < 0 or neighbor >= len(parts):
-            return {"CANCELLED"}
-        swap_mesh_parts(visible_meshobj(), self.mesh_group, self.mesh_part, parts[neighbor])
+
+        self._dragged_objects = tuple(targets)
+        self._original_names = tuple((obj, obj.name) for obj in visible_meshobj())
+        self._last_mouse_y = event.mouse_y
+        self._drag_distance = 0.0
+        self._finish_on_release = event.value == "PRESS"
+        self._step = max(18.0, 22.0 * context.preferences.system.ui_scale)
+
+        context.window.cursor_modal_set("MOVE_Y")
+        context.workspace.status_text_set(
+            "Drag vertically to reorder; release/click to drop; Esc or right-click to cancel"
+        )
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context: Context, event):
+        if event.type == "MOUSEMOVE":
+            self._drag_distance += event.mouse_y - self._last_mouse_y
+            self._last_mouse_y = event.mouse_y
+            while abs(self._drag_distance) >= self._step:
+                direction = "UP" if self._drag_distance > 0 else "DOWN"
+                if not self._move_once(context, direction):
+                    self._drag_distance = 0.0
+                    break
+                self._drag_distance += -self._step if direction == "UP" else self._step
+            return {"RUNNING_MODAL"}
+
+        if event.type in {"ESC", "RIGHTMOUSE", "WINDOW_DEACTIVATE"}:
+            if event.type == "WINDOW_DEACTIVATE" or event.value == "PRESS":
+                self._restore_names()
+                return self._finish(context, cancelled=True)
+
+        if event.type in {"RET", "NUMPAD_ENTER", "SPACE"} and event.value == "PRESS":
+            return self._finish(context, cancelled=False)
+
+        if event.type == "LEFTMOUSE":
+            if self._finish_on_release and event.value == "RELEASE":
+                return self._finish(context, cancelled=False)
+            if not self._finish_on_release and event.value == "PRESS":
+                return self._finish(context, cancelled=False)
+
+        return {"RUNNING_MODAL"}
+
+    def _move_once(self, context: Context, direction: str) -> bool:
+        try:
+            mesh_group, mesh_part, _lod = mesh_ids_from_name(self._dragged_objects[0])
+        except Exception:
+            return False
+        if self.scope == "GROUP":
+            moved = _move_mesh_group_once(mesh_group, direction)
+        else:
+            moved = _move_mesh_part_once(mesh_group, mesh_part, direction)
+        if moved is None:
+            return False
         _redraw(context)
-        return {"FINISHED"}
+        return True
+
+    def _restore_names(self) -> None:
+        existing = [
+            (obj, name)
+            for obj, name in self._original_names
+            if obj.name in bpy.data.objects and bpy.data.objects[obj.name] == obj
+        ]
+        for index, (obj, _name) in enumerate(existing):
+            obj.name = f"__xiv_ie_drag_restore_{index}_{obj.as_pointer()}"
+        for obj, name in existing:
+            obj.name = name
+
+    @staticmethod
+    def _finish(context: Context, cancelled: bool):
+        context.window.cursor_modal_restore()
+        context.workspace.status_text_set(None)
+        _redraw(context)
+        return {"CANCELLED"} if cancelled else {"FINISHED"}
 
 
 class XIVIE_OT_rename_mesh_part(Operator):

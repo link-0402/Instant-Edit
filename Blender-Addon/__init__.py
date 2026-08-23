@@ -6,12 +6,11 @@ from . import instant_edit
 from .instant_edit import ops as instant_ops
 from .instant_edit import props as instant_props
 from .operators import (
+    XIVIE_OT_drag_mesh_order,
     XIVIE_OT_mesh_attribute,
     XIVIE_OT_mesh_flow,
     XIVIE_OT_mesh_material,
     XIVIE_OT_mesh_tags,
-    XIVIE_OT_move_mesh_group,
-    XIVIE_OT_move_mesh_part,
     XIVIE_OT_rename_mesh_part,
     XIVIE_OT_simple_export,
 )
@@ -25,12 +24,11 @@ CLASSES = [
     XIVIEExportSettings,
     *instant_props.CLASSES,
     *instant_ops.CLASSES,
+    XIVIE_OT_drag_mesh_order,
     XIVIE_OT_mesh_attribute,
     XIVIE_OT_mesh_flow,
     XIVIE_OT_mesh_material,
     XIVIE_OT_mesh_tags,
-    XIVIE_OT_move_mesh_group,
-    XIVIE_OT_move_mesh_part,
     XIVIE_OT_rename_mesh_part,
     XIVIE_OT_simple_export,
     XIVIE_PT_main,
