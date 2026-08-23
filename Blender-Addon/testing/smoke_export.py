@@ -148,6 +148,7 @@ def run() -> None:
         print("[PASS] Instant Edit discovers new visible parts and groups outside its collection")
 
         instant_ops = importlib.import_module(f"{addon.__name__}.instant_edit.ops")
+        export_module = importlib.import_module(f"{addon.__name__}.mesh.export")
 
         class FakeResponse:
             status = 200
@@ -166,10 +167,56 @@ def run() -> None:
 
         original_urlopen = instant_ops.urllib.request.urlopen
         instant_ops.urllib.request.urlopen = lambda request, timeout=0: FakeResponse()
+        armature.data.pose_position = "POSE"
+        pose_bone = armature.pose.bones["root"]
+        pose_bone.rotation_mode = "XYZ"
+        pose_bone.rotation_euler = (0.2, -0.1, 0.3)
+        original_pose = pose_bone.matrix_basis.copy()
+        armature.scale = (2.0, 2.0, 2.0)
+        obj.scale = (0.5, 0.75, 1.25)
+        second.scale = (1.25, 0.75, 0.5)
+        added_group.scale = (0.8, 1.1, 1.4)
+        original_armature_scale = armature.scale.copy()
+        original_mesh_scales = {
+            mesh_obj: mesh_obj.scale.copy()
+            for mesh_obj in (obj, second, added_group)
+        }
+        if export_module._armature_for_object(obj) is not armature:
+            raise AssertionError("Smoke mesh is not associated with the expected armature")
+        with export_module._clean_export_state([obj, second, added_group]):
+            if tuple(armature.scale) != (1.0, 1.0, 1.0):
+                raise AssertionError(f"Export guard did not neutralize armature scale: {tuple(armature.scale)}")
+        if tuple(armature.scale) != (2.0, 2.0, 2.0):
+            raise AssertionError(f"Export guard did not restore direct state: {tuple(armature.scale)}")
+        if any(
+            abs(actual - expected) > 1e-5
+            for actual_row, expected_row in zip(pose_bone.matrix_basis, original_pose)
+            for actual, expected in zip(actual_row, expected_row)
+        ):
+            raise AssertionError(
+                f"Export guard did not restore direct pose state: "
+                f"actual={tuple(tuple(row) for row in pose_bone.matrix_basis)} "
+                f"expected={tuple(tuple(row) for row in original_pose)}"
+            )
         try:
             quick_target = instant_ops.perform_instant_export(bpy.context)
         finally:
             instant_ops.urllib.request.urlopen = original_urlopen
+
+        if tuple(armature.scale) != tuple(original_armature_scale):
+            raise AssertionError(
+                f"Quick Export did not restore armature scale: "
+                f"actual={tuple(armature.scale)} expected={tuple(original_armature_scale)}"
+            )
+        if any(tuple(mesh_obj.scale) != tuple(scale) for mesh_obj, scale in original_mesh_scales.items()):
+            raise AssertionError("Quick Export did not restore mesh scales")
+        if armature.data.pose_position != "POSE" or any(
+            abs(actual - expected) > 1e-5
+            for actual_row, expected_row in zip(pose_bone.matrix_basis, original_pose)
+            for actual, expected in zip(actual_row, expected_row)
+        ):
+            raise AssertionError("Quick Export did not restore armature pose")
+        print("[PASS] Quick Export temporarily resets and restores armature pose and scale")
 
         model_module = importlib.import_module(f"{addon.__name__}.xivpy.model")
         quick_model = model_module.XIVModel.from_file(quick_target)

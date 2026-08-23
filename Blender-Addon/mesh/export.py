@@ -1,9 +1,10 @@
 # Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
 import bpy
 
+from contextlib import contextmanager
 from pathlib         import Path
 from bpy.types       import Context, UILayout
-   
+
 from .objects        import visible_meshobj
 from ..io.model      import ModelExport, SceneHandler
 from ..io.logging    import YetAnotherLogger
@@ -13,6 +14,98 @@ from ..properties    import get_settings
 
 
 _export_stats: dict[str, list[str]] = {}
+
+
+def _armature_for_object(obj):
+    """Return the armature that drives an exported mesh, if any."""
+    if obj.parent and obj.parent.type == "ARMATURE":
+        return obj.parent
+    return next(
+        (
+            modifier.object
+            for modifier in obj.modifiers
+            if modifier.type == "ARMATURE"
+            and modifier.object is not None
+            and modifier.object.type == "ARMATURE"
+        ),
+        None,
+    )
+
+
+@contextmanager
+def _clean_export_state(export_objects):
+    """Temporarily export meshes at neutral scale and armature rest pose.
+
+    Blender users may pose or scale an imported model for display. FFXIV MDL
+    exports must instead be evaluated from the armature rest pose at neutral
+    scale, so capture all affected state and restore it even if export fails.
+    """
+    objects = tuple(dict.fromkeys(export_objects or ()))
+    armatures = tuple(
+        dict.fromkeys(
+            armature
+            for obj in objects
+            if (armature := _armature_for_object(obj)) is not None
+        )
+    )
+    scales = [(obj, obj.scale.copy()) for obj in (*objects, *armatures)]
+    poses = [
+        (
+            armature,
+            armature.data.pose_position,
+            [
+                (
+                    bone,
+                    tuple(bone.location),
+                    bone.rotation_mode,
+                    tuple(bone.rotation_quaternion),
+                    tuple(bone.rotation_euler),
+                    tuple(bone.rotation_axis_angle),
+                    tuple(bone.scale),
+                )
+                for bone in armature.pose.bones
+            ],
+        )
+        for armature in armatures
+    ]
+
+    try:
+        for obj, _scale in scales:
+            obj.scale = (1.0, 1.0, 1.0)
+        for armature, _pose_position, bones in poses:
+            armature.data.pose_position = "REST"
+            for bone, _location, _rotation_mode, _quaternion, _euler, _axis_angle, _scale in bones:
+                bone.location = (0.0, 0.0, 0.0)
+                bone.rotation_mode = "QUATERNION"
+                bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+                bone.scale = (1.0, 1.0, 1.0)
+        bpy.context.view_layer.update()
+        yield
+    finally:
+        for armature, pose_position, bones in poses:
+            armature.data.pose_position = pose_position
+            for (
+                bone,
+                location,
+                rotation_mode,
+                quaternion,
+                euler,
+                axis_angle,
+                scale,
+            ) in bones:
+                bone.location = location
+                bone.rotation_mode = rotation_mode
+                if rotation_mode == "QUATERNION":
+                    bone.rotation_quaternion = quaternion
+                elif rotation_mode == "AXIS_ANGLE":
+                    bone.rotation_axis_angle = axis_angle
+                else:
+                    bone.rotation_euler = euler
+                bone.scale = scale
+        for obj, scale in scales:
+            if obj.name in bpy.data.objects:
+                obj.scale = scale
+        bpy.context.view_layer.update()
 
 def check_triangulation(objects=None) -> list[str]:
     visible = list(objects) if objects is not None else visible_meshobj()
@@ -47,9 +140,10 @@ def get_export_path(directory: Path, file_name: str, subfolder: bool, body_slot:
     return export_path
 
 def export_result(file_path: Path, file_format: str, logger: YetAnotherLogger=None, batch=False, export_objects=None) -> None:
-    bpy.context.evaluated_depsgraph_get().update()
-    export = FileExport(file_path, file_format, logger=logger, batch=batch, export_objects=export_objects)
-    export.export_template()
+    with _clean_export_state(export_objects):
+        bpy.context.evaluated_depsgraph_get().update()
+        export = FileExport(file_path, file_format, logger=logger, batch=batch, export_objects=export_objects)
+        export.export_template()
 
 def get_export_stats(context: Context) -> None:
     global _export_stats

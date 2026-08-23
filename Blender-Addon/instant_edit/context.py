@@ -23,7 +23,7 @@ CONTEXT_METADATA_FIELDS = (
     "context_id", "schema", "version", "plugin_instance_id", "capability",
     "source_game_path", "managed_destination", "target_file_path",
     "source_mod_directory", "source_mod_name", "source_mod_root_path",
-    "import_id", "callback_port", "collection_kind",
+    "import_id", "callback_port", "import_file_name", "collection_kind",
 )
 
 REQUIRED_OBJECT_FIELDS = (

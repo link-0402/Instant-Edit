@@ -2,14 +2,12 @@ import bpy
 
 from bpy.types import Context, Panel
 
-from .instant_edit.context import ContextValidationError, mesh_ids_from_name
+from .instant_edit.context import ContextValidationError, _value, mesh_ids_from_name
 from .instant_edit.ops import export_destination_context
 from .instant_edit.props import get_instant_edit_props
 from .materials import (
     attribute_display_name,
-    flow_data_count,
     material_paths,
-    mesh_flow_enabled,
     mesh_display_name,
     mesh_part_attributes,
     mesh_part_objects,
@@ -48,10 +46,11 @@ class XIVIE_PT_main(Panel):
             box.label(text="Pick a model through the Dalamud plugin.", icon="INFO")
         else:
             model_path = (ref.source_game_path or "").replace("\\", "/")
-            model_name = model_path.rsplit("/", 1)[-1] or props.display_name
-            model_directory = model_path.rsplit("/", 1)[0] if "/" in model_path else model_path
+            model_name = str(_value(ref.collection, "import_file_name", "") or props.display_name).strip()
+            if not model_name:
+                model_name = model_path.rsplit("/", 1)[-1]
             box.label(text=f"Model Name: {model_name}")
-            box.label(text=f"Model Path: {model_directory}")
+            box.label(text=f"Model Path: {model_path}")
             source_mod = ref.source_mod_root_path or ref.source_mod_name or ref.source_mod_directory
             box.label(text=f"Source Mod: {source_mod}")
             box.prop(props, "export_scope")
@@ -65,9 +64,9 @@ class XIVIE_PT_main(Panel):
         setup = box.row()
         setup.enabled = props.save_as_variant
         setup.prop(props, "auto_setup_penumbra")
-        group_name = box.row(align=True)
-        group_name.enabled = props.save_as_variant and props.auto_setup_penumbra
-        group_name.prop(props, "variant_group_name", text="Option Group")
+        group_name = setup.row(align=True)
+        group_name.enabled = props.auto_setup_penumbra
+        group_name.prop(props, "variant_group_name", text="")
         redraw = box.row(align=True)
         redraw.label(text="Redraw:")
         redraw.prop(props, "redraw_mode", expand=True)
@@ -209,26 +208,6 @@ class XIVIE_PT_main(Panel):
             material_row = aligned_control(mesh_box.column(align=True), "Material:")
             operator = material_row.operator("xiv_ie.mesh_material", text=text)
             operator.mesh_group = group.mesh_index
-
-            present_flow = flow_data_count(lod_zero)
-            flow_row = aligned_control(mesh_box.column(align=True), "Flow:")
-            add_flow = flow_row.operator(
-                "xiv_ie.mesh_flow",
-                text="Add Flow Data" if present_flow < len(lod_zero) else "Has Flow Data",
-            )
-            add_flow.mesh_group = group.mesh_index
-            add_flow.action = "ADD"
-            toggle_row = flow_row.row(align=True)
-            toggle_row.enabled = bool(present_flow)
-            enabled = mesh_flow_enabled(group.objects)
-            toggle = toggle_row.operator(
-                "xiv_ie.mesh_flow",
-                text="",
-                icon="RADIOBUT_ON" if enabled and present_flow else "RADIOBUT_OFF",
-                depress=enabled and bool(present_flow),
-            )
-            toggle.mesh_group = group.mesh_index
-            toggle.action = "TOGGLE"
 
         visible_lod_zero = {
             obj

@@ -304,8 +304,9 @@ public sealed class PenumbraService
 
     /// <summary>
     /// Write an export back to the resolved file in its original Penumbra mod.
-    /// The destination was captured in the server-owned import context and is
-    /// revalidated against Penumbra's current mod list before every write.
+    /// The destination is authoritative while the server-owned import context
+    /// is alive; only the source mod registration and destination folder are
+    /// checked again before writing.
     /// </summary>
     public async Task<ExportResult> ApplySourceExportAsync(
         string sourceModDirectory,
@@ -342,11 +343,6 @@ public sealed class PenumbraService
         await _exportGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            var actorError = await _framework.RunOnFrameworkThread(
-                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity, sourceFilePath)).ConfigureAwait(false);
-            if (actorError is not null)
-                return new ExportResult(false, actorError);
-
             var resolved = await _framework.RunOnFrameworkThread(
                 () => ResolveSourceModTargetOnFramework(sourceModDirectory, sourceFilePath)).ConfigureAwait(false);
             if (resolved.Target is null)
@@ -441,11 +437,13 @@ public sealed class PenumbraService
             var modRoot = Path.GetFullPath(root);
             var modFolder = Path.GetFullPath(Path.Combine(modRoot, registeredDirectory));
             var modelFile = Path.GetFullPath(sourceFilePath);
+            var modelFolder = Path.GetDirectoryName(modelFile);
             if (!IsPathWithin(modFolder, modRoot) || !IsPathWithin(modelFile, modFolder) ||
-                !File.Exists(modelFile) || !IsSafeLocalModelPath(modelFile))
-                return (null, "The original model is no longer a valid file inside its Penumbra mod.");
-            if (HasReparsePointInPath(modFolder, Path.GetDirectoryName(modelFile)!) ||
-                (File.GetAttributes(modelFile) & FileAttributes.ReparsePoint) != 0)
+                modelFolder is null || !Directory.Exists(modelFolder) ||
+                !IsSafeLocalModelPath(modelFile))
+                return (null, "The original Penumbra destination folder is no longer available.");
+            if (HasReparsePointInPath(modFolder, modelFolder) ||
+                (File.Exists(modelFile) && (File.GetAttributes(modelFile) & FileAttributes.ReparsePoint) != 0))
                 return (null, "The original model path contains an unsupported reparse point.");
 
             return (new SourceModTarget(registeredDirectory, modFolder, modelFile), null);
@@ -995,23 +993,18 @@ public sealed class PenumbraService
     {
         var groupId = ReadGuid(existingGroup?["Id"]) ?? Guid.NewGuid();
         var options = existingGroup?["Options"]?.DeepClone() as JsonArray ?? new JsonArray();
-        var noneOption = options
-            .OfType<JsonObject>()
-            .FirstOrDefault(option => string.Equals(JsonString(option["Name"]), "None", StringComparison.Ordinal));
-        if (noneOption is null)
+        if (existingGroup is null)
         {
-            noneOption = new JsonObject
+            options.Insert(0, new JsonObject
             {
                 ["Id"] = Guid.NewGuid(),
                 ["Name"] = "None",
-            };
-            options.Insert(0, noneOption);
+            });
         }
 
         var variantOption = options
             .OfType<JsonObject>()
             .FirstOrDefault(option =>
-                !ReferenceEquals(option, noneOption) &&
                 string.Equals(JsonString(option["Name"]), variantName, StringComparison.OrdinalIgnoreCase));
         if (variantOption is null)
         {

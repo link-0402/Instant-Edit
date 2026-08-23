@@ -203,6 +203,7 @@ class InstantImport(Operator):
                     "source_mod_root_path": self.source_mod_root_path,
                     "import_id": self.import_id,
                     "callback_port": self.callback_port,
+                    "import_file_name": file_path.name,
                 }
             else:
                 # Legacy requests are accepted only inside a generated,
@@ -216,10 +217,13 @@ class InstantImport(Operator):
                 }
                 collection_metadata = dict(context_metadata)
 
+            collection_metadata["import_file_name"] = file_path.name
+
             collection = create_collection(context.scene, collection_metadata)
 
+            object_label = self.import_name or file_path.stem
             imported_meshes = ModelImport.from_file(
-                str(file_path), self.import_name or file_path.stem,
+                str(file_path), object_label,
                 collection=collection, context_metadata=context_metadata,
                 select_objects=False,
                 require_collection=True,
@@ -248,7 +252,7 @@ class InstantImport(Operator):
 
             props.game_path    = self.source_game_path or self.game_path
             props.object_index = self.object_index
-            props.display_name = self.import_name or file_path.stem
+            props.display_name = file_path.name
             props.context_id = self.context_id if is_v1 else ""
             props.context_schema = self.schema if is_v1 else ""
             props.context_version = self.version if is_v1 else 0

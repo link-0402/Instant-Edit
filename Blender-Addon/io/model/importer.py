@@ -14,6 +14,16 @@ from .imp.weights    import create_weight_matrix, set_weights
 from ...xivpy.model  import XIVModel, Submesh, VertexDeclaration, VertexUsage
 from .com.exceptions import XIVMeshError
 
+
+def material_object_label(material_path: str) -> str:
+    """Return the compact object label derived from an FFXIV material path."""
+    name = (material_path or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if name.casefold().endswith(".mtrl"):
+        name = name[:-5]
+    if name.casefold().startswith("mt_"):
+        name = name[3:]
+    return name
+
     
 def create_material(name: str, col_idx) -> Material:
     colours = { 
@@ -221,7 +231,9 @@ class ModelImport:
         submesh_indices = indices[submesh.idx_offset: submesh.idx_offset + submesh.idx_count]
         submesh_streams, vert_start, vert_count = get_submesh_streams(streams, submesh_indices)
 
-        obj_name   = f"{self.mesh_idx}.{self.submesh_idx} {self.obj_name}"
+        material_path = self.model.materials[self.mesh.material_idx]
+        object_label = material_object_label(material_path) or self.obj_name
+        obj_name   = f"{self.mesh_idx}.{self.submesh_idx} {object_label}"
         blend_mesh = self._create_blend_mesh(submesh_streams, submesh_indices - vert_start, vert_count)
         new_obj    = bpy.data.objects.new(
                             name=obj_name, 
@@ -244,7 +256,6 @@ class ModelImport:
         create_shape_keys() 
         set_attributes(submesh.attribute_idx_mask)
         new_obj.data.materials.append(material)
-        material_path = self.model.materials[self.mesh.material_idx]
         new_obj["xiv_material"] = material_path
         new_obj["original_material"] = material.name
         new_obj["material_index"] = int(self.mesh.material_idx)
