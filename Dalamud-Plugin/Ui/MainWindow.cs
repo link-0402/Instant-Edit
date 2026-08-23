@@ -142,7 +142,9 @@ public sealed class MainWindow : IDisposable
         var actorId = SafeId($"actor:{actor.Entity.Address:X}:{actor.Entity.ObjectIndex}");
         ImGui.PushID(actorId); DrawOpaqueRow();
         var filteredView = IsFilteredResourceView;
-        var expanded = filteredView ? !_collapsedFiltered.Contains(actorId) : _expanded.Contains(actorId);
+        var expanded = filteredView
+            ? !_collapsedFiltered.Contains(actorId)
+            : SearchActive || _expanded.Contains(actorId);
         if (ImGui.Button(expanded ? "▼##actor-toggle" : "▶##actor-toggle", new Vector2(22, ImGui.GetFrameHeight()))) ToggleExpanded(actorId, expanded, filteredView);
         ImGui.SameLine(0, 4); var header = Safe($"{actor.Category}{(string.IsNullOrWhiteSpace(actor.Name) ? string.Empty : $"  ·  {actor.Name}")}", "Player");
         var actorLabelWidth = Math.Max(1, ImGui.GetContentRegionAvail().X);
@@ -169,7 +171,8 @@ public sealed class MainWindow : IDisposable
     private void DrawSection(ActorView actor, ResourceSection section, string label, string key)
     {
         var sectionValue = section.ToString();
-        var nodes = actor.Roots.Where(x => string.Equals(Safe(x.Section), sectionValue, StringComparison.OrdinalIgnoreCase) && HasModdedContent(x) && HasResourceTypeMatch(x));
+        var filterBySearch = SearchActive && !ActorIdentityMatches(actor);
+        var nodes = actor.Roots.Where(x => string.Equals(Safe(x.Section), sectionValue, StringComparison.OrdinalIgnoreCase) && HasModdedContent(x) && HasResourceTypeMatch(x) && (!filterBySearch || Matches(x)));
         nodes = section == ResourceSection.Gear
             ? nodes.OrderBy(x => GearRank(Safe(x.Slot))).ThenBy(x => x.Order)
             : nodes.OrderBy(x => x.Order);
@@ -179,26 +182,28 @@ public sealed class MainWindow : IDisposable
         ImGui.TableNextRow();
         ImGui.TableSetColumnIndex(0);
         var filteredView = IsFilteredResourceView;
-        var expanded = filteredView ? !_collapsedFiltered.Contains(key) : _expanded.Contains(key);
+        var expanded = filteredView
+            ? !_collapsedFiltered.Contains(key)
+            : SearchActive || _expanded.Contains(key);
         if (ImGui.Button(expanded ? "▼##section-toggle" : "▶##section-toggle", new Vector2(22, ImGui.GetFrameHeight()))) ToggleExpanded(key, expanded, filteredView);
         ImGui.SameLine(0, 4);
         if (ImGui.Selectable($"{label}##section-label", false, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0, ImGui.GetFrameHeight()))) ToggleExpanded(key, expanded, filteredView);
         if (expanded)
         {
             if (filteredView)
-                DrawFlatSection(ordered, key);
+                DrawFlatSection(ordered, key, filterBySearch);
             else
-                for (var i = 0; i < ordered.Count; i++) DrawNode(ordered[i], $"{key}:{i}", 2);
+                for (var i = 0; i < ordered.Count; i++) DrawNode(ordered[i], $"{key}:{i}", 2, filterBySearch, SearchActive);
         }
         ImGui.PopID();
     }
 
-    private void DrawFlatSection(IReadOnlyList<ResourceView> roots, string key)
+    private void DrawFlatSection(IReadOnlyList<ResourceView> roots, string key, bool filterBySearch)
     {
         var row = 0;
         foreach (var root in roots)
         {
-            foreach (var resource in Flatten(root).Where(MatchesSelectedResourceType))
+            foreach (var resource in Flatten(root).Where(x => MatchesSelectedResourceType(x) && (!filterBySearch || Matches(x))))
                 DrawFlatNode(root, resource, $"{key}:flat:{row++}");
         }
     }
@@ -228,7 +233,7 @@ public sealed class MainWindow : IDisposable
         ImGui.PopID();
     }
 
-    private void DrawNode(ResourceView node, string scope, int depth)
+    private void DrawNode(ResourceView node, string scope, int depth, bool filterBySearch, bool autoExpandSearch)
     {
         // Resource JSON is intentionally treated as untrusted display data.  Do not
         // pass any reflected value directly to an ImGui UTF-8 overload.
@@ -243,7 +248,7 @@ public sealed class MainWindow : IDisposable
         var children = node.Children ?? new List<ResourceView>();
         var hasChildren = children.Count > 0;
         var model = IsModel(node);
-        var expanded = _expanded.Contains(key);
+        var expanded = autoExpandSearch || _expanded.Contains(key);
         var arrow = hasChildren ? (expanded ? "▼" : "▶") : "  ";
 
         ImGui.TableNextRow();
@@ -273,7 +278,8 @@ public sealed class MainWindow : IDisposable
         if (expanded && hasChildren)
         {
             for (var i = 0; i < children.Count; i++)
-                if (children[i] is not null && HasModdedContent(children[i])) DrawNode(children[i], $"{scope}:{i}", depth + 1);
+                if (children[i] is not null && HasModdedContent(children[i]) && (!filterBySearch || Matches(children[i])))
+                    DrawNode(children[i], $"{scope}:{i}", depth + 1, filterBySearch, autoExpandSearch);
         }
         ImGui.PopID();
     }
@@ -365,9 +371,14 @@ public sealed class MainWindow : IDisposable
         return "Player";
     }
 
+    private bool SearchActive => !string.IsNullOrWhiteSpace(_filter);
+
+    private bool ActorIdentityMatches(ActorView actor)
+        => actor.Category.Contains(_filter, StringComparison.OrdinalIgnoreCase) || actor.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase);
+
     private bool ActorMatches(ActorView actor)
-        => (string.IsNullOrWhiteSpace(_filter) || actor.Category.Contains(_filter, StringComparison.OrdinalIgnoreCase) || actor.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase) || actor.Roots.Any(Matches))
-        && actor.Roots.Any(HasResourceTypeMatch);
+        => actor.Roots.Any(HasResourceTypeMatch)
+        && (!SearchActive || ActorIdentityMatches(actor) || actor.Roots.Any(Matches));
 
     private bool IsFilteredResourceView => !string.IsNullOrWhiteSpace(_resourceTypeFilter);
 
@@ -451,7 +462,15 @@ public sealed class MainWindow : IDisposable
     {
         var filter = Safe(_filter);
         var children = node.Children ?? new List<ResourceView>();
-        return string.IsNullOrWhiteSpace(filter) || Safe(node.Name).Contains(filter, StringComparison.OrdinalIgnoreCase) || Safe(node.Type).Contains(filter, StringComparison.OrdinalIgnoreCase) || Safe(node.SourceLabel).Contains(filter, StringComparison.OrdinalIgnoreCase) || Safe(node.ActualPath).Contains(filter, StringComparison.OrdinalIgnoreCase) || children.Any(Matches);
+        return string.IsNullOrWhiteSpace(filter)
+            || Safe(node.Name).Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || Safe(node.Type).Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || Safe(node.SourceLabel).Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || Safe(node.SourceModName).Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || Safe(node.SourceRelativePath).Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || Safe(node.GamePath).Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || Safe(node.ActualPath).Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || children.Any(Matches);
     }
     private static int GearRank(string slot)
     {
