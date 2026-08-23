@@ -71,4 +71,15 @@
     </Reference>
   </ItemGroup>
 
+  <!--
+    AppendTargetFrameworkToOutputPath is disabled because DalamudPackager
+    expects the plugin files at the output root. Older builds can leave
+    target-framework folders beside that output; remove them before packaging
+    so host-provided Dalamud assemblies are not shipped in the install ZIP.
+  -->
+  <Target Name="CleanStaleTargetFrameworkOutput"
+          BeforeTargets="DefaultDalamudPackagerDebug;DefaultDalamudPackagerRelease">
+    <RemoveDir Directories="$(OutputPath)net10.0;$(OutputPath)net10.0-windows" />
+  </Target>
+
 </Project>
