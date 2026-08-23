@@ -9,6 +9,7 @@ namespace InstantEdit;
 
 public sealed class Plugin : IDalamudPlugin
 {
+    private readonly object                    _configLock = new();
     private readonly IDalamudPluginInterface _pi;
     private readonly ICommandManager         _commands;
     private readonly IPluginLog              _log;
@@ -39,9 +40,20 @@ public sealed class Plugin : IDalamudPlugin
         _log      = log;
 
         _config    = pi.GetPluginConfig() as Configuration ?? new Configuration();
-        _contexts  = new ExportContextRegistry(Guid.NewGuid().ToString("N"));
         _penumbra  = new PenumbraService(pi, framework, log, objects);
         _onScreen  = new OnScreenService(objects, clientState, framework, _penumbra, log);
+        _contexts  = new ExportContextRegistry(
+            Guid.NewGuid().ToString("N"),
+            _config.ExportContexts,
+            contexts =>
+            {
+                lock (_configLock)
+                {
+                    _config.ExportContexts = contexts.ToList();
+                    _pi.SavePluginConfig(_config);
+                }
+            },
+            _onScreen.GetActorIdentity);
         _blender   = new BlenderClient(
             log,
             _config.ListenPort,
@@ -57,13 +69,13 @@ public sealed class Plugin : IDalamudPlugin
             data,
             chat,
             log,
-            () => _pi.SavePluginConfig(_config),
+            SaveConfiguration,
             () => _exportServer.Restart(),
             _pi.UiBuilder,
             textureProvider);
         _settingsWindow = new SettingsWindow(
             _config,
-            () => _pi.SavePluginConfig(_config),
+            SaveConfiguration,
             () => _exportServer.Restart(),
             _log);
 
@@ -101,6 +113,12 @@ public sealed class Plugin : IDalamudPlugin
         _window.Toggle();
     }
 
+    private void SaveConfiguration()
+    {
+        lock (_configLock)
+            _pi.SavePluginConfig(_config);
+    }
+
     public void Dispose()
     {
         _exportServer.Dispose();
@@ -112,6 +130,6 @@ public sealed class Plugin : IDalamudPlugin
         _pi.UiBuilder.OpenMainUi -= _window.Open;
         _pi.UiBuilder.OpenConfigUi -= _settingsWindow.Open;
         _window.Dispose();
-        _pi.SavePluginConfig(_config);
+        SaveConfiguration();
     }
 }

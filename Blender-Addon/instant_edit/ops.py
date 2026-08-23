@@ -26,6 +26,14 @@ MAX_PLUGIN_RESPONSE_SIZE = 64 * 1024
 INVALID_VARIANT_CHARS = frozenset('<>:"/\\|?*')
 
 
+class PluginResponseError(ValueError):
+    def __init__(self, status: int, code: str, message: str):
+        self.status = status
+        self.code = code
+        self.message = message
+        super().__init__(f"plugin returned HTTP {status} ({code}): {message}")
+
+
 def normalise_variant_name(value: str) -> str:
     """Return a safe sibling .mdl file name without accepting a path."""
     name = (value or "").strip()
@@ -48,6 +56,18 @@ def validate_variant_name(source_game_path: str, variant_name: str) -> str:
         source_name = source_name[:-4]
     if source_name and name.casefold() == source_name.casefold():
         raise ValueError("Variant name must differ from the originally imported model name.")
+    return name
+
+
+def normalise_variant_group_name(value: str) -> str:
+    """Return a safe Penumbra option-group name."""
+    name = (value or "").strip()
+    if not name:
+        raise ValueError("Enter a Penumbra option group name.")
+    if len(name) > 120:
+        raise ValueError("Penumbra option group name is too long.")
+    if any(ord(char) < 32 for char in name):
+        raise ValueError("Penumbra option group name contains a control character.")
     return name
 
 
@@ -393,6 +413,7 @@ class ClearInstantEditContexts(Operator):
             "capability": "",
             "managed_destination": "",
             "last_export_id": "",
+            "variant_group_name": "Instant Edit Variants",
             "last_status": "Instant Edit contexts cleared.",
         }.items():
             setattr(props, field, value)
@@ -402,7 +423,8 @@ class ClearInstantEditContexts(Operator):
 
 
 def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
-                         sha256: str, props, variant_name: str | None) -> dict:
+                         sha256: str, props, variant_name: str | None,
+                         variant_group_name: str | None = None) -> dict:
     """Build the versioned Dalamud export envelope."""
     payload = {
         "schema": "instant-edit.export",
@@ -420,7 +442,54 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
         payload["variantName"] = variant_name
         if props.auto_setup_penumbra:
             payload["setupInPenumbra"] = True
+            payload["variantGroupName"] = variant_group_name
     return payload
+
+
+def _plugin_error_from_body(body: bytes, status: int) -> PluginResponseError:
+    try:
+        result = json.loads(body.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return PluginResponseError(status, "http_error", "plugin returned an invalid response")
+    if not isinstance(result, dict):
+        return PluginResponseError(status, "http_error", "plugin returned an invalid response")
+    return PluginResponseError(
+        status,
+        str(result.get("code", "http_error")),
+        str(result.get("error", result.get("message", "plugin rejected the export"))),
+    )
+
+
+def _send_plugin_export(ref, payload: dict) -> None:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{ref.callback_port}/export",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+        if len(body) > MAX_PLUGIN_RESPONSE_SIZE:
+            raise ValueError("plugin response is too large")
+        if not 200 <= status < 300:
+            raise _plugin_error_from_body(body, status)
+        try:
+            result = json.loads(body.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError("plugin returned an invalid response") from error
+        if not isinstance(result, dict) or not result.get("ok"):
+            raise PluginResponseError(
+                status,
+                str((result or {}).get("code", "plugin_error")),
+                str((result or {}).get("error", "unknown plugin error")),
+            )
+    except HTTPError as error:
+        body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+        raise _plugin_error_from_body(body, error.code) from error
+    except (URLError, TimeoutError, OSError) as error:
+        raise ValueError(str(error) or "invalid plugin response") from error
 
 
 def export_destination_context(context: Context, destination: str | None = None):
@@ -446,6 +515,11 @@ def perform_instant_export(context: Context) -> Path:
     ref = export_destination_context(context)
     props = get_instant_edit_props()
     variant_name = validate_variant_name(ref.source_game_path, props.variant_name) if props.save_as_variant else None
+    variant_group_name = (
+        normalise_variant_group_name(props.variant_group_name)
+        if variant_name is not None and props.auto_setup_penumbra
+        else None
+    )
     export_objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
     if not export_objects:
         raise ValueError("No visible mesh objects to export.")
@@ -486,28 +560,37 @@ def perform_instant_export(context: Context) -> Path:
         digest.hexdigest(),
         props,
         variant_name,
-    )
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{ref.callback_port}/export",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        variant_group_name,
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            status = getattr(response, "status", None) or response.getcode()
-            if not 200 <= status < 300:
-                raise ValueError(f"plugin returned HTTP {status}")
-            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
-            if len(body) > MAX_PLUGIN_RESPONSE_SIZE:
-                raise ValueError("plugin response is too large")
-            result = json.loads(body.decode("utf-8"))
-            if not isinstance(result, dict) or not result.get("ok"):
-                raise ValueError((result or {}).get("error", "unknown plugin error"))
-    except HTTPError as e:
-        raise ValueError(f"plugin returned HTTP {e.code}") from e
-    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
-        raise ValueError(str(e) or "invalid plugin response") from e
+        _send_plugin_export(ref, payload)
+    except PluginResponseError as error:
+        if error.status != 410 and not (
+            error.status == 401 and error.code == "plugin_instance_mismatch"
+        ):
+            raise
+
+        # A saved scene may outlive the runtime context or the plugin instance.
+        # Reattach once and rebuild the envelope with the plugin-issued
+        # capability and instance id.
+        from .recovery import reattach_collection
+
+        if not reattach_collection(ref.collection, context.scene):
+            raise ValueError(
+                f"plugin returned HTTP {error.status} ({error.code}); context recovery failed"
+            ) from error
+        ref = validate_context(ref.context_id, context.scene)
+        payload = build_export_payload(
+            ref,
+            export_id,
+            mdl_path,
+            byte_size,
+            digest.hexdigest(),
+            props,
+            variant_name,
+            variant_group_name,
+        )
+        _send_plugin_export(ref, payload)
 
     props.last_export_id = export_id
     target_file_path = Path(ref.target_file_path)

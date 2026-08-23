@@ -50,6 +50,10 @@ Note that you will not be getting automatic feature and compatability updates th
 Blender and FFXIV must be running at the same time. If the plugin reports that
 Blender is offline, restart Blender with the add-on enabled.
 
+Saved Instant Edit scenes reconnect their export context automatically when the
+updated add-on and Dalamud plugin are running. The plugin remains the authority
+for the original Penumbra destination.
+
 The Blender add-on also includes **Simple Export** for exporting visible mesh
 objects as MDL, FBX, or glTF files.
 You may also save a model as a variant, giving it a new file name. The addon will then

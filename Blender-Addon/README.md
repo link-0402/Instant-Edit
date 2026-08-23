@@ -15,6 +15,8 @@ plus a standalone Simple Export panel.
   YAA-compatible `group.part Name` object names.
 - Quick Export back to the original source mod, including variants and optional
   Penumbra setup.
+- Persists import authorization in the Dalamud plugin and reconnects saved scene
+  contexts after Blender or plugin restarts.
 - Penumbra-compatible SELF, ALL, and Glamourer-assisted redraw modes after
   Quick Export.
 - Simple Export to MDL, FBX, or glTF for visible mesh objects.

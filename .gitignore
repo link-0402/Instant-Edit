@@ -40,3 +40,5 @@ htmlcov/
 # is rebuilt by the local script and GitHub Pages workflow.
 blender_repo/*.zip
 blender_repo/index.html
+
+ideas.txt

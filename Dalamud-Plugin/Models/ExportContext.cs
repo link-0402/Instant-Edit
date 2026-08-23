@@ -69,5 +69,69 @@ public sealed record InstantEditImportContext
     public required int CallbackPort { get; init; }
 }
 
+/// <summary>
+/// Durable portion of an import context. Runtime-only actor identity and
+/// in-flight export reservations are intentionally excluded.
+/// </summary>
+public sealed record PersistedExportContext
+{
+    [JsonPropertyName("contextId")]
+    public required string ContextId { get; init; }
+
+    [JsonPropertyName("importId")]
+    public required string ImportId { get; init; }
+
+    [JsonPropertyName("capability")]
+    public required string Capability { get; init; }
+
+    [JsonPropertyName("gamePath")]
+    public required string GamePath { get; init; }
+
+    [JsonPropertyName("objectIndex")]
+    public required ushort ObjectIndex { get; init; }
+
+    [JsonPropertyName("modName")]
+    public required string ModName { get; init; }
+
+    [JsonPropertyName("targetFilePath")]
+    public required string TargetFilePath { get; init; }
+
+    [JsonPropertyName("managedDestination")]
+    public required string TargetFolder { get; init; }
+
+    [JsonPropertyName("sourceModDirectory")]
+    public required string SourceModDirectory { get; init; }
+
+    [JsonPropertyName("sourceModName")]
+    public required string SourceModName { get; init; }
+
+    [JsonPropertyName("sourceModRootPath")]
+    public string? SourceModRootPath { get; init; }
+
+    [JsonPropertyName("callbackPort")]
+    public required int CallbackPort { get; init; }
+
+    [JsonPropertyName("expiresAt")]
+    public required DateTimeOffset ExpiresAt { get; init; }
+
+    public static PersistedExportContext FromContext(InstantEditImportContext context, DateTimeOffset expiresAt)
+        => new()
+        {
+            ContextId = context.ContextId,
+            ImportId = context.ImportId,
+            Capability = context.Capability,
+            GamePath = context.GamePath,
+            ObjectIndex = context.ObjectIndex,
+            ModName = context.ModName,
+            TargetFilePath = context.TargetFilePath,
+            TargetFolder = context.TargetFolder,
+            SourceModDirectory = context.SourceModDirectory,
+            SourceModName = context.SourceModName,
+            SourceModRootPath = context.SourceModRootPath,
+            CallbackPort = context.CallbackPort,
+            ExpiresAt = expiresAt,
+        };
+}
+
 /// <summary> A completed export operation retained for idempotent retries. </summary>
 public sealed record ExportReceipt(bool Success, string Code, string Message);

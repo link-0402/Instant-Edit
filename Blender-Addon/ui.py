@@ -65,6 +65,9 @@ class XIVIE_PT_main(Panel):
         setup = box.row()
         setup.enabled = props.save_as_variant
         setup.prop(props, "auto_setup_penumbra")
+        group_name = box.row(align=True)
+        group_name.enabled = props.save_as_variant and props.auto_setup_penumbra
+        group_name.prop(props, "variant_group_name", text="Option Group")
         redraw = box.row(align=True)
         redraw.label(text="Redraw:")
         redraw.prop(props, "redraw_mode", expand=True)

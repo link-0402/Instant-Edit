@@ -48,6 +48,7 @@ class ContextRef:
     objects: tuple
     mesh_objects: tuple
     context_id: str
+    import_id: str
     plugin_instance_id: str
     capability: str
     source_game_path: str
@@ -150,6 +151,38 @@ def clear_context_metadata(scene=None) -> int:
     return len(collections)
 
 
+def apply_authoritative_context(collection, payload: dict) -> None:
+    """Replace persisted routing metadata with the plugin's reattach response."""
+    context_id = _value(collection, "context_id", "")
+    import_id = _value(collection, "import_id", "")
+    if payload.get("contextId") != context_id:
+        raise ContextValidationError("context reattach response changed the context id")
+    if import_id and payload.get("importId") != import_id:
+        raise ContextValidationError("context reattach response changed the import id")
+    if payload.get("schema") != SCHEMA or payload.get("version") != VERSION:
+        raise ContextValidationError("context reattach response has an invalid schema or version")
+
+    fields = {
+        "context_id": payload.get("contextId"),
+        "schema": payload.get("schema"),
+        "version": payload.get("version"),
+        "plugin_instance_id": payload.get("pluginInstanceId"),
+        "capability": payload.get("capability"),
+        "source_game_path": payload.get("sourceGamePath"),
+        "managed_destination": payload.get("managedDestination"),
+        "target_file_path": payload.get("targetFilePath"),
+        "source_mod_directory": payload.get("sourceModDirectory"),
+        "source_mod_name": payload.get("sourceModName"),
+        "source_mod_root_path": payload.get("sourceModRootPath") or "",
+        "import_id": payload.get("importId"),
+        "callback_port": payload.get("callbackPort"),
+    }
+    if not all(value is not None for value in fields.values()):
+        raise ContextValidationError("context reattach response is incomplete")
+    for name, value in fields.items():
+        _set(collection, name, value)
+
+
 def _require_int(value, name: str, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ContextValidationError(f"{name} must be a non-negative integer")
@@ -221,6 +254,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
     source_mod_directory = _value(collection, "source_mod_directory", "")
     source_mod_name = _value(collection, "source_mod_name", "")
     source_mod_root_path = _value(collection, "source_mod_root_path", "")
+    import_id = _value(collection, "import_id", "")
     callback_port = _value(collection, "callback_port", 0)
     if not all(isinstance(value, str) and value for value in (
         plugin_instance_id, capability, source_game_path, managed_destination,
@@ -278,6 +312,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         objects=objects,
         mesh_objects=tuple(mesh_objects),
         context_id=context_id,
+        import_id=import_id if isinstance(import_id, str) else "",
         plugin_instance_id=plugin_instance_id,
         capability=capability,
         source_game_path=source_game_path,

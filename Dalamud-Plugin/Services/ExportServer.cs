@@ -50,8 +50,29 @@ public sealed class ExportServer : IDisposable
         [JsonPropertyName("setupInPenumbra")]
         public bool SetupInPenumbra { get; set; }
 
+        [JsonPropertyName("variantGroupName")]
+        public string? VariantGroupName { get; set; }
+
         [JsonPropertyName("redrawMode")]
         public string? RedrawMode { get; set; }
+    }
+
+    private sealed class ReattachRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+
+        [JsonPropertyName("importId")]
+        public string? ImportId { get; set; }
+
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
     }
 
     private sealed record HttpRequest(string Method, string Path, byte[] Body);
@@ -194,7 +215,55 @@ public sealed class ExportServer : IDisposable
         var path   = request.Path;
 
         if (method == "GET" && path.TrimEnd('/') == "/status")
-            return (200, Json(new { ok = true, running = true, target = "original_source_mod" }));
+            return (200, Json(new
+            {
+                ok = true,
+                running = true,
+                target = "original_source_mod",
+                capabilities = new[] { "instant-edit.context-reattach.v1" },
+            }));
+
+        if (method == "POST" && path.TrimEnd('/') == "/context/reattach")
+        {
+            string body;
+            try
+            {
+                body = new UTF8Encoding(false, true).GetString(request.Body);
+            }
+            catch (DecoderFallbackException)
+            {
+                return Error(400, "invalid_utf8", "request body is not valid UTF-8");
+            }
+
+            ReattachRequest? reattach;
+            try
+            {
+                reattach = JsonSerializer.Deserialize<ReattachRequest>(body, JsonOpts);
+            }
+            catch (Exception e)
+            {
+                _log.Error(e, "Failed to parse context reattach request.");
+                return Error(400, "invalid_json", "request body is not valid JSON");
+            }
+
+            if (reattach is null)
+                return Error(400, "malformed_request", "request must be a JSON object");
+
+            var reattachError = ValidateReattachEnvelope(reattach);
+            if (reattachError is not null)
+                return Error(StatusForCode(reattachError), reattachError, "unsupported or malformed reattach envelope");
+
+            if (!_contexts.TryReattach(
+                    reattach.ContextId!,
+                    reattach.ImportId!,
+                    reattach.Capability!,
+                    _config.ListenPort,
+                    out var context,
+                    out var registryCode))
+                return Error(StatusForCode(registryCode), registryCode, "export context was rejected");
+
+            return (200, Json(new { ok = true, code = registryCode, context }));
+        }
 
         if (method == "POST" && path.TrimEnd('/') == "/export")
         {
@@ -262,6 +331,7 @@ public sealed class ExportServer : IDisposable
                         target,
                         export.FilePath!,
                         export.VariantName,
+                        export.VariantGroupName,
                         export.SetupInPenumbra,
                         ParseRedrawMode(export.RedrawMode)).ConfigureAwait(false);
                 }
@@ -283,6 +353,7 @@ public sealed class ExportServer : IDisposable
             InstantEditImportContext target,
             string filePath,
             string? variantName,
+            string? variantGroupName,
             bool setupVariantInPenumbra,
             ExportRedrawMode redrawMode)
         {
@@ -298,6 +369,7 @@ public sealed class ExportServer : IDisposable
                 target.ObjectIndex,
                 target.ActorIdentity,
                 variantName,
+                variantGroupName,
                 setupVariantInPenumbra,
                 redrawMode).ConfigureAwait(false);
             return new ExportReceipt(
@@ -328,8 +400,22 @@ public sealed class ExportServer : IDisposable
             return "invalid_variant_name";
         if (request.SetupInPenumbra && request.VariantName is null)
             return "penumbra_setup_requires_variant";
+        if (request.SetupInPenumbra && !PenumbraService.IsSafeVariantGroupName(request.VariantGroupName))
+            return "penumbra_setup_requires_group_name";
         if (!TryParseRedrawMode(request.RedrawMode, out _))
             return "invalid_redraw_mode";
+        return null;
+    }
+
+    private static string? ValidateReattachEnvelope(ReattachRequest request)
+    {
+        if (!string.Equals(request.Schema, "instant-edit.reattach", StringComparison.Ordinal))
+            return request.Version == 1 ? "unsupported_schema" : "unsupported_version";
+        if (request.Version != 1)
+            return "unsupported_version";
+        if (!IsSafeId(request.ContextId) || !IsSafeId(request.ImportId) ||
+            string.IsNullOrWhiteSpace(request.Capability))
+            return "missing_field";
         return null;
     }
 
@@ -366,6 +452,10 @@ public sealed class ExportServer : IDisposable
             return false;
         return value.All(c => !char.IsControl(c));
     }
+
+    private static bool IsSafeId(string? value)
+        => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&
+           value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
 
     private static async Task<(string Code, string Message)?> VerifyExportFileAsync(
         string filePath,

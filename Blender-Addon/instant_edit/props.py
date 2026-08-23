@@ -159,6 +159,13 @@ class XIVIEInstantEditProps(PropertyGroup):
         default=False,
     )  # type: ignore
 
+    variant_group_name: StringProperty(
+        name="Penumbra Option Group",
+        description="Existing Penumbra option group to reuse, or name for a new group",
+        default="Instant Edit Variants",
+        maxlen=120,
+    )  # type: ignore
+
     redraw_mode: EnumProperty(
         name="Redraw",
         description="How characters should update after Quick Export",

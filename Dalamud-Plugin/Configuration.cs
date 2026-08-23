@@ -1,11 +1,12 @@
 using Dalamud.Configuration;
+using InstantEdit.Models;
 
 namespace InstantEdit;
 
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
 
     /// <summary> Port the Blender addon listens on for import commands. </summary>
     public int BlenderPort { get; set; } = 42424;
@@ -21,5 +22,8 @@ public sealed class Configuration : IPluginConfiguration
 
     /// <summary>Name of the scene armature used when <see cref="UseExistingSkeleton"/> is enabled.</summary>
     public string SkeletonObjectName { get; set; } = "Skeleton";
+
+    /// <summary>Import contexts retained so saved Blender scenes can reconnect after a restart.</summary>
+    public List<PersistedExportContext> ExportContexts { get; set; } = [];
 
 }

@@ -4,8 +4,10 @@ using InstantEdit.Models;
 namespace InstantEdit.Services;
 
 /// <summary>
-/// In-memory authority for the import/export relationship. The addon can echo a
-/// context, but it cannot choose a different target because all target data lives here.
+/// Authority for the import/export relationship. Active contexts are indexed in
+/// memory, while their durable records let a saved Blender scene reconnect after
+/// a plugin or application restart. The addon can echo a context, but it cannot
+/// choose a different target because all target data lives here.
 /// </summary>
 public sealed class ExportContextRegistry : IDisposable
 {
@@ -19,8 +21,8 @@ public sealed class ExportContextRegistry : IDisposable
 
     private sealed class ContextEntry
     {
-        public required InstantEditImportContext Context { get; init; }
-        public required DateTimeOffset ExpiresAt { get; init; }
+        public required InstantEditImportContext Context { get; set; }
+        public required DateTimeOffset ExpiresAt { get; set; }
         public Dictionary<string, ExportEntry> Exports { get; } = new(StringComparer.Ordinal);
     }
 
@@ -39,17 +41,44 @@ public sealed class ExportContextRegistry : IDisposable
     }
 
     private readonly object _lock = new();
+    private readonly object _persistenceLock = new();
     private readonly Dictionary<string, ContextEntry> _contexts = new(StringComparer.Ordinal);
     private readonly TimeSpan _lifetime;
+    private readonly Action<IReadOnlyList<PersistedExportContext>>? _persist;
+    private readonly Func<int, ActorIdentity?>? _actorIdentityProvider;
     private bool _disposed;
 
-    public ExportContextRegistry(string pluginInstanceId, TimeSpan? lifetime = null)
+    public ExportContextRegistry(
+        string pluginInstanceId,
+        IEnumerable<PersistedExportContext>? persisted = null,
+        Action<IReadOnlyList<PersistedExportContext>>? persist = null,
+        Func<int, ActorIdentity?>? actorIdentityProvider = null,
+        TimeSpan? lifetime = null)
     {
         if (string.IsNullOrWhiteSpace(pluginInstanceId))
             throw new ArgumentException("A plugin instance id is required.", nameof(pluginInstanceId));
 
         PluginInstanceId = pluginInstanceId;
-        _lifetime = lifetime ?? TimeSpan.FromMinutes(30);
+        _lifetime = lifetime ?? TimeSpan.FromDays(30);
+        _persist = persist;
+        _actorIdentityProvider = actorIdentityProvider;
+
+        var now = DateTimeOffset.UtcNow;
+        if (persisted is not null)
+        {
+            foreach (var saved in persisted)
+            {
+                if (saved is null || saved.ExpiresAt <= now || !IsSafePersistedContext(saved))
+                    continue;
+
+                var context = RuntimeContext(saved, _actorIdentityProvider?.Invoke(saved.ObjectIndex));
+                _contexts[context.ContextId] = new ContextEntry
+                {
+                    Context = context,
+                    ExpiresAt = saved.ExpiresAt,
+                };
+            }
+        }
     }
 
     public string PluginInstanceId { get; }
@@ -124,7 +153,70 @@ public sealed class ExportContextRegistry : IDisposable
             };
         }
 
+        Persist();
+
         return context;
+    }
+
+    public bool TryReattach(
+        string contextId,
+        string importId,
+        string capability,
+        int callbackPort,
+        out InstantEditImportContext? context,
+        out string code)
+    {
+        context = null;
+        code = "stale_context";
+
+        if (callbackPort is < 1 or > 65535)
+        {
+            code = "malformed_request";
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                code = "server_stopped";
+                return false;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            RemoveExpiredLocked(now);
+            if (!IsSafeId(contextId) || !_contexts.TryGetValue(contextId, out var entry))
+            {
+                code = "stale_context";
+                return false;
+            }
+
+            if (!string.Equals(entry.Context.ImportId, importId, StringComparison.Ordinal))
+            {
+                code = "stale_context";
+                return false;
+            }
+
+            if (!CapabilityMatches(entry.Context.Capability, capability))
+            {
+                code = "invalid_capability";
+                return false;
+            }
+
+            var refreshed = entry.Context with
+            {
+                PluginInstanceId = PluginInstanceId,
+                ActorIdentity = _actorIdentityProvider?.Invoke(entry.Context.ObjectIndex),
+                CallbackPort = callbackPort,
+            };
+            entry.Context = refreshed;
+            entry.ExpiresAt = now + _lifetime;
+            context = refreshed;
+        }
+
+        Persist();
+        code = "context_reattached";
+        return true;
     }
 
     public bool TryBeginExport(
@@ -164,19 +256,7 @@ public sealed class ExportContextRegistry : IDisposable
                 return false;
             }
 
-            byte[] suppliedCapability;
-            try
-            {
-                suppliedCapability = Convert.FromBase64String(capability ?? string.Empty);
-            }
-            catch (FormatException)
-            {
-                code = "invalid_capability";
-                return false;
-            }
-
-            if (!CryptographicOperations.FixedTimeEquals(
-                    Convert.FromBase64String(entry.Context.Capability), suppliedCapability))
+            if (!CapabilityMatches(entry.Context.Capability, capability))
             {
                 code = "invalid_capability";
                 return false;
@@ -227,8 +307,11 @@ public sealed class ExportContextRegistry : IDisposable
 
     public void RemoveContext(string contextId)
     {
+        var removed = false;
         lock (_lock)
-            _contexts.Remove(contextId);
+            removed = _contexts.Remove(contextId);
+        if (removed)
+            Persist();
     }
 
     private void RemoveExpiredLocked(DateTimeOffset now)
@@ -240,6 +323,76 @@ public sealed class ExportContextRegistry : IDisposable
     private static bool IsSafeId(string? value)
         => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&
            value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
+
+    private static bool CapabilityMatches(string expected, string? supplied)
+    {
+        try
+        {
+            var expectedBytes = Convert.FromBase64String(expected);
+            var suppliedBytes = Convert.FromBase64String(supplied ?? string.Empty);
+            return expectedBytes.Length == 32 &&
+                   CryptographicOperations.FixedTimeEquals(expectedBytes, suppliedBytes);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private InstantEditImportContext RuntimeContext(PersistedExportContext saved, ActorIdentity? actorIdentity)
+        => new()
+        {
+            PluginInstanceId = PluginInstanceId,
+            ContextId = saved.ContextId,
+            ImportId = saved.ImportId,
+            Capability = saved.Capability,
+            GamePath = saved.GamePath,
+            ObjectIndex = saved.ObjectIndex,
+            ActorIdentity = actorIdentity,
+            ModName = saved.ModName,
+            TargetFilePath = saved.TargetFilePath,
+            TargetFolder = saved.TargetFolder,
+            SourceModDirectory = saved.SourceModDirectory,
+            SourceModName = saved.SourceModName,
+            SourceModRootPath = saved.SourceModRootPath,
+            CallbackPort = saved.CallbackPort,
+        };
+
+    private static bool IsSafePersistedContext(PersistedExportContext saved)
+    {
+        if (!IsSafeId(saved.ContextId) || !IsSafeId(saved.ImportId) ||
+            !CapabilityMatches(saved.Capability, saved.Capability) ||
+            !PenumbraService.IsSafeGamePath(saved.GamePath) ||
+            !PenumbraService.IsSafeModName(saved.SourceModDirectory) ||
+            !PenumbraService.IsSafeLocalModelPath(saved.TargetFilePath) ||
+            saved.CallbackPort is < 1 or > 65535 ||
+            string.IsNullOrWhiteSpace(saved.SourceModName) || string.IsNullOrWhiteSpace(saved.TargetFolder))
+            return false;
+
+        return true;
+    }
+
+    private void Persist()
+    {
+        if (_persist is null)
+            return;
+
+        // Keep snapshot creation and the external save callback in one ordered
+        // critical section. A later mutation can then never persist before an
+        // older snapshot and subsequently be overwritten by it.
+        lock (_persistenceLock)
+        {
+            List<PersistedExportContext> snapshot;
+            lock (_lock)
+            {
+                snapshot = _contexts.Values
+                    .Select(entry => PersistedExportContext.FromContext(entry.Context, entry.ExpiresAt))
+                    .ToList();
+            }
+
+            _persist(snapshot);
+        }
+    }
 
     private void ThrowIfDisposed()
     {
