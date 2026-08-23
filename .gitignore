@@ -1,13 +1,6 @@
 # Build output
 **/obj/
 **/bin/
-!Dalamud-Plugin/bin/
-Dalamud-Plugin/bin/*
-!Dalamud-Plugin/bin/Release/
-Dalamud-Plugin/bin/Release/*
-!Dalamud-Plugin/bin/Release/InstantEdit/
-!Dalamud-Plugin/bin/Release/InstantEdit/InstantEdit.json
-!Dalamud-Plugin/bin/Release/InstantEdit/latest.zip
 
 # Python and local tooling
 **/__pycache__/
@@ -34,7 +27,7 @@ htmlcov/
 # Local release archives are kept only when they are explicit distribution files.
 *.zip
 !XIV-Instant-Edit.zip
-!Dalamud-Plugin/bin/Release/InstantEdit/latest.zip
+!Dalamud-Plugin/InstantEdit/latest.zip
 
 # Generated Blender static-repository package; the listing is tracked, the ZIP
 # is rebuilt by the local script and GitHub Pages workflow.
@@ -42,3 +35,6 @@ blender_repo/*.zip
 blender_repo/index.html
 
 ideas.txt
+
+# Agent-local release workflow notes.
+coding-agent-release-workflow.txt

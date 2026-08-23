@@ -38,6 +38,8 @@ Note that you will not be getting automatic feature and compatability updates th
 3. Enable the repository, save your settings, and open `/xlplugins`.
 4. Find and install **Instant Edit**.
 
+The repository serves the current plugin build from the [raw Dalamud package](https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Dalamud-Plugin/InstantEdit/latest.zip).
+
 ## How to use it
 
 1. Start Blender and make sure the XIV Instant Edit add-on is enabled.

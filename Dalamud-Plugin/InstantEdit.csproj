@@ -82,4 +82,18 @@
     <RemoveDir Directories="$(OutputPath)net10.0;$(OutputPath)net10.0-windows" />
   </Target>
 
+  <!-- Keep the published package outside build output so it can be served by the raw repository URL. -->
+  <Target Name="CopyReleasePackageToDistribution"
+          AfterTargets="DefaultDalamudPackagerRelease"
+          Condition="'$(Configuration)' == 'Release'">
+    <PropertyGroup>
+      <ReleasePackagePath>$(OutputPath)$(AssemblyName)\latest.zip</ReleasePackagePath>
+      <DistributionPackagePath>$(MSBuildProjectDirectory)\InstantEdit\latest.zip</DistributionPackagePath>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(ReleasePackagePath)')"
+           Text="DalamudPackager did not produce the expected release package: $(ReleasePackagePath)" />
+    <MakeDir Directories="$(MSBuildProjectDirectory)\InstantEdit" />
+    <Copy SourceFiles="$(ReleasePackagePath)" DestinationFiles="$(DistributionPackagePath)" />
+  </Target>
+
 </Project>
