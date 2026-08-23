@@ -61,6 +61,10 @@ public sealed record InstantEditImportContext
     [JsonPropertyName("sourceModName")]
     public required string SourceModName { get; init; }
 
+    /// <summary>Physical root directory of the source Penumbra mod.</summary>
+    [JsonPropertyName("sourceModRootPath")]
+    public string? SourceModRootPath { get; init; }
+
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
 }

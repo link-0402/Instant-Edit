@@ -10,7 +10,8 @@ Modifications made in 2026 include:
 - adding capability negotiation and secure, isolated export contexts;
 - adding in-place source-mod and variant exports through the Dalamud plugin;
 - adding generated-armature and existing-scene-armature import modes;
-- adding focused per-mesh-group material path viewing and assignment;
+- adapting Yet Another Addon's Mesh Studio overview for compact per-mesh
+  object, part, attribute, material, and flow-data controls;
 - allowing Quick Export to include all visible, name-defined mesh parts and groups;
 - allowing duplicated Instant Edit meshes to be moved outside their source collection;
 - adding SELF, ALL, and Glamourer-assisted redraw modes for Quick Export;

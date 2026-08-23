@@ -24,6 +24,8 @@ _server_error         = ""
 
 def _string(data: dict, *names: str, required: bool = False, max_length: int = 1024) -> str:
     value = next((data.get(name) for name in names if name in data), "")
+    if value is None and not required:
+        return ""
     if not isinstance(value, str) or len(value) > max_length or (required and not value):
         label = names[0]
         raise ValueError(f"{label} must be a non-empty string" if required else f"{label} must be a string")
@@ -159,6 +161,9 @@ class _ImportHandler(BaseHTTPRequestHandler):
             source_mod_name = _string(
                 data, "sourceModName", "modName", required=True, max_length=512
             )
+            source_mod_root_path = _string(
+                data, "sourceModRootPath", max_length=4096
+            )
             callback_port = data.get("callbackPort", data.get("pluginPort", 0)) or _callback_port
             if isinstance(callback_port, bool) or not isinstance(callback_port, int) or not 1 <= callback_port <= 65535:
                 raise ValueError("callbackPort must be between 1 and 65535")
@@ -179,6 +184,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 "targetFilePath": target_file_path,
                 "sourceModDirectory": source_mod_directory,
                 "sourceModName": source_mod_name,
+                "sourceModRootPath": source_mod_root_path,
                 "callbackPort": callback_port,
                 "name": _string(data, "displayName", "name", max_length=255),
                 "importOptions": import_options,
@@ -309,6 +315,7 @@ def poll_import_queue() -> float:
                     target_file_path=data.get("targetFilePath", ""),
                     source_mod_directory=data.get("sourceModDirectory", ""),
                     source_mod_name=data.get("sourceModName", ""),
+                    source_mod_root_path=data.get("sourceModRootPath", ""),
                     import_id=data.get("importId", ""),
                     armature_mode=data.get("importOptions", {}).get("armatureMode", "generated"),
                     armature_target=data.get("importOptions", {}).get("targetObject", "Skeleton"),

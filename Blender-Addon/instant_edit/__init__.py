@@ -31,4 +31,7 @@ def unregister() -> None:
         bpy.app.timers.unregister(poll_import_queue)
     except Exception:
         pass
-    remove_addon_properties()
+    try:
+        remove_addon_properties()
+    except (AttributeError, RuntimeError):
+        pass

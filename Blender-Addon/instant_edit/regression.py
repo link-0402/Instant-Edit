@@ -238,8 +238,8 @@ def run_staging_isolation_regression() -> None:
 
         instant_props = bpy.context.scene.xiv_ie_instant_edit_props
         _require(
-            instant_props.redraw_mode == "GLAM",
-            "Glamourer refresh is the default redraw mode",
+            instant_props.redraw_mode == "SELF",
+            "Self redraw is the default redraw mode",
         )
         for redraw_mode in ("SELF", "ALL", "GLAM"):
             instant_props.redraw_mode = redraw_mode
@@ -276,6 +276,16 @@ def run_staging_isolation_regression() -> None:
             ops.normalise_variant_name("  alternate.mdl ") == "alternate",
             "variant names are normalized without duplicating the .mdl extension",
         )
+        try:
+            ops.validate_variant_name(
+                "chara/equipment/e0001/model/c0101e0001_top.mdl",
+                "c0101e0001_top",
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("variant name matched the originally imported model")
+        print("[PASS] variant names cannot overwrite the imported model")
         _require(
             ops.variant_game_path(
                 "chara/equipment/e0001/model/c0101e0001_top.mdl",

@@ -17,12 +17,12 @@ animation editing are not included.
 ### Install the Blender add-on
 
 1. Open **Edit > Preferences > Get Extensions** in Blender.
-2. Open **Repositories**, click **+**, and choose **Add Remote Repository**.
+2. Click **Repositories**, click **+**, and choose **Add Remote Repository**.
 3. Add this repository URL:
 
    `https://link-0402.github.io/Instant-Edit/index.json`
 
-4. Find **XIV Instant Edit** and install it.
+4. Find **XIV Instant Edit** and install it if it hasn't already.
 
 You can also download [XIV-Instant-Edit.zip](https://github.com/link-0402/Instant-Edit/raw/main/XIV-Instant-Edit.zip)
 and use **Install from Disk** in the same Blender preferences window.

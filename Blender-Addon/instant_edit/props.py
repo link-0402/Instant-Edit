@@ -5,6 +5,47 @@ from bpy.types import PropertyGroup
 from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty
 
 
+_EXPORT_DESTINATION_ITEMS = []
+
+
+def _export_destination_items(_self, context):
+    global _EXPORT_DESTINATION_ITEMS
+    from .context import context_collections, _value
+
+    scene = getattr(context, "scene", None) or getattr(bpy.context, "scene", None)
+    if scene is None:
+        _EXPORT_DESTINATION_ITEMS = [
+            (
+                "ACTIVE",
+                "Active Context",
+                "Use the context associated with the active or selected model",
+            )
+        ]
+        return _EXPORT_DESTINATION_ITEMS
+
+    items = [
+        (
+            "ACTIVE",
+            "Active Context",
+            "Use the context associated with the active or selected model",
+        )
+    ]
+    for collection in sorted(
+        context_collections(scene),
+        key=lambda value: str(_value(value, "source_game_path", "")).casefold(),
+    ):
+        context_id = str(_value(collection, "context_id", ""))
+        game_path = str(_value(collection, "source_game_path", ""))
+        model_name = game_path.replace("\\", "/").rsplit("/", 1)[-1] or context_id
+        mod_name = str(_value(collection, "source_mod_name", ""))
+        label = f"{model_name} ({mod_name})" if mod_name else model_name
+        items.append((context_id, label, f"Overwrite the imported model at {game_path}"))
+    # Blender requires dynamically generated enum strings to remain alive for
+    # as long as the enum is in use.
+    _EXPORT_DESTINATION_ITEMS = items
+    return _EXPORT_DESTINATION_ITEMS
+
+
 def _save_as_variant_changed(self, _context) -> None:
     """A Penumbra option can only be generated for an actual variant."""
     if not self.save_as_variant:
@@ -12,6 +53,37 @@ def _save_as_variant_changed(self, _context) -> None:
 
 
 class XIVIEInstantEditProps(PropertyGroup):
+
+    show_utilities: BoolProperty(
+        name="Utilities",
+        description="Show maintenance actions for Instant Edit context data",
+        default=False,
+    )  # type: ignore
+
+    export_destination: EnumProperty(
+        name="Export Destination",
+        description="Choose which imported model destination Quick Export uses",
+        items=_export_destination_items,
+    )  # type: ignore
+
+    export_scope: EnumProperty(
+        name="Export Parts",
+        description="Choose which visible mesh objects Quick Export includes",
+        default="VISIBLE",
+        items=[
+            ("VISIBLE", "All Visible", "Export every visible mesh object"),
+            (
+                "VISIBLE_NO_MANNEQUIN",
+                "Visible Except Mannequin",
+                "Export every visible mesh object except the object named Mannequin",
+            ),
+            (
+                "CURRENT_COLLECTION",
+                "Instant Edit Collection",
+                "Export only visible mesh objects in the current Instant Edit collection",
+            ),
+        ],
+    )  # type: ignore
 
     game_path: StringProperty(
         name="",
@@ -90,7 +162,7 @@ class XIVIEInstantEditProps(PropertyGroup):
     redraw_mode: EnumProperty(
         name="Redraw",
         description="How characters should update after Quick Export",
-        default="GLAM",
+        default="SELF",
         items=[
             ("SELF", "SELF", "Redraw the character this model came from"),
             ("ALL", "ALL", "Redraw all currently available characters"),

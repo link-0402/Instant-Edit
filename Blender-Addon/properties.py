@@ -46,6 +46,10 @@ NECK_MORPH_ITEMS = [
 
 
 class XIVIEExportSettings(PropertyGroup):
+    show_mesh_materials: BoolProperty(name="Mesh Materials", default=True)  # type: ignore
+    show_simple_export: BoolProperty(name="Simple Export", default=False)  # type: ignore
+    show_export_options: BoolProperty(name="Export Options", default=True)  # type: ignore
+
     export_directory: StringProperty(name="Export Folder", subtype="DIR_PATH", default="")  # type: ignore
     export_name: StringProperty(name="File Name", default="model", maxlen=255)  # type: ignore
     model_format: EnumProperty(
@@ -55,7 +59,7 @@ class XIVIEExportSettings(PropertyGroup):
     )  # type: ignore
     keep_shapekeys: BoolProperty(name="Keep Shape Keys", default=True)  # type: ignore
     check_tris: BoolProperty(name="Check Triangulation", default=True)  # type: ignore
-    create_backfaces: BoolProperty(name="Create Backfaces", default=True)  # type: ignore
+    create_backfaces: BoolProperty(name="Create Backfaces", default=False)  # type: ignore
     remove_yas: EnumProperty(
         name="YAS Groups",
         items=[("KEEP", "Keep", "Keep all groups"), ("NO_GEN", "Remove Genitalia", "Remove genital groups"), ("REMOVE", "Remove All", "Remove iv_/ya_ groups")],

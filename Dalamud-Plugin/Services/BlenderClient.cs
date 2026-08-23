@@ -222,7 +222,8 @@ public sealed class BlenderClient : IDisposable
         string sourceModDirectory,
         string sourceModName,
         CancellationToken cancellationToken = default,
-        BlenderImportOptions? importOptions = null)
+        BlenderImportOptions? importOptions = null,
+        string? sourceModRootPath = null)
     {
         if (port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -244,7 +245,8 @@ public sealed class BlenderClient : IDisposable
                 targetFilePath,
                 sourceModName,
                 callbackPort,
-                actorIdentity);
+                actorIdentity,
+                sourceModRootPath);
         }
 
         try
@@ -265,6 +267,7 @@ public sealed class BlenderClient : IDisposable
                 targetFolder = Path.GetDirectoryName(targetFilePath),
                 sourceModDirectory,
                 sourceModName,
+                sourceModRootPath,
                 importOptions = importOptions ?? BlenderImportOptions.Generated,
             });
 

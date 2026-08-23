@@ -19,6 +19,13 @@ VERSION = 1
 COLLECTION_TAG = "instant_edit_context_id"
 OBJECT_TAG = "instant_edit_context_id"
 
+CONTEXT_METADATA_FIELDS = (
+    "context_id", "schema", "version", "plugin_instance_id", "capability",
+    "source_game_path", "managed_destination", "target_file_path",
+    "source_mod_directory", "source_mod_name", "source_mod_root_path",
+    "import_id", "callback_port", "collection_kind",
+)
+
 REQUIRED_OBJECT_FIELDS = (
     "xiv_material",
     "original_material",
@@ -48,6 +55,7 @@ class ContextRef:
     target_file_path: str
     source_mod_directory: str
     source_mod_name: str
+    source_mod_root_path: str
     callback_port: int
 
 
@@ -110,6 +118,38 @@ def _context_collections(context_id: str, scene=None) -> list:
     return collections
 
 
+def context_collections(scene=None) -> list:
+    """Return the Instant Edit context collections currently held in a scene."""
+    scene = scene or bpy.context.scene
+    return [
+        collection for collection in bpy.data.collections
+        if _value(collection, "collection_kind") == "instant_edit"
+        and _value(collection, "context_id", "")
+        and _in_scene(scene, collection)
+    ]
+
+
+def _remove_metadata(obj, fields=CONTEXT_METADATA_FIELDS) -> None:
+    for field in fields:
+        obj.pop(field, None)
+        obj.pop(f"instant_edit_{field}", None)
+
+
+def clear_context_metadata(scene=None) -> int:
+    """Detach all Instant Edit routing metadata without deleting scene objects."""
+    collections = context_collections(scene)
+    context_ids = {
+        _value(collection, "context_id", "")
+        for collection in collections
+    }
+    for obj in bpy.data.objects:
+        if _value(obj, "context_id", "") in context_ids:
+            _remove_metadata(obj)
+    for collection in collections:
+        _remove_metadata(collection)
+    return len(collections)
+
+
 def _require_int(value, name: str, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ContextValidationError(f"{name} must be a non-negative integer")
@@ -167,7 +207,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
     _check_aliases(collection, (
         "context_id", "schema", "version", "plugin_instance_id", "capability",
         "source_game_path", "managed_destination", "target_file_path",
-        "source_mod_directory", "source_mod_name", "callback_port",
+        "source_mod_directory", "source_mod_name", "source_mod_root_path", "callback_port",
     ))
 
     if _value(collection, "schema") != SCHEMA or _value(collection, "version") != VERSION:
@@ -180,6 +220,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
     target_file_path = _value(collection, "target_file_path", "")
     source_mod_directory = _value(collection, "source_mod_directory", "")
     source_mod_name = _value(collection, "source_mod_name", "")
+    source_mod_root_path = _value(collection, "source_mod_root_path", "")
     callback_port = _value(collection, "callback_port", 0)
     if not all(isinstance(value, str) and value for value in (
         plugin_instance_id, capability, source_game_path, managed_destination,
@@ -244,6 +285,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         target_file_path=target_file_path,
         source_mod_directory=source_mod_directory,
         source_mod_name=source_mod_name,
+        source_mod_root_path=source_mod_root_path if isinstance(source_mod_root_path, str) else "",
         callback_port=callback_port,
     )
 

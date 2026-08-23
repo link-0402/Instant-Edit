@@ -420,6 +420,7 @@ public sealed class MainWindow : IDisposable
             Source(type, raw),
             String(type, raw, nameof(ResourceNode.SourceModName)),
             String(type, raw, nameof(ResourceNode.SourceModDirectory)),
+            String(type, raw, nameof(ResourceNode.SourceModRootPath)),
             String(type, raw, nameof(ResourceNode.SourceRelativePath)),
             EnumString(type, raw, nameof(ResourceNode.ResourceSection)),
             String(type, raw, nameof(ResourceNode.SlotLabel)),
@@ -612,7 +613,8 @@ public sealed class MainWindow : IDisposable
                 source.ActualPath,
                 source.SourceModDirectory,
                 source.SourceModName,
-                importOptions: importOptions).ConfigureAwait(false);
+                importOptions: importOptions,
+                sourceModRootPath: source.SourceModRootPath).ConfigureAwait(false);
             SetStatus($"Sent {model.FileName} to Blender.", true);
             _chat.Print($"Instant Edit: {model.FileName} sent to Blender.");
         }
@@ -688,6 +690,7 @@ public sealed class MainWindow : IDisposable
         string SourceLabel,
         string SourceModName,
         string SourceModDirectory,
+        string SourceModRootPath,
         string SourceRelativePath,
         string Section,
         string Slot,

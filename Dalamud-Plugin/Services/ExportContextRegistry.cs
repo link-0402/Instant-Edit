@@ -69,7 +69,8 @@ public sealed class ExportContextRegistry : IDisposable
         string targetFilePath,
         string sourceModName,
         int callbackPort,
-        ActorIdentity? actorIdentity)
+        ActorIdentity? actorIdentity,
+        string? sourceModRootPath = null)
     {
         if (!PenumbraService.IsSafeGamePath(gamePath) || objectIndex is < 0 or > ushort.MaxValue ||
             !PenumbraService.IsSafeModName(sourceModDirectory) || callbackPort is < 1 or > 65535)
@@ -108,6 +109,7 @@ public sealed class ExportContextRegistry : IDisposable
             TargetFolder = targetFolder,
             SourceModDirectory = sourceModDirectory,
             SourceModName = string.IsNullOrWhiteSpace(sourceModName) ? sourceModDirectory : sourceModName,
+            SourceModRootPath = sourceModRootPath,
             CallbackPort = callbackPort,
         };
 

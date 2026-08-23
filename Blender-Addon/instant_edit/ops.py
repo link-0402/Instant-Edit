@@ -18,7 +18,8 @@ from ..properties    import get_settings
 from ..xivpy.model   import XIVModel
 from .props          import get_instant_edit_props
 from .context        import (SCHEMA, VERSION, ContextValidationError,
-                             active_context, create_collection, tag_object)
+                             active_context, clear_context_metadata, create_collection,
+                             tag_object, validate_context)
 
 
 MAX_PLUGIN_RESPONSE_SIZE = 64 * 1024
@@ -36,6 +37,17 @@ def normalise_variant_name(value: str) -> str:
         raise ValueError("Variant name is too long.")
     if any(char in INVALID_VARIANT_CHARS or ord(char) < 32 for char in name):
         raise ValueError("Variant name contains characters that cannot be used in a file name.")
+    return name
+
+
+def validate_variant_name(source_game_path: str, variant_name: str) -> str:
+    """Normalize a variant name and reject the original model's file name."""
+    name = normalise_variant_name(variant_name)
+    source_name = (source_game_path or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if source_name.lower().endswith(".mdl"):
+        source_name = source_name[:-4]
+    if source_name and name.casefold() == source_name.casefold():
+        raise ValueError("Variant name must differ from the originally imported model name.")
     return name
 
 
@@ -124,6 +136,7 @@ class InstantImport(Operator):
     target_file_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_directory: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_name: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    source_mod_root_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     import_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     armature_mode: bpy.props.EnumProperty(
         items=[
@@ -167,6 +180,7 @@ class InstantImport(Operator):
                     "target_file_path": self.target_file_path,
                     "source_mod_directory": self.source_mod_directory,
                     "source_mod_name": self.source_mod_name,
+                    "source_mod_root_path": self.source_mod_root_path,
                     "import_id": self.import_id,
                     "callback_port": self.callback_port,
                 }
@@ -338,7 +352,7 @@ class QuickExport(Operator):
     @classmethod
     def poll(cls, context: Context):
         try:
-            active_context(context)
+            export_destination_context(context)
             return True
         except ContextValidationError:
             return False
@@ -353,6 +367,37 @@ class QuickExport(Operator):
             return {"CANCELLED"}
         self.report({"INFO"}, "Exported back to the game!")
         get_export_stats(context)
+        return {"FINISHED"}
+
+
+class ClearInstantEditContexts(Operator):
+    bl_idname = "xiv_ie.clear_contexts"
+    bl_label = "Clear Contexts"
+    bl_description = "Clear all Instant Edit context information without deleting scene objects"
+
+    @classmethod
+    def poll(cls, context: Context):
+        return context.mode == "OBJECT"
+
+    def execute(self, context: Context):
+        cleared = clear_context_metadata(context.scene)
+        props = get_instant_edit_props()
+        for field, value in {
+            "game_path": "",
+            "display_name": "",
+            "object_index": -1,
+            "context_id": "",
+            "context_schema": "",
+            "context_version": 0,
+            "plugin_instance_id": "",
+            "capability": "",
+            "managed_destination": "",
+            "last_export_id": "",
+            "last_status": "Instant Edit contexts cleared.",
+        }.items():
+            setattr(props, field, value)
+        props.export_destination = "ACTIVE"
+        self.report({"INFO"}, f"Cleared {cleared} Instant Edit context(s).")
         return {"FINISHED"}
 
 
@@ -378,12 +423,30 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
     return payload
 
 
+def export_destination_context(context: Context, destination: str | None = None):
+    props = get_instant_edit_props()
+    destination = destination or getattr(props, "export_destination", "ACTIVE")
+    if destination == "ACTIVE":
+        return active_context(context)
+    return validate_context(destination, context.scene)
+
+
+def export_objects_for_scope(ref, scope: str) -> list:
+    """Return the mesh objects selected by the Instant Edit export scope."""
+    objects = visible_meshobj()
+    if scope == "VISIBLE_NO_MANNEQUIN":
+        return [obj for obj in objects if obj.name != "Mannequin"]
+    if scope == "CURRENT_COLLECTION":
+        return [obj for obj in objects if obj in ref.collection.objects]
+    return objects
+
+
 def perform_instant_export(context: Context) -> Path:
     """Export one validated context and send only the v1 secure envelope."""
-    ref = active_context(context)
+    ref = export_destination_context(context)
     props = get_instant_edit_props()
-    variant_name = normalise_variant_name(props.variant_name) if props.save_as_variant else None
-    export_objects = visible_meshobj()
+    variant_name = validate_variant_name(ref.source_game_path, props.variant_name) if props.save_as_variant else None
+    export_objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
     if not export_objects:
         raise ValueError("No visible mesh objects to export.")
     export_groups = group_mesh_objects(export_objects)
@@ -483,5 +546,6 @@ class ApplyInstantEdit(Operator):
 CLASSES = [
     InstantImport,
     QuickExport,
+    ClearInstantEditContexts,
     ApplyInstantEdit,
 ]

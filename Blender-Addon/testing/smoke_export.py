@@ -30,6 +30,11 @@ def run() -> None:
     root = Path(__file__).resolve().parents[1]
     addon = load_addon(root)
     try:
+        if bpy.context.scene.xiv_ie_settings.create_backfaces:
+            raise AssertionError("Create Backfaces should default to disabled")
+        if bpy.context.scene.xiv_ie_instant_edit_props.show_utilities:
+            raise AssertionError("Utilities should be collapsed by default")
+
         armature_data = bpy.data.armatures.new("SmokeSkeletonData")
         armature = bpy.data.objects.new("SmokeSkeleton", armature_data)
         bpy.context.collection.objects.link(armature)
@@ -211,6 +216,42 @@ def run() -> None:
                     f"Modifier-only export failed: result={result}, target={modifier_target}"
                 )
             print(f"[PASS] Modifier-only skeleton export produced {modifier_target.stat().st_size} bytes")
+
+        renamed = materials.rename_mesh_part([obj, second, added_group], 0, 1, "Renamed Part")
+        if renamed != "Renamed Part" or second.name != "0.1 Renamed Part":
+            raise AssertionError("Mass part rename did not preserve the mesh ID")
+        materials.set_mesh_part_tags([obj, second, added_group], 0, 1, "body,  Body, armor")
+        if second.get("instant_edit_tags") != "body, armor":
+            raise AssertionError("Part tags were not normalized and stored")
+        attribute = materials.set_mesh_part_attribute(
+            [obj, second, added_group], 0, 1, "atr_nek", True
+        )
+        if attribute != "atr_nek" or not second.get(attribute):
+            raise AssertionError("Mesh Studio attribute was not applied to the mesh part")
+        if materials.attribute_display_name(attribute) != "Neck":
+            raise AssertionError("Mesh Studio attribute label was not resolved")
+        if materials.ensure_flow_data([obj, second]) != 2:
+            raise AssertionError("Mesh Studio flow data was not created")
+        materials.set_mesh_flow_enabled([obj, second], True)
+        if not materials.mesh_flow_enabled([obj, second]):
+            raise AssertionError("Mesh Studio flow export was not enabled")
+        if bpy.ops.xiv_ie.mesh_attribute(
+            mesh_group=0, mesh_part=1, attribute="atr_nek"
+        ) != {"FINISHED"} or second.get("atr_nek"):
+            raise AssertionError("Mesh Studio attribute operator did not remove the attribute")
+        if bpy.ops.xiv_ie.mesh_attribute(
+            mesh_group=0, mesh_part=1, attribute="NEW", selection="atr_nek"
+        ) != {"FINISHED"} or not second.get("atr_nek"):
+            raise AssertionError("Mesh Studio attribute operator did not add the attribute")
+        if bpy.ops.xiv_ie.mesh_flow(mesh_group=0, action="TOGGLE") != {"FINISHED"}:
+            raise AssertionError("Mesh Studio flow operator failed")
+        if materials.mesh_flow_enabled([obj, second]):
+            raise AssertionError("Mesh Studio flow operator did not disable export")
+        bpy.ops.xiv_ie.mesh_flow(mesh_group=0, action="TOGGLE")
+        materials.swap_mesh_groups([obj, second, added_group], 0, 1)
+        if not obj.name.startswith("1.0 ") or not added_group.name.startswith("0.0 "):
+            raise AssertionError("Mesh group priority swap did not preserve part IDs")
+        print("[PASS] Mesh Studio rename, attributes, flow, and priority controls")
     finally:
         addon.unregister()
 

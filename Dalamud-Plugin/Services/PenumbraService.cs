@@ -322,6 +322,11 @@ public sealed class PenumbraService
             return new ExportResult(false, validationError);
         if (variantName is not null && !IsSafeVariantName(variantName))
             return new ExportResult(false, "Invalid variant name.");
+        if (variantName is not null && string.Equals(
+                variantName,
+                Path.GetFileNameWithoutExtension(sourceGamePath),
+                StringComparison.OrdinalIgnoreCase))
+            return new ExportResult(false, "Variant name must differ from the originally imported model name.");
         if (setupVariantInPenumbra && variantName is null)
             return new ExportResult(false, "Penumbra variant setup requires Save as Variant.");
 
