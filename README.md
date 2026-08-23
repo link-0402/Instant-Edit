@@ -36,9 +36,7 @@ Note that you will not be getting automatic feature and compatability updates th
    `https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Dalamud-Plugin/repo.json`
 
 3. Enable the repository, save your settings, and open `/xlplugins`.
-4. Find and install **Instant Edit**.
-
-The repository serves the current plugin build from the [raw Dalamud package](https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Dalamud-Plugin/InstantEdit/latest.zip).
+4. Find and install **Instant Edit** under **All Plugins**.
 
 ## How to use it
 
@@ -53,12 +51,13 @@ Blender and FFXIV must be running at the same time. If the plugin reports that
 Blender is offline, restart Blender with the add-on enabled.
 
 Saved Instant Edit scenes reconnect their export context automatically when the
-updated add-on and Dalamud plugin are running. The plugin remains the authority
-for the original Penumbra destination.
+updated add-on and Dalamud plugin are running.
 
 The Blender add-on also includes **Simple Export** for exporting visible mesh
-objects as MDL, FBX, or glTF files.
-You may also save a model as a variant, giving it a new file name. The addon will then
+objects as MDL, FBX, or glTF files, even if they haven't been imported through the IE plugin before.
+In this case you may be required to configure the material names for mesh groups manually via the addon UI.
+
+You may also save a model imported through IE as a variant, giving it a new file name. The addon will then
 automatically setup the required Penumbra paths for this new model if the option is enabled.
 
 ## Notes
