@@ -33,7 +33,7 @@ Note that you will not be getting automatic feature and compatability updates th
 1. In FFXIV, run `/xlsettings` and open **Experimental**.
 2. Add this URL under **Custom Plugin Repositories**:
 
-   `https://raw.githubusercontent.com/link-0402/Instant-Edit/main/repo.json`
+   `https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Dalamud-Plugin/repo.json`
 
 3. Enable the repository, save your settings, and open `/xlplugins`.
 4. Find and install **Instant Edit**.
