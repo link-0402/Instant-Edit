@@ -11,7 +11,7 @@ $scriptRoot = if ($PSScriptRoot) {
     Split-Path -Parent $MyInvocation.MyCommand.Definition
 }
 if ([string]::IsNullOrWhiteSpace($RepositoryPath)) {
-    $RepositoryPath = Join-Path $scriptRoot '..\blender_repo'
+    $RepositoryPath = Join-Path $scriptRoot '..\Blender-Addon\blender_repo'
 }
 
 $repoRoot = (Resolve-Path (Join-Path $scriptRoot '..')).Path

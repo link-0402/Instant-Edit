@@ -26,13 +26,12 @@ htmlcov/
 
 # Local release archives are kept only when they are explicit distribution files.
 *.zip
-!XIV-Instant-Edit.zip
+!Blender-Addon/blender_repo/XIV-Instant-Edit.zip
 !Dalamud-Plugin/InstantEdit/latest.zip
 
 # Generated Blender static-repository package; the listing is tracked, the ZIP
 # is rebuilt by the local script and GitHub Pages workflow.
-blender_repo/*.zip
-blender_repo/index.html
+Blender-Addon/blender_repo/index.html
 
 ideas.txt
 

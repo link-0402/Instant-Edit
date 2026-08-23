@@ -11,7 +11,7 @@ $scriptRoot = if ($PSScriptRoot) {
     Split-Path -Parent $MyInvocation.MyCommand.Definition
 }
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $scriptRoot '..\XIV-Instant-Edit.zip'
+    $OutputPath = Join-Path $scriptRoot '..\Blender-Addon\blender_repo\XIV-Instant-Edit.zip'
 }
 
 $repoRoot = (Resolve-Path (Join-Path $scriptRoot '..')).Path
@@ -41,6 +41,7 @@ try {
     $files = Get-ChildItem -LiteralPath $addonRoot -Recurse -File | Where-Object {
         $_.FullName -notmatch '[\\/]__pycache__([\\/]|$)' -and
         $_.FullName -notmatch '[\\/]testing([\\/]|$)' -and
+        $_.FullName -notmatch '[\\/]blender_repo([\\/]|$)' -and
         $_.Name -notmatch '\.py[cod]$' -and
         $_.Name -notmatch '^\.' -and
         $_.Extension -ne '.zip'
