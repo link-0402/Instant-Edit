@@ -13,7 +13,7 @@
       "license": [
         "SPDX:GPL-3.0-or-later"
       ],
-      "blender_version_min": "4.5.0",
+      "blender_version_min": "4.2.0",
       "blender_version_max": "5.3.0",
       "permissions": {
         "files": "Import and export FFXIV model files",
@@ -27,8 +27,8 @@
         "User Interface"
       ],
       "archive_url": "./XIV-Instant-Edit.zip",
-      "archive_size": 125484,
-      "archive_hash": "sha256:1047d704319aeb06de9f792fe3e6e459cd1af5c1b984b8257f6fcfe90efe2580"
+      "archive_size": 126388,
+      "archive_hash": "sha256:8018fa7949701a96b41bc3d55bf95a8620c198443bf44450d92bf8c48f575ff2"
     }
   ]
 }

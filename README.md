@@ -10,7 +10,7 @@ animation editing are not included.
 
 - [XIVLauncher](https://goatcorp.github.io/) with Dalamud enabled
 - [Penumbra](https://github.com/xivdev/Penumbra)
-- [Blender](https://www.blender.org/) 4.5+
+- [Blender](https://www.blender.org/) 4.2+
 
 ## Installation
 

@@ -46,6 +46,32 @@ jobs:
         run: |
           ./scripts/generate-blender-repository.ps1 -RepositoryPath ./site
 
+      - name: Verify repository metadata
+        shell: pwsh
+        run: |
+          $archivePath = Join-Path $PWD 'site/XIV-Instant-Edit.zip'
+          $indexPath = Join-Path $PWD 'site/index.json'
+          $entry = (Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json).data |
+            Where-Object { $_.id -eq 'xiv_instant_edit' } |
+            Select-Object -First 1
+
+          if ($null -eq $entry) {
+            throw 'Generated repository index does not contain xiv_instant_edit.'
+          }
+
+          $archive = Get-Item -LiteralPath $archivePath
+          if ([int64]$entry.archive_size -ne $archive.Length) {
+            throw "Archive size mismatch: index=$($entry.archive_size), actual=$($archive.Length)."
+          }
+
+          $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedHash = ([string]$entry.archive_hash).ToLowerInvariant()
+          if ($expectedHash -ne "sha256:$actualHash") {
+            throw "Archive hash mismatch: index=$expectedHash, actual=sha256:$actualHash."
+          }
+
+          Write-Host "Verified $($archive.Name): $($archive.Length) bytes, sha256:$actualHash"
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
