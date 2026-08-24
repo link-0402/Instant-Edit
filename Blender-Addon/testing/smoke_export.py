@@ -25,11 +25,83 @@ def load_addon(root: Path):
     return addon
 
 
+def assert_corner_aware_uv_export(addon) -> None:
+    mesh = bpy.data.meshes.new("UVSeamRegressionData")
+    mesh.from_pydata(
+        [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+        [],
+        [(0, 1, 2), (0, 2, 3)],
+    )
+    mesh.update()
+    obj = bpy.data.objects.new("UV Seam Regression", mesh)
+    bpy.context.collection.objects.link(obj)
+
+    # A non-export layer before uv0 used to make physical-layer slicing select
+    # the wrong data. uv0 also has a discontinuity at shared vertex 0.
+    ignored = mesh.uv_layers.new(name="Lightmap")
+    ignored.uv.foreach_set("vector", [0.5, 0.5] * 6)
+    uv0_values = [
+        0.0, 0.0,
+        1.0, 0.0,
+        1.0, 1.0,
+        0.75, 0.75,
+        0.25, 0.75,
+        0.0, 1.0,
+    ]
+    uv1_values = [
+        0.1, 0.1,
+        0.9, 0.1,
+        0.9, 0.9,
+        0.2, 0.8,
+        0.8, 0.2,
+        0.1, 0.9,
+    ]
+    uv0 = mesh.uv_layers.new(name="uv0")
+    uv1 = mesh.uv_layers.new(name="uv1")
+    uv0.uv.foreach_set("vector", uv0_values)
+    uv1.uv.foreach_set("vector", uv1_values)
+
+    constructor = importlib.import_module(f"{addon.__name__}.io.model.exp.constructor")
+    streams_module = importlib.import_module(f"{addon.__name__}.io.model.exp.streams")
+    declaration = constructor.decl_from_blend_mesh([obj])
+    indices, streams, _shapes, source_vertices = streams_module.get_submesh_streams(
+        obj, declaration, False
+    )
+
+    if len(source_vertices) <= len(mesh.vertices):
+        raise AssertionError("A UV seam did not expand the shared Blender vertex")
+
+    packed_uvs = streams[1]["uv0"]
+    loop_vertices = [loop.vertex_index for loop in mesh.loops]
+    for loop_idx, source_vertex in enumerate(loop_vertices):
+        export_vertex = int(indices[loop_idx])
+        if int(source_vertices[export_vertex]) != source_vertex:
+            raise AssertionError("Corner mapping changed a loop's source vertex")
+
+        expected = (
+            uv0_values[loop_idx * 2],
+            1.0 - uv0_values[loop_idx * 2 + 1],
+            uv1_values[loop_idx * 2],
+            1.0 - uv1_values[loop_idx * 2 + 1],
+        )
+        actual = tuple(float(value) for value in packed_uvs[export_vertex])
+        if any(abs(got - want) > 1e-6 for got, want in zip(actual, expected)):
+            raise AssertionError(
+                f"Loop {loop_idx} UVs were reassociated: actual={actual}, expected={expected}"
+            )
+
+    print("[PASS] Corner-aware export preserves UV seams and logical layer order")
+    bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.meshes.remove(mesh)
+
+
 def run() -> None:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     root = Path(__file__).resolve().parents[1]
     addon = load_addon(root)
     try:
+        assert_corner_aware_uv_export(addon)
+
         if bpy.context.scene.xiv_ie_settings.create_backfaces:
             raise AssertionError("Create Backfaces should default to disabled")
         if bpy.context.scene.xiv_ie_settings.backup_models_on_export:
@@ -49,7 +121,11 @@ def run() -> None:
         bpy.ops.object.mode_set(mode="OBJECT")
 
         mesh = bpy.data.meshes.new("SmokeMeshData")
-        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        mesh.from_pydata(
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+            [],
+            [(0, 1, 2), (0, 2, 3)],
+        )
         mesh.update()
         obj = bpy.data.objects.new("0.0 Smoke", mesh)
         bpy.context.collection.objects.link(obj)
@@ -57,11 +133,14 @@ def run() -> None:
         modifier = obj.modifiers.new(name="Armature", type="ARMATURE")
         modifier.object = armature
         group = obj.vertex_groups.new(name="root")
-        group.add([0, 1, 2], 1.0, "REPLACE")
+        group.add([0, 1, 2, 3], 1.0, "REPLACE")
         uv = mesh.uv_layers.new(name="uv0")
-        uv.uv.foreach_set("vector", [0, 0, 1, 0, 0, 1])
+        uv.uv.foreach_set(
+            "vector",
+            [0, 0, 1, 0, 1, 1, 0.75, 0.75, 0.25, 0.75, 0, 1],
+        )
         colour = mesh.color_attributes.new(name="vc0", type="FLOAT_COLOR", domain="CORNER")
-        colour.data.foreach_set("color", [1, 1, 1, 1] * 3)
+        colour.data.foreach_set("color", [1, 1, 1, 1] * 6)
         material = bpy.data.materials.new("SmokeMaterial")
         mesh.materials.append(material)
         obj["xiv_material"] = "/mt_c0101e0001_top_a.mtrl"

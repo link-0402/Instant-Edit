@@ -35,28 +35,41 @@ def apply_mesh_options(streams: dict[int, NDArray], mesh_options: dict[str, bool
         tex["flow"][:, :2] = 0
         tex["flow"][:, 2:] = 255
 
-def get_submesh_streams(obj: Object, vert_decl: VertexDeclaration, mesh_flow: bool, mesh_options: dict[str, bool]=None) -> tuple[NDArray, dict[int, NDArray], dict[str, NDArray]]:
-        vert_count = len(obj.data.vertices)
+def get_submesh_streams(obj: Object, vert_decl: VertexDeclaration, mesh_flow: bool, mesh_options: dict[str, bool]=None) -> tuple[NDArray, dict[int, NDArray], dict[str, NDArray], NDArray]:
         loop_count = len(obj.data.loops)
         uv_count   = vert_decl.usage_count(VertexUsage.UV)
         col_count  = vert_decl.usage_count(VertexUsage.COLOUR)
 
-        indices = np.zeros(loop_count, np.uint16)
-        obj.data.loops.foreach_get("vertex_index", indices)
+        loop_vertices = get_loop_vertex_indices(obj, loop_count)
+        loop_normals  = get_loop_normals(obj, loop_count)
+        uv_layers, loop_uvs = get_uvs(obj, loop_count, uv_count)
+        loop_colours   = get_col_attributes(obj, loop_vertices, loop_count, col_count)
+        loop_bitangents = get_bitangents(obj, loop_count, uv_layers[0].name)
+        loop_flow = get_flow_colours(obj, loop_vertices, loop_count) if mesh_flow else None
 
-        pos, nor   = get_space_data(obj, indices, vert_count, loop_count)
-        shapes     = get_shape_co(obj, vert_count)
-        uv_arrays  = get_uvs(obj, indices, vert_count, loop_count, uv_count)
-        col_arrays = get_col_attributes(obj, indices, vert_count, loop_count, col_count)
-        bitangents = get_bitangents(obj, indices, loop_count, obj.data.uv_layers[0].name)
+        # MDL stores these values per vertex, while Blender stores them per face
+        # corner. Split only the vertices whose exported corner data differs.
+        corner_arrays = [loop_normals, loop_bitangents, *loop_uvs, *loop_colours]
+        if loop_flow is not None:
+            corner_arrays.append(loop_flow)
+        indices, source_vertices, source_loops = create_corner_vertex_map(
+            obj, loop_vertices, corner_arrays
+        )
+
+        vert_count = len(source_vertices)
+        pos, nor   = get_space_data(obj, source_vertices, source_loops, loop_count)
+        shapes     = get_shape_co(obj, source_vertices)
+        uv_arrays  = [array[source_loops] for array in loop_uvs]
+        col_arrays = [array[source_loops] for array in loop_colours]
+        bitangents = loop_bitangents[source_loops]
 
         streams = create_stream_arrays(vert_count, vert_decl)
-        
+
         streams[0]["position"] = pos
         streams[1]["normal"]   = nor
         streams[1]["tangent"]  = np.c_[vector_to_bytes(bitangents[:, :3].copy()), byte_sign(bitangents[:, 3].copy())]
         if mesh_flow:
-            streams[1]["flow"] = get_flow(obj, nor, bitangents, indices, vert_count, loop_count)
+            streams[1]["flow"] = get_flow(loop_flow[source_loops], nor, bitangents)
 
         for col_idx, col in enumerate(col_arrays):
             streams[1][f"colour{col_idx}"] = col
@@ -72,7 +85,7 @@ def get_submesh_streams(obj: Object, vert_decl: VertexDeclaration, mesh_flow: bo
         if mesh_options:
             apply_mesh_options(streams, mesh_options)
 
-        return indices, streams, shapes
+        return indices, streams, shapes, source_vertices
 
 def update_mesh_streams(mesh: XIVMesh, mesh_streams: dict[int, NDArray], mesh_geo: list[NDArray], mesh_tex: list[NDArray], stream_offset: int, bone_limit: int) -> int:
         

@@ -4,7 +4,7 @@ import re
 from bpy.types           import Object
 from collections         import defaultdict
 
-from .validators         import remove_loose_verts, split_seams
+from .validators         import remove_loose_verts
 from ..com.exceptions    import XIVMeshIDError
 from ....xivpy.model     import XIV_ATTR
 from ....mesh.transforms import apply_transforms
@@ -52,7 +52,6 @@ def prepare_submeshes(export_obj: list[Object], model_attributes: list[str], lod
 
         apply_transforms(obj)
         remove_loose_verts(obj)
-        split_seams(obj)
         mesh_dict[group][part] = obj
 
     mesh_indices = sorted(mesh_dict.keys())

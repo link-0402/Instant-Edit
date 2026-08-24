@@ -9,7 +9,7 @@ from collections      import defaultdict
 from .shapes          import create_shape_data, submesh_to_mesh_shapes, create_face_data
 from .weights         import sort_weights, normalise_weights, empty_vertices
 from .streams         import create_stream_arrays, get_submesh_streams, update_mesh_streams
-from .accessors       import get_weights
+from .accessors       import get_weights, get_xiv_uv_layers
 from ...logging       import YetAnotherLogger
 from .validators      import clean_material_path, USHORT_LIMIT
 from ..com.helpers    import normalised_int_array 
@@ -18,7 +18,7 @@ from ..com.exceptions import XIVModelError, XIVMeshError
 from ....xivpy.model  import (XIVModel, Mesh as XIVMesh, Submesh,
                              VertexDeclaration, VertexType, VertexUsage,
                              BoneTable, Lod, ShapeMesh, BoundingBox,
-                             XIV_COL, XIV_UV)
+                             XIV_COL)
 
 
 def get_material_idx(obj: Object, material_list: list[str]) -> int:
@@ -72,8 +72,7 @@ def decl_from_blend_mesh(submeshes: list[Object], export_flow=False) -> VertexDe
         col_count = max(col_count, len([layer for layer in obj.data.color_attributes 
                                         if layer.name.lower().startswith(XIV_COL)]))
         
-        uv_count  = max(uv_count, len([layer for layer in obj.data.uv_layers 
-                                    if layer.name.lower().startswith(XIV_UV)]))
+        uv_count = max(uv_count, len(get_xiv_uv_layers(obj)))
 
     col_count = min(col_count, 2)
     uv_count  = min(uv_count, 3)
@@ -251,9 +250,9 @@ class CreateLOD:
         self.mesh_indices = b''
         mesh_header       = self.model.mesh_header
 
-        self.mesh.vertex_count = sum(len(obj.data.vertices) for obj in blend_objs)
-        if self.mesh.vertex_count > USHORT_LIMIT:
-            raise XIVMeshError(f"Exceeds the {USHORT_LIMIT} vertices limit.")
+        # Blender loop-domain attributes can require multiple MDL vertices for
+        # one Blender vertex. The final count is accumulated per submesh below.
+        self.mesh.vertex_count = 0
         
         self.mesh.submesh_index       = len(self.model.submeshes)
         self.mesh.bone_table_idx      = self.lod_level
@@ -277,13 +276,17 @@ class CreateLOD:
                 self.logger.last_item = f"{obj.name}"
                 self.logger.log(f"Processing {obj.name}...", 4)
 
-            submesh_vert_count = len(obj.data.vertices)
-            if submesh_vert_count == 0:
+            if len(obj.data.vertices) == 0:
                 continue
 
-            self._create_submesh(obj, vert_decl, vert_offset, mesh_geo, mesh_tex, mesh_flow)
+            submesh_vert_count = self._create_submesh(
+                obj, vert_decl, vert_offset, mesh_geo, mesh_tex, mesh_flow
+            )
+            if vert_offset + submesh_vert_count > USHORT_LIMIT:
+                raise XIVMeshError(f"Exceeds the {USHORT_LIMIT} vertices limit.")
 
             vert_offset             += submesh_vert_count
+            self.mesh.vertex_count  += submesh_vert_count
             self.mesh.submesh_count += 1
         
         if self.logger:
@@ -333,7 +336,7 @@ class CreateLOD:
         self.indices_buffers.append(self.mesh_indices)
         self.model.meshes.append(self.mesh)
 
-    def _create_submesh(self, obj: Object, vert_decl: VertexDeclaration, vert_offset: int, mesh_geo: list[NDArray], mesh_tex: list[NDArray], mesh_flow: bool) -> None:
+    def _create_submesh(self, obj: Object, vert_decl: VertexDeclaration, vert_offset: int, mesh_geo: list[NDArray], mesh_tex: list[NDArray], mesh_flow: bool) -> int:
 
         def attribute_bitmask(obj: Object) -> int:
             bitmask = 0
@@ -344,11 +347,15 @@ class CreateLOD:
             return bitmask
         
         submesh = Submesh()
-        indices, submesh_streams, shapes = get_submesh_streams(obj, vert_decl, mesh_flow, self.mesh_options)
+        indices, submesh_streams, shapes, source_vertices = get_submesh_streams(
+            obj, vert_decl, mesh_flow, self.mesh_options
+        )
+        if vert_offset + len(source_vertices) > USHORT_LIMIT:
+            raise XIVMeshError(f"Exceeds the {USHORT_LIMIT} vertices limit.")
         submesh.attribute_idx_mask       = attribute_bitmask(obj)
 
         if obj.vertex_groups:
-            bonemap = self._create_blend_arrays(obj, submesh_streams)
+            bonemap = self._create_blend_arrays(obj, submesh_streams, source_vertices)
             submesh.bone_start_idx = len(self.model.submesh_bonemaps)
             submesh.bone_count     = len(bonemap)
         
@@ -359,7 +366,7 @@ class CreateLOD:
             
             self.shape_arrays[shape_name].append(shape_data)
     
-        self.mesh_indices += (indices + vert_offset).tobytes()
+        self.mesh_indices += (indices + vert_offset).astype(np.uint16).tobytes()
 
         submesh.idx_offset   = self.idx_offset
         submesh.idx_count    = len(indices)
@@ -369,8 +376,10 @@ class CreateLOD:
         mesh_geo.append(submesh_streams[0])
         mesh_tex.append(submesh_streams[1]) 
         self.model.submeshes.append(submesh)
+
+        return len(source_vertices)
         
-    def _create_blend_arrays(self, obj: Object, streams: dict[int, NDArray], ) -> tuple[int, int]:
+    def _create_blend_arrays(self, obj: Object, streams: dict[int, NDArray], source_vertices: NDArray) -> tuple[int, int]:
 
         def check_empty() -> list[int]:
             empty_groups: list[int] = []
@@ -409,9 +418,10 @@ class CreateLOD:
             
             return bonemap
         
-        vert_count    = len(obj.data.vertices)
+        source_vert_count = len(obj.data.vertices)
+        vert_count    = len(source_vertices)
         group_count   = len(obj.vertex_groups)
-        weight_matrix = get_weights(obj, vert_count, group_count)
+        weight_matrix = get_weights(obj, source_vert_count, group_count)[source_vertices]
         empty_groups  = check_empty()
 
         blend_weights = np.zeros((vert_count, 8), dtype=single)
