@@ -24,7 +24,7 @@ and material editing or export are not supported.
 
 4. Find **XIV Instant Edit** and install it if it hasn't already.
 
-You can also download [XIV-Instant-Edit.zip](https://github.com/link-0402/Instant-Edit/releases/download/1.0/XIV-Instant-Edit.zip)
+You can also download [XIV-Instant-Edit.zip](https://github.com/link-0402/Instant-Edit/tree/main/Blender-Addon/blender_repo/XIV-Instant-Edit.zip)
 and use **Install from Disk** in the same Blender preferences window.
 Note that you will not be getting automatic feature and compatability updates this way and have to update the plugin manually.
 
