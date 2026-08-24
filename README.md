@@ -3,8 +3,8 @@
 Instant Edit lets you edit visible FINAL FANTASY XIV models in Blender and
 send the finished model back to its original Penumbra mod.
 
-It currently supports model editing and export. Texture, material, and
-animation editing are not included.
+It currently supports only model workflows. 
+Texture and material editing are not yet supported, but may be added in a future update.
 
 ## Requirements
 
