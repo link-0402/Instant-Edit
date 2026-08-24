@@ -17,6 +17,15 @@ from .properties import get_settings
 from .backups import list_backups, target_folder
 
 
+def draw_status_context_menu(menu, context) -> None:
+    """Add full-status copying when the status text field is right-clicked."""
+    button_prop = getattr(context, "button_prop", None)
+    if button_prop is None or getattr(button_prop, "identifier", "") != "last_status":
+        return
+    menu.layout.separator()
+    menu.layout.operator("xiv_ie.copy_status", text="Copy Full Import Status", icon="COPYDOWN")
+
+
 class XIVIE_PT_main(Panel):
     bl_idname = "XIVIE_PT_main"
     bl_label = "XIV Instant Edit"
@@ -75,7 +84,10 @@ class XIVIE_PT_main(Panel):
         redraw.prop(props, "redraw_mode", expand=True)
         if props.redraw_mode == "GLAM":
             box.label(text="Glamourer refresh does not support face models.", icon="INFO")
-        box.label(text=props.last_status, icon="INFO")
+        status_row = box.row(align=True)
+        status_row.label(text="Status:", icon="INFO")
+        status_row.prop(props, "last_status", text="")
+        status_row.operator("xiv_ie.copy_status", text="", icon="COPYDOWN")
 
     @staticmethod
     def _draw_mesh_materials(layout, context: Context) -> None:
@@ -290,6 +302,7 @@ class XIVIE_PT_main(Panel):
         row = options.row(align=True)
         row.prop(settings, "create_backfaces")
         options.prop(settings, "remove_yas")
+        options.prop(settings, "backup_models_on_export")
 
         cleanup = box.box()
         cleanup.label(text="Vertex Data Fixes")

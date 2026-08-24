@@ -40,6 +40,11 @@ public sealed class Plugin : IDalamudPlugin
         _log      = log;
 
         _config    = pi.GetPluginConfig() as Configuration ?? new Configuration();
+        if (_config.Version < 7)
+        {
+            _config.Version = 7;
+            pi.SavePluginConfig(_config);
+        }
         _penumbra  = new PenumbraService(pi, framework, log, objects);
         _onScreen  = new OnScreenService(objects, clientState, framework, _penumbra, log);
         _contexts  = new ExportContextRegistry(

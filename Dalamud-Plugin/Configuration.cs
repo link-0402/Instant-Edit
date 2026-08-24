@@ -6,7 +6,7 @@ namespace InstantEdit;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 7;
 
     /// <summary> Port the Blender addon listens on for import commands. </summary>
     public int BlenderPort { get; set; } = 42424;
@@ -22,6 +22,12 @@ public sealed class Configuration : IPluginConfiguration
 
     /// <summary>Name of the scene armature used when <see cref="UseExistingSkeleton"/> is enabled.</summary>
     public string SkeletonObjectName { get; set; } = "Skeleton";
+
+    /// <summary>Create display-only Blender materials from the resolved FFXIV resources.</summary>
+    public bool ApplyTexturesAndMaterials { get; set; }
+
+    /// <summary>Skip body skin, body-piercing, and pube preview resources.</summary>
+    public bool ExcludeBodyAndGeneralMaterials { get; set; }
 
     /// <summary>Import contexts retained so saved Blender scenes can reconnect after a restart.</summary>
     public List<PersistedExportContext> ExportContexts { get; set; } = [];

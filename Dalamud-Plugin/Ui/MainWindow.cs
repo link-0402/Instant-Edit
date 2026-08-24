@@ -18,6 +18,7 @@ public sealed class MainWindow : IDisposable
 {
     private readonly Configuration _config; private readonly PenumbraService _penumbra; private readonly OnScreenService _onScreen;
     private readonly BlenderClient _blender; private readonly IDataManager _data; private readonly IChatGui _chat; private readonly IPluginLog _log;
+    private readonly MaterialPreviewBundleBuilder _materialPreviews;
     private readonly Action _saveConfig;
     private readonly object _stateLock = new();
     private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
@@ -37,6 +38,7 @@ public sealed class MainWindow : IDisposable
         ITextureProvider textureProvider)
     {
         _config = config; _penumbra = penumbra; _onScreen = onScreen; _blender = blender; _data = data; _chat = chat; _log = log;
+        _materialPreviews = new MaterialPreviewBundleBuilder(data, log);
         _saveConfig = saveConfig;
         _ = uiBuilder.RunWhenUiPrepared(() => LoadSlotIcons(uiBuilder, textureProvider), true);
     }
@@ -70,7 +72,7 @@ public sealed class MainWindow : IDisposable
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Penumbra Mods"))
+            if (ImGui.BeginTabItem("Mod Browser"))
             {
                 DrawModsTab();
                 ImGui.EndTabItem();
@@ -180,6 +182,30 @@ public sealed class MainWindow : IDisposable
         {
             ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Each import creates its own InstantEditArmature.");
         }
+
+        var applyTexturesAndMaterials = _config.ApplyTexturesAndMaterials;
+        if (ImGui.Checkbox("Apply textures and materials", ref applyTexturesAndMaterials))
+        {
+            _config.ApplyTexturesAndMaterials = applyTexturesAndMaterials;
+            SaveImportOptions();
+        }
+        ImGui.TextColored(
+            new Vector4(.55f, .57f, .64f, 1),
+            "Creates display-only Blender materials. Quick Export still writes model data only.");
+
+        ImGui.Indent();
+        ImGui.BeginDisabled(!applyTexturesAndMaterials);
+        var excludeBodyAndGeneralMaterials = _config.ExcludeBodyAndGeneralMaterials;
+        if (ImGui.Checkbox("Exclude body and general materials", ref excludeBodyAndGeneralMaterials))
+        {
+            _config.ExcludeBodyAndGeneralMaterials = excludeBodyAndGeneralMaterials;
+            SaveImportOptions();
+        }
+        ImGui.EndDisabled();
+        ImGui.TextColored(
+            new Vector4(.55f, .57f, .64f, 1),
+            "Leaves body skin, body-piercing, and pube materials as colored placeholders.");
+        ImGui.Unindent();
         ImGui.Separator();
     }
 
@@ -808,8 +834,13 @@ public sealed class MainWindow : IDisposable
 
     private BlenderImportOptions CurrentImportOptions()
         => _config.UseExistingSkeleton
-            ? BlenderImportOptions.Existing(_config.SkeletonObjectName)
-            : BlenderImportOptions.Generated;
+            ? BlenderImportOptions.Existing(
+                _config.SkeletonObjectName,
+                _config.ApplyTexturesAndMaterials,
+                _config.ExcludeBodyAndGeneralMaterials)
+            : BlenderImportOptions.GeneratedWithPreview(
+                _config.ApplyTexturesAndMaterials,
+                _config.ExcludeBodyAndGeneralMaterials);
 
     private async Task EditModelAsync(
         ActorView actor,
@@ -826,6 +857,9 @@ public sealed class MainWindow : IDisposable
             if (importOptions.ArmatureMode == BlenderImportOptions.ExistingMode &&
                 !await _blender.SupportsImportOptionsAsync(blenderPort).ConfigureAwait(false))
                 throw new InvalidOperationException("The XIV Instant Edit addon is too old for custom import options. Update the add-on and restart Blender.");
+            if (importOptions.ApplyTexturesAndMaterials &&
+                !await _blender.SupportsMaterialPreviewAsync(blenderPort).ConfigureAwait(false))
+                throw new InvalidOperationException("The XIV Instant Edit addon is too old for texture and material previews. Update the add-on and restart Blender.");
 
             var bytes = model.IsFilePath
                 ? await File.ReadAllBytesAsync(model.LocalPath).ConfigureAwait(false)
@@ -833,8 +867,22 @@ public sealed class MainWindow : IDisposable
                     ?? throw new InvalidOperationException($"Game file not found: {model.LocalPath}");
             var dir = Path.Combine(Path.GetTempPath(), "InstantEdit");
             Directory.CreateDirectory(dir);
+            MaterialPreviewBundleResult? preview = null;
+            if (importOptions.ApplyTexturesAndMaterials)
+                dir = Path.Combine(dir, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
             var file = Path.Combine(dir, $"{Sanitize(actor.Name)}-{actor.ImportObjectIndex}-{model.FileName}");
             await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
+            if (importOptions.ApplyTexturesAndMaterials)
+            {
+                var resources = await ResolvePreviewResourcesAsync(actor).ConfigureAwait(false);
+                preview = await _materialPreviews.BuildAsync(
+                    bytes,
+                    model.GamePath,
+                    resources,
+                    Path.Combine(dir, "preview"),
+                    importOptions.ExcludeBodyAndGeneralMaterials).ConfigureAwait(false);
+            }
             await _blender.SendSourceImportAsync(
                 blenderPort,
                 file,
@@ -846,9 +894,11 @@ public sealed class MainWindow : IDisposable
                 source.SourceModDirectory,
                 source.SourceModName,
                 importOptions: importOptions,
+                previewManifestPath: preview?.ManifestPath,
                 sourceModRootPath: source.SourceModRootPath,
                 validateActorTarget: actor.ValidateActorTarget).ConfigureAwait(false);
-            SetStatus($"Sent {model.FileName} to Blender.", true);
+            var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
+            SetStatus($"Sent {model.FileName} to Blender.{warning}", true);
             _chat.Print($"Instant Edit: {model.FileName} sent to Blender.");
         }
         catch (Exception e)
@@ -861,6 +911,26 @@ public sealed class MainWindow : IDisposable
         {
             Volatile.Write(ref _editing, 0);
         }
+    }
+
+    private async Task<IReadOnlyCollection<MaterialResourceCandidate>> ResolvePreviewResourcesAsync(ActorView actor)
+    {
+        if (actor.Entity is not null && actor.ImportObjectIndex is >= 0 and <= ushort.MaxValue)
+        {
+            var resolved = await _penumbra.GetResourcePathsAsync((ushort)actor.ImportObjectIndex).ConfigureAwait(false);
+            if (resolved is not null)
+            {
+                return resolved.SelectMany(pair => pair.Value.Select(gamePath =>
+                    new MaterialResourceCandidate(gamePath, pair.Key))).ToArray();
+            }
+        }
+
+        return actor.Roots
+            .SelectMany(Flatten)
+            .Where(resource => resource.GamePath.EndsWith(".mtrl", StringComparison.OrdinalIgnoreCase) ||
+                               resource.GamePath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+            .Select(resource => new MaterialResourceCandidate(resource.GamePath, resource.ActualPath))
+            .ToArray();
     }
 
     private async Task<bool> CheckBlenderAsync(int port)
@@ -900,7 +970,42 @@ public sealed class MainWindow : IDisposable
             }
         });
     }
-    private void DrawFeedback() { string text; bool ok; lock (_stateLock) { text = _status; ok = _statusOk; } if (text.Length > 0) ImGui.TextColored(ok ? new Vector4(.4f, .85f, .6f, 1) : new Vector4(1, .55f, .3f, 1), text); }
+    private void DrawFeedback()
+    {
+        string text;
+        bool ok;
+        lock (_stateLock)
+        {
+            text = _status;
+            ok = _statusOk;
+        }
+
+        if (text.Length == 0)
+            return;
+
+        var accent = ok
+            ? new Vector4(.35f, .85f, .55f, 1)
+            : new Vector4(1f, .35f, .22f, 1);
+        var background = ok
+            ? new Vector4(.08f, .18f, .12f, 1)
+            : new Vector4(.24f, .09f, .065f, 1);
+
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, background);
+        ImGui.PushStyleColor(ImGuiCol.Border, accent);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 1);
+        if (ImGui.BeginChild("##instant-edit-feedback", new Vector2(0, ImGui.GetFrameHeightWithSpacing() * 2), true))
+        {
+            ImGui.TextColored(accent, ok ? "✓" : "⚠");
+            ImGui.SameLine(0, 6);
+            ImGui.PushTextWrapPos();
+            ImGui.TextColored(new Vector4(.92f, .93f, .96f, 1), text);
+            ImGui.PopTextWrapPos();
+        }
+        ImGui.EndChild();
+        ImGui.PopStyleVar(2);
+        ImGui.PopStyleColor(2);
+    }
     private void SetStatus(string text, bool ok) { lock (_stateLock) { _status = text; _statusOk = ok; } }
     private static string Sanitize(string name) { var invalid = Path.GetInvalidFileNameChars(); var value = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim(); return value.Length == 0 ? "Object" : value; }
 

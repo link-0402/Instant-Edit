@@ -108,6 +108,10 @@ public sealed class PenumbraService
         }
     }
 
+    /// <summary>Resolve one object's effective resources on Dalamud's framework thread.</summary>
+    public async Task<Dictionary<string, HashSet<string>>?> GetResourcePathsAsync(ushort gameObjectIndex)
+        => await _framework.RunOnFrameworkThread(() => GetResourcePaths(gameObjectIndex)).ConfigureAwait(false);
+
     /// <summary> Get the resolved resource paths for several game objects in one IPC call. </summary>
     public Dictionary<string, HashSet<string>>?[] GetResourcePaths(ushort[] gameObjectIndices)
     {
@@ -550,15 +554,17 @@ public sealed class PenumbraService
                 if (!Directory.Exists(scanRoot) || HasReparsePointInPath(sourceRoot, scanRoot))
                     continue;
 
-                var optionMappings = ReadModOptionMappings(sourceRoot);
+                var mappings = ReadModMappings(sourceRoot);
                 var resources = new List<PenumbraModResource>();
                 foreach (var file in Directory.EnumerateFiles(scanRoot, "*", SearchOption.AllDirectories))
                 {
                     if (!IsSafeModResourceFile(sourceRoot, file))
                         continue;
 
-                    var gamePath = Path.GetRelativePath(scanRoot, file).Replace('\\', '/');
-                    var extension = Path.GetExtension(gamePath);
+                    var relativePath = Path.GetRelativePath(scanRoot, file).Replace('\\', '/');
+                    var modPath = relativePrefix + relativePath;
+                    var gamePath = CanonicalGamePathFor(modPath, mappings.GamePaths);
+                    var extension = Path.GetExtension(relativePath);
                     if (!extension.Equals(".mdl", StringComparison.OrdinalIgnoreCase) &&
                         !extension.Equals(".tex", StringComparison.OrdinalIgnoreCase) &&
                         !extension.Equals(".atex", StringComparison.OrdinalIgnoreCase) &&
@@ -568,8 +574,8 @@ public sealed class PenumbraService
                     resources.Add(new PenumbraModResource(
                         gamePath,
                         file,
-                        relativePrefix + gamePath,
-                        OptionMappingFor(relativePrefix + gamePath, optionMappings)));
+                        modPath,
+                        OptionMappingFor(modPath, mappings.OptionLabels)));
                 }
 
                 if (resources.Count > 0)
@@ -1388,8 +1394,13 @@ public sealed class PenumbraService
             ?? throw new InvalidDataException($"Penumbra metadata is not a JSON object: {path}");
     }
 
-    private static Dictionary<string, string> ReadModOptionMappings(string modRoot)
+    private sealed record ModMappings(
+        IReadOnlyDictionary<string, string?> GamePaths,
+        IReadOnlyDictionary<string, string> OptionLabels);
+
+    private static ModMappings ReadModMappings(string modRoot)
     {
+        var gamePathsByModPath = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var labelsByPath = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
 
         void AddFileMappings(JsonNode? container, string label)
@@ -1402,6 +1413,18 @@ public sealed class PenumbraService
                 var relativePath = JsonString(file.Value);
                 if (string.IsNullOrWhiteSpace(relativePath))
                     continue;
+
+                var gamePath = NormalizeCanonicalGamePath(file.Key);
+                if (gamePath.Length > 0)
+                {
+                    foreach (var key in ModPathKeys(relativePath))
+                    {
+                        if (!gamePathsByModPath.TryGetValue(key, out var existing))
+                            gamePathsByModPath[key] = gamePath;
+                        else if (existing is not null && !SameGamePath(existing, gamePath))
+                            gamePathsByModPath[key] = null;
+                    }
+                }
 
                 foreach (var key in ModPathKeys(relativePath))
                 {
@@ -1465,10 +1488,34 @@ public sealed class PenumbraService
             // resources that were successfully discovered from the mod folder.
         }
 
-        return labelsByPath.ToDictionary(
-            pair => pair.Key,
-            pair => string.Join(" | ", pair.Value),
-            StringComparer.OrdinalIgnoreCase);
+        return new ModMappings(
+            gamePathsByModPath,
+            labelsByPath.ToDictionary(
+                pair => pair.Key,
+                pair => string.Join(" | ", pair.Value),
+                StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static string CanonicalGamePathFor(
+        string relativePath,
+        IReadOnlyDictionary<string, string?> mappings)
+    {
+        foreach (var key in ModPathKeys(relativePath))
+            if (mappings.TryGetValue(key, out var gamePath) && gamePath is not null)
+                return gamePath;
+
+        return NormalizeCanonicalGamePath(relativePath);
+    }
+
+    private static string NormalizeCanonicalGamePath(string path)
+    {
+        var normalized = path.Replace('\\', '/').Trim();
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+            normalized = normalized[2..];
+        normalized = normalized.TrimStart('/');
+        if (normalized.StartsWith("Files/", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[6..];
+        return normalized;
     }
 
     private static string OptionMappingFor(string relativePath, IReadOnlyDictionary<string, string> mappings)

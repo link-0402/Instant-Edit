@@ -13,6 +13,7 @@ MAX_IMPORT_BODY_SIZE = 1024 * 1024
 MAX_IMPORT_QUEUE_SIZE = 32
 REQUEST_TIMEOUT_SECONDS = 5
 IMPORT_OPTIONS_CAPABILITY = "instant-edit.import-options.v1"
+MATERIAL_PREVIEW_CAPABILITY = "instant-edit.material-preview.v1"
 
 _import_queue: Queue = Queue(maxsize=MAX_IMPORT_QUEUE_SIZE)
 _server              = None
@@ -35,7 +36,12 @@ def _string(data: dict, *names: str, required: bool = False, max_length: int = 1
 def _normalise_import_options(value) -> dict:
     """Validate and normalize optional scene setup requested by the plugin."""
     if value is None:
-        return {"armatureMode": "generated", "targetObject": "Skeleton"}
+        return {
+            "armatureMode": "generated",
+            "targetObject": "Skeleton",
+            "applyTexturesAndMaterials": False,
+            "excludeBodyAndGeneralMaterials": False,
+        }
     if not isinstance(value, dict):
         raise ValueError("importOptions must be an object")
 
@@ -45,7 +51,20 @@ def _normalise_import_options(value) -> dict:
         raise ValueError("importOptions.armatureMode is invalid")
     if not isinstance(target, str) or not target.strip() or len(target) > 128:
         raise ValueError("importOptions.targetObject must be a non-empty string of at most 128 characters")
-    return {"armatureMode": mode, "targetObject": target.strip()}
+    apply_preview = value.get("applyTexturesAndMaterials", False)
+    if not isinstance(apply_preview, bool):
+        raise ValueError("importOptions.applyTexturesAndMaterials must be a boolean")
+    exclude_body = value.get("excludeBodyAndGeneralMaterials", False)
+    if not isinstance(exclude_body, bool):
+        raise ValueError("importOptions.excludeBodyAndGeneralMaterials must be a boolean")
+    if exclude_body and not apply_preview:
+        raise ValueError("importOptions.excludeBodyAndGeneralMaterials requires material previews")
+    return {
+        "armatureMode": mode,
+        "targetObject": target.strip(),
+        "applyTexturesAndMaterials": apply_preview,
+        "excludeBodyAndGeneralMaterials": exclude_body,
+    }
 
 
 class _ImportHandler(BaseHTTPRequestHandler):
@@ -61,7 +80,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 "ready": True,
                 "addon": "XIV Instant Edit",
                 "addonId": "xiv_instant_edit",
-                "capabilities": [IMPORT_OPTIONS_CAPABILITY],
+                "capabilities": [IMPORT_OPTIONS_CAPABILITY, MATERIAL_PREVIEW_CAPABILITY],
             })
         else:
             self._respond(404, {"ok": False, "error": "not found"})
@@ -129,6 +148,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 ),
                 "sourceModDirectory": nested.get("sourceModDirectory", nested.get("modName", "")),
                 "sourceModName": nested.get("sourceModName", nested.get("modName", "")),
+                "previewManifestPath": data.get("previewManifestPath", ""),
                 "importOptions": import_options,
             }
         elif data.get("schema") == "instant-edit.import" and data.get("context") is None:
@@ -164,6 +184,9 @@ class _ImportHandler(BaseHTTPRequestHandler):
             source_mod_root_path = _string(
                 data, "sourceModRootPath", max_length=4096
             )
+            preview_manifest_path = _string(
+                data, "previewManifestPath", max_length=4096
+            )
             callback_port = data.get("callbackPort", data.get("pluginPort", 0)) or _callback_port
             if isinstance(callback_port, bool) or not isinstance(callback_port, int) or not 1 <= callback_port <= 65535:
                 raise ValueError("callbackPort must be between 1 and 65535")
@@ -185,6 +208,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 "sourceModDirectory": source_mod_directory,
                 "sourceModName": source_mod_name,
                 "sourceModRootPath": source_mod_root_path,
+                "previewManifestPath": preview_manifest_path,
                 "callbackPort": callback_port,
                 "name": _string(data, "displayName", "name", max_length=255),
                 "importOptions": import_options,
@@ -319,6 +343,8 @@ def poll_import_queue() -> float:
                     import_id=data.get("importId", ""),
                     armature_mode=data.get("importOptions", {}).get("armatureMode", "generated"),
                     armature_target=data.get("importOptions", {}).get("targetObject", "Skeleton"),
+                    apply_textures_and_materials=data.get("importOptions", {}).get("applyTexturesAndMaterials", False),
+                    preview_manifest_path=data.get("previewManifestPath", ""),
                 )
             except Exception as e:
                 print(f"Instant Edit: import failed: {e}")

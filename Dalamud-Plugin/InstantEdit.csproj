@@ -11,8 +11,8 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <RootNamespace>InstantEdit</RootNamespace>
     <AssemblyName>InstantEdit</AssemblyName>
-    <Version>1.0.1</Version>
-    <FileVersion>1.0.1.0</FileVersion>
+    <Version>1.0.5</Version>
+    <FileVersion>1.0.5.0</FileVersion>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <Deterministic>true</Deterministic>
@@ -27,7 +27,7 @@
     <Author>Luci</Author>
     <Name>Instant Edit</Name>
     <Punchline>Send on-screen models straight to Blender and back.</Punchline>
-    <Description>Lists the models currently on screen (like Penumbra's On Screen tab). Clicking a model instantly imports it into Blender via the XIV Instant Edit addon, and the Quick Export button in Blender writes it right back to the same game path as a Penumbra mod.</Description>
+    <Description>Allows for easy and instant editing of Penumbra model files in Blender and saving them right back to the game. Requires XIV Instant Edit Blender addon installed (see source repository for instructions).</Description>
     <RepoUrl>https://github.com/link-0402/Instant-Edit</RepoUrl>
     <ApplicableVersion>any</ApplicableVersion>
     <DalamudApiLevel>15</DalamudApiLevel>

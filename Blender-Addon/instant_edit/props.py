@@ -136,7 +136,7 @@ class XIVIEInstantEditProps(PropertyGroup):
         name="",
         description="Status of the last Instant Edit action",
         default="Pick a model in-game via the Instant Edit plugin to get started.",
-        maxlen=512,
+        maxlen=4096,
     )  # type: ignore
 
     save_as_variant: BoolProperty(
@@ -155,7 +155,7 @@ class XIVIEInstantEditProps(PropertyGroup):
 
     auto_setup_penumbra: BoolProperty(
         name="Automatically setup in Penumbra",
-        description="Create and select a high-priority Penumbra option for this variant after exporting",
+        description="Automatically set up this new model in Penumbra on a new or existing option group",
         default=False,
     )  # type: ignore
 

@@ -20,6 +20,10 @@ Modifications made in 2026 include:
 - allowing export through an Armature modifier without requiring object
   parenting;
 - adding UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup;
+- adding validated, packed, display-only previews for resolved FFXIV material
+  and texture resources;
+- honoring the Dalamud body/general-material exclusion list without treating
+  intentionally skipped preview slots as missing resources;
 - adding focused Simple Import and Simple Export operators with a tabbed UI; and
 - removing registration of unrelated outfit, pose, animation, modpack, and
   general utility tools.

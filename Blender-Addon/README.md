@@ -11,6 +11,8 @@ plus a standalone Simple Import/Export panel.
   export destination.
 - Supports generated import armatures or a named existing scene armature.
 - Displays and assigns the FFXIV material path for every visible mesh group.
+- Optionally builds import-local, packed Principled BSDF previews from the
+  effective game/Penumbra MTRL and TEX resources supplied by the plugin.
 - Supports adding new visible mesh parts and groups anywhere in the scene using
   YAA-compatible `group.part Name` object names.
 - Quick Export back to the original source mod, including variants and optional
@@ -23,10 +25,23 @@ plus a standalone Simple Import/Export panel.
 - Simple Import from MDL or FBX files.
 - Export-time UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup.
 
+Material previews are display-only and intentionally approximate. They do not
+include actor colors or dye baking, do not add material/texture editing, and
+are never included in Quick Export. Missing preview resources fall back to the
+existing colored placeholder without blocking geometry import. Gear using
+`character.shpk`-family colorsets and index textures is composed into a packed
+base-color preview. Standalone
+Simple Import does not resolve FFXIV resources and is unchanged.
+
+When the Dalamud **Exclude body and general materials** sub-option is enabled,
+body skin, body-piercing, and pube slots intentionally retain their colored
+placeholders without producing missing-preview warnings.
+
 ## Installation
 
 Build or install the extension ZIP through Blender's Extensions preferences.
-The source directory itself can also be used for development.
+The source directory itself can also be used for development with Blender 4.5
+or newer.
 
 Do not enable this extension at the same time as a custom Yet Another Addon
 build that also contains the Instant Edit listener. Both would attempt to own

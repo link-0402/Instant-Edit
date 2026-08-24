@@ -20,6 +20,8 @@ from .props          import get_instant_edit_props
 from .context        import (SCHEMA, VERSION, ContextValidationError,
                              active_context, clear_context_metadata, create_collection,
                              tag_object, validate_context)
+from .material_preview import (cleanup_preview_bundle, discard_preview_data,
+                               load_preview_manifest)
 
 
 MAX_PLUGIN_RESPONSE_SIZE = 64 * 1024
@@ -167,6 +169,8 @@ class InstantImport(Operator):
         options={'HIDDEN'},
     )  # type: ignore
     armature_target: bpy.props.StringProperty(default="Skeleton", options={'HIDDEN'})  # type: ignore
+    apply_textures_and_materials: bpy.props.BoolProperty(default=False, options={'HIDDEN'})  # type: ignore
+    preview_manifest_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
 
     @classmethod
     def poll(cls, context: Context):
@@ -178,6 +182,8 @@ class InstantImport(Operator):
         user_state = _snapshot_object_state(context)
         created_objects = []
         collection = None
+        preview_package = None
+        preview_validation_warning = ""
         if not file_path.is_file():
             props.last_status = "Import failed: file not found."
             self.report({"ERROR"}, "Model file not found.")
@@ -221,6 +227,15 @@ class InstantImport(Operator):
 
             collection = create_collection(context.scene, collection_metadata)
 
+            if self.apply_textures_and_materials:
+                if self.preview_manifest_path:
+                    try:
+                        preview_package = load_preview_manifest(self.preview_manifest_path, str(file_path))
+                    except Exception as error:
+                        preview_validation_warning = f"Material preview unavailable: {error}"
+                else:
+                    preview_validation_warning = "Material preview unavailable: the plugin did not provide a bundle."
+
             object_label = self.import_name or file_path.stem
             imported_meshes = ModelImport.from_file(
                 str(file_path), object_label,
@@ -228,6 +243,8 @@ class InstantImport(Operator):
                 select_objects=False,
                 require_collection=True,
                 created_objects=created_objects,
+                material_preview=preview_package,
+                material_context_key=self.context_id or collection.name,
             )
             if self.armature_mode == "existing":
                 self._bind_existing_armature(
@@ -259,17 +276,31 @@ class InstantImport(Operator):
             props.plugin_instance_id = self.plugin_instance_id if is_v1 else ""
             props.capability = self.capability if is_v1 else ""
             props.managed_destination = self.managed_destination if is_v1 else ""
-            props.last_status  = f"Imported {file_path.name}"
+            preview_warnings = [] if preview_package is None else preview_package.warnings
+            warning_text = preview_validation_warning
+            if preview_warnings:
+                warning_text = "; ".join(preview_warnings[:3])
+                if len(preview_warnings) > 3:
+                    warning_text += f" (+{len(preview_warnings) - 3} more)"
+            props.last_status = (
+                f"Imported {file_path.name} with preview warnings: {warning_text}"
+                if warning_text else f"Imported {file_path.name}"
+            )
         except Exception as e:
             _remove_staging_objects(created_objects, collection)
+            discard_preview_data(preview_package)
             props.last_status = f"Import failed: {e}"
             self.report({"ERROR"}, f"Import failed: {e}")
             return {"CANCELLED"}
 
         finally:
             _restore_object_state(context, user_state)
+            cleanup_preview_bundle(preview_package)
 
-        self.report({"INFO"}, "Model imported!")
+        if preview_validation_warning or (preview_package is not None and preview_package.warnings):
+            self.report({"WARNING"}, props.last_status)
+        else:
+            self.report({"INFO"}, "Model imported!")
         return {"FINISHED"}
 
     def _bind_existing_armature(
@@ -423,6 +454,17 @@ class ClearInstantEditContexts(Operator):
             setattr(props, field, value)
         props.export_destination = "ACTIVE"
         self.report({"INFO"}, f"Cleared {cleared} Instant Edit context(s).")
+        return {"FINISHED"}
+
+
+class CopyInstantEditStatus(Operator):
+    bl_idname = "xiv_ie.copy_status"
+    bl_label = "Copy Full Import Status"
+    bl_description = "Copy the complete Instant Edit status message to the clipboard"
+
+    def execute(self, context):
+        context.window_manager.clipboard = get_instant_edit_props().last_status
+        self.report({"INFO"}, "Instant Edit status copied")
         return {"FINISHED"}
 
 
@@ -692,5 +734,6 @@ CLASSES = [
     InstantImport,
     QuickExport,
     ClearInstantEditContexts,
+    CopyInstantEditStatus,
     ApplyInstantEdit,
 ]

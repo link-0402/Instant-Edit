@@ -20,7 +20,14 @@ from .operators import (
 )
 from .preferences import XIVIEPreferences
 from .properties import XIVIEExportSettings, set_addon_properties, remove_addon_properties
-from .ui import XIVIE_PT_main
+from .ui import XIVIE_PT_main, draw_status_context_menu
+
+
+BUTTON_CONTEXT_MENU = getattr(
+    bpy.types,
+    "UI_MT_button_context_menu",
+    getattr(bpy.types, "WM_MT_button_context", None),
+)
 
 
 CLASSES = [
@@ -57,6 +64,8 @@ def register() -> None:
     try:
         for cls in CLASSES:
             bpy.utils.register_class(cls)
+        if BUTTON_CONTEXT_MENU is not None:
+            BUTTON_CONTEXT_MENU.append(draw_status_context_menu)
         set_addon_properties()
         instant_edit.register()
     except Exception:
@@ -66,6 +75,11 @@ def register() -> None:
 
 def unregister() -> None:
     instant_edit.unregister()
+    try:
+        if BUTTON_CONTEXT_MENU is not None:
+            BUTTON_CONTEXT_MENU.remove(draw_status_context_menu)
+    except (ValueError, RuntimeError):
+        pass
     try:
         remove_addon_properties()
     except (AttributeError, RuntimeError):

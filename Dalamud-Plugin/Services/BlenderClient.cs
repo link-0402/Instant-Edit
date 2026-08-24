@@ -9,6 +9,9 @@ namespace InstantEdit.Services;
 /// <summary> Talks to the HTTP listener hosted by XIV Instant Edit in Blender. </summary>
 public sealed class BlenderClient : IDisposable
 {
+    public const string ImportOptionsCapability = "instant-edit.import-options.v1";
+    public const string MaterialPreviewCapability = "instant-edit.material-preview.v1";
+
     private readonly HttpClient _http;
     private readonly IPluginLog _log;
     private readonly int _callbackPort;
@@ -72,6 +75,16 @@ public sealed class BlenderClient : IDisposable
 
     /// <summary>Returns whether the connected add-on advertises import options support.</summary>
     public async Task<bool> SupportsImportOptionsAsync(int port, CancellationToken cancellationToken = default)
+        => await SupportsCapabilityAsync(port, ImportOptionsCapability, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>Returns whether the connected add-on can consume material preview bundles.</summary>
+    public async Task<bool> SupportsMaterialPreviewAsync(int port, CancellationToken cancellationToken = default)
+        => await SupportsCapabilityAsync(port, MaterialPreviewCapability, cancellationToken).ConfigureAwait(false);
+
+    private async Task<bool> SupportsCapabilityAsync(
+        int port,
+        string capability,
+        CancellationToken cancellationToken = default)
     {
         if (port is < 1 or > 65535)
             return false;
@@ -91,7 +104,7 @@ public sealed class BlenderClient : IDisposable
                    capabilities.ValueKind == JsonValueKind.Array &&
                    capabilities.EnumerateArray().Any(item =>
                        item.ValueKind == JsonValueKind.String &&
-                       string.Equals(item.GetString(), "instant-edit.import-options.v1", StringComparison.Ordinal));
+                       string.Equals(item.GetString(), capability, StringComparison.Ordinal));
         }
         catch (OperationCanceledException)
         {
@@ -223,6 +236,7 @@ public sealed class BlenderClient : IDisposable
         string sourceModName,
         CancellationToken cancellationToken = default,
         BlenderImportOptions? importOptions = null,
+        string? previewManifestPath = null,
         string? sourceModRootPath = null,
         bool validateActorTarget = true)
     {
@@ -269,6 +283,7 @@ public sealed class BlenderClient : IDisposable
                 sourceModDirectory,
                 sourceModName,
                 sourceModRootPath,
+                previewManifestPath,
                 importOptions = importOptions ?? BlenderImportOptions.Generated,
             });
 

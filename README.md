@@ -3,8 +3,8 @@
 Instant Edit lets you edit visible FINAL FANTASY XIV models in Blender and
 send the finished model back to its original Penumbra mod.
 
-It currently supports only model workflows. 
-Texture and material editing are not yet supported, but may be added in a future update.
+It supports model editing plus an optional, display-only material preview. Texture
+and material editing or export are not supported.
 
 ## Requirements
 
@@ -43,6 +43,11 @@ Note that you will not be getting automatic feature and compatability updates th
 1. Start Blender and make sure the XIV Instant Edit add-on is enabled.
 2. Start FFXIV and run `/ie` to open the plugin window.
 3. Click **Refresh character list** at the top and browse to the model you are looking for, then click Edit.
+   Enable **Apply textures and materials** first if you want Instant Edit to
+   resolve the model's current game/Penumbra textures into a practical Blender
+   viewport preview. The option is off by default. Enable **Exclude body and
+   general materials** underneath it to leave body skin, body-piercing, and
+   pube materials as placeholders while still previewing equipment materials.
 4. Edit the model in Blender. Instant Edit tools are available in the
    **XIV Instant Edit** tab of the 3D Viewport sidebar.
 5. Click **Quick Export** to send the edited model back to its Penumbra mod.
@@ -62,6 +67,22 @@ In this case you may be required to configure the material names for mesh groups
 
 You may also save a model imported through IE as a variant, giving it a new file name. The addon will then
 automatically setup the required Penumbra paths for this new model if the option is enabled.
+
+### Material preview limits
+
+The optional preview uses the effective MTRL and TEX files resolved for the
+selected model and packs the generated images into the Blender file. It is a
+practical Principled BSDF approximation, not an exact reproduction of FFXIV's
+shader pipeline. Character gear without a diffuse map is composed from its
+colorset, index, normal, and mask textures. Actor-specific skin, hair, eye, and
+dye customization is not baked into the preview. Missing or unsupported
+resources keep the existing colored placeholder and produce a warning without
+blocking model import.
+
+Preview materials never change Quick Export: the add-on continues to export
+only MDL geometry using the mesh object's original `xiv_material` metadata.
+Standalone Simple Import is unchanged. Material/texture nodes are not editable
+game resources and are not exported back to FFXIV.
 
 ## Notes
 

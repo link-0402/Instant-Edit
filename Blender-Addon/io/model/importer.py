@@ -13,6 +13,7 @@ from .imp.streams    import get_submesh_streams, create_stream_arrays
 from .imp.weights    import create_weight_matrix, set_weights
 from ...xivpy.model  import XIVModel, Submesh, VertexDeclaration, VertexUsage
 from .com.exceptions import XIVMeshError
+from ...instant_edit.material_preview import create_preview_material
 
 
 def material_object_label(material_path: str) -> str:
@@ -25,7 +26,7 @@ def material_object_label(material_path: str) -> str:
     return name
 
     
-def create_material(name: str, col_idx) -> Material:
+def material_colour(col_idx):
     colours = { 
                 0: (0.03, 0.15, 0.3, 1.0),   # indigo  
                 1: (0.3, 0.03, 0.03, 1.0),   # red
@@ -38,6 +39,10 @@ def create_material(name: str, col_idx) -> Material:
                 8: (0.18, 0.3, 0.03, 1.0),   # lime
                 9: (0.03, 0.3, 0.03, 1.0),   # green
             }
+    return colours.get(col_idx, colours[random.randint(0, 9)])
+
+
+def create_material(name: str, col_idx) -> Material:
     
     if name in bpy.data.materials.keys():
         return bpy.data.materials[name]
@@ -55,7 +60,7 @@ def create_material(name: str, col_idx) -> Material:
     
     material.node_tree.links.new(principled.outputs['BSDF'], output.inputs['Surface'])
     
-    principled.inputs['Base Color'].default_value = colours.get(col_idx, random.randint(0, 9))
+    principled.inputs['Base Color'].default_value = material_colour(col_idx)
     
     principled.inputs['Roughness'].default_value = 0.6
     principled.inputs['Metallic'].default_value = 0.0
@@ -101,6 +106,8 @@ class ModelImport:
         select_objects: bool = True,
         require_collection: bool = False,
         created_objects: list | None = None,
+        material_preview=None,
+        material_context_key: str = "",
     ) -> tuple:
         importer = cls()
         importer.collection = collection
@@ -108,6 +115,8 @@ class ModelImport:
         importer.select_objects = select_objects
         importer.require_collection = require_collection
         importer.created_objects = created_objects if created_objects is not None else []
+        importer.material_preview = material_preview
+        importer.material_context_key = material_context_key
         return importer._import_mdl(XIVModel.from_file(file_path), import_name)
 
     @classmethod
@@ -121,6 +130,8 @@ class ModelImport:
         select_objects: bool = True,
         require_collection: bool = False,
         created_objects: list | None = None,
+        material_preview=None,
+        material_context_key: str = "",
     ) -> tuple:
         importer = cls()
         importer.collection = collection
@@ -128,12 +139,15 @@ class ModelImport:
         importer.select_objects = select_objects
         importer.require_collection = require_collection
         importer.created_objects = created_objects if created_objects is not None else []
+        importer.material_preview = material_preview
+        importer.material_context_key = material_context_key
         return importer._import_mdl(XIVModel.from_bytes(data), import_name)
 
     def _import_mdl(self, model: XIVModel, import_name: str) -> tuple:
         self.model    = model
         self.obj_name = import_name
         self.created_mesh_objects = []
+        self.material_cache = {}
 
         if self.require_collection and self.collection is None:
             raise ValueError("a dedicated import collection is required")
@@ -175,7 +189,20 @@ class ModelImport:
             return
         self._verify_attributes(streams, vert_decl)
 
-        material    = create_material(self.model.materials[self.mesh.material_idx], self.mesh.material_idx)
+        material_path = self.model.materials[self.mesh.material_idx]
+        material = self.material_cache.get(material_path)
+        if material is None:
+            fallback = material_colour(self.mesh.material_idx)
+            if self.material_preview is not None:
+                material = create_preview_material(
+                    material_path,
+                    fallback,
+                    self.material_preview,
+                    self.material_context_key,
+                )
+            if material is None:
+                material = create_material(material_path, self.mesh.material_idx)
+            self.material_cache[material_path] = material
         submeshes   = self.model.submeshes[self.mesh.submesh_index: self.mesh.submesh_index + self.mesh.submesh_count]
         mesh_shapes = self.shapes[self.mesh.start_idx] if self.mesh.start_idx in self.shapes else []
         for submesh_idx, submesh in enumerate(submeshes):

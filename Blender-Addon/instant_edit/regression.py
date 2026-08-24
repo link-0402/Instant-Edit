@@ -7,6 +7,7 @@ test import, where ``sentinels`` are user objects captured before the import.
 
 import importlib
 import importlib.util
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -130,6 +131,9 @@ def run_staging_isolation_regression() -> None:
         _register_for_test(addon, package_name)
         ops = importlib.import_module(f"{package_name}.instant_edit.ops")
         server = importlib.import_module(f"{package_name}.instant_edit.server")
+        material_preview = importlib.import_module(
+            f"{package_name}.instant_edit.material_preview"
+        )
         export_streams = importlib.import_module(f"{package_name}.io.model.exp.streams")
 
         stream_dtype = np.dtype([
@@ -204,7 +208,10 @@ def run_staging_isolation_regression() -> None:
             "importOptions": {
                 "armatureMode": "existing",
                 "targetObject": "  Skeleton  ",
+                "applyTexturesAndMaterials": True,
+                "excludeBodyAndGeneralMaterials": True,
             },
+            "previewManifestPath": r"C:\Temp\preview\materials.json",
             "context": {
                 "schema": "instant-edit.context",
                 "version": 1,
@@ -226,8 +233,23 @@ def run_staging_isolation_regression() -> None:
             validated_options["importOptions"] == {
                 "armatureMode": "existing",
                 "targetObject": "Skeleton",
+                "applyTexturesAndMaterials": True,
+                "excludeBodyAndGeneralMaterials": True,
             },
             "existing-skeleton import options are normalized",
+        )
+        _require(
+            validated_options["previewManifestPath"] == r"C:\Temp\preview\materials.json",
+            "the material-preview manifest path is preserved in the import envelope",
+        )
+        _require(
+            server._ImportHandler._validate_import({})["importOptions"] == {
+                "armatureMode": "generated",
+                "targetObject": "Skeleton",
+                "applyTexturesAndMaterials": False,
+                "excludeBodyAndGeneralMaterials": False,
+            },
+            "material previews default to disabled for legacy imports",
         )
         try:
             server._ImportHandler._validate_import({"importOptions": {"armatureMode": "unknown"}})
@@ -235,8 +257,282 @@ def run_staging_isolation_regression() -> None:
             print("[PASS] invalid import options are rejected")
         else:
             raise AssertionError("invalid import options were accepted")
+        try:
+            server._ImportHandler._validate_import({
+                "importOptions": {"applyTexturesAndMaterials": "yes"},
+            })
+        except ValueError:
+            print("[PASS] non-boolean material-preview options are rejected")
+        else:
+            raise AssertionError("a non-boolean material-preview option was accepted")
+        try:
+            server._ImportHandler._validate_import({
+                "importOptions": {"excludeBodyAndGeneralMaterials": True},
+            })
+        except ValueError:
+            print("[PASS] body/general exclusion requires material previews")
+        else:
+            raise AssertionError("body/general exclusion was accepted without material previews")
+
+        with tempfile.TemporaryDirectory() as preview_temp:
+            import_directory = Path(preview_temp) / ("a" * 32)
+            preview_directory = import_directory / "preview"
+            preview_directory.mkdir(parents=True)
+            model_path = import_directory / "model.mdl"
+            model_path.write_bytes(b"synthetic model")
+            diffuse_bytes = bytes((255, 0, 0, 255, 0, 255, 0, 128))
+            normal_bytes = bytes((128, 128, 255, 255))
+            index_bytes = bytes((0, 255, 0, 255, 0, 0, 0, 255))
+            (preview_directory / "diffuse.rgba").write_bytes(diffuse_bytes)
+            (preview_directory / "normal.rgba").write_bytes(normal_bytes)
+            (preview_directory / "index.rgba").write_bytes(index_bytes)
+            preview_manifest = {
+                "schema": "instant-edit.material-preview",
+                "version": 1,
+                "warnings": ["One optional sampler was unavailable"],
+                "excludedMaterials": ["/mt_c0201b0001_bibo.mtrl"],
+                "materials": [{
+                    "modelMaterial": "/mt_c0101e0001_top_a.mtrl",
+                    "gamePath": "chara/equipment/e0001/material/v0001/mt_c0101e0001_top_a.mtrl",
+                    "shaderPackage": "character.shpk",
+                    "additionalData": "01020304",
+                    "shaderKeys": [{"category": 1, "value": 2}],
+                    "shaderConstants": [{"id": 3, "values": [0.5]}],
+                    "colorSet": {
+                        "width": 1,
+                        "height": 1,
+                        "values": [1.0, 0.5, 0.25, 1.0],
+                    },
+                    "textures": [{
+                        "usage": "diffuse",
+                        "samplerId": 0x115306BE,
+                        "samplerFlags": 0,
+                        "gamePath": "chara/common/texture/test_d.tex",
+                        "file": "diffuse.rgba",
+                        "width": 2,
+                        "height": 1,
+                        "uvSet": 0,
+                        "colorSpace": "sRGB",
+                    }, {
+                        "usage": "normal",
+                        "samplerId": 0x0C5EC1F1,
+                        "samplerFlags": 0,
+                        "gamePath": "chara/common/texture/test_n.tex",
+                        "file": "normal.rgba",
+                        "width": 1,
+                        "height": 1,
+                        "uvSet": 1,
+                        "colorSpace": "Non-Color",
+                    }, {
+                        "usage": "mask",
+                        "samplerId": 0x8A4E82B6,
+                        "samplerFlags": 0,
+                        "gamePath": "chara/common/texture/test_m.tex",
+                        "file": "normal.rgba",
+                        "width": 1,
+                        "height": 1,
+                        "uvSet": 0,
+                        "colorSpace": "Non-Color",
+                    }],
+                }, {
+                    "modelMaterial": "/mt_gear.mtrl",
+                    "gamePath": "chara/equipment/e0001/material/v0001/mt_gear.mtrl",
+                    "shaderPackage": "character.shpk",
+                    "additionalData": "",
+                    "shaderKeys": [],
+                    "shaderConstants": [],
+                    "colorSet": {
+                        "width": 8,
+                        "height": 2,
+                        "values": (
+                            [1.0, 0.0, 0.0] + [0.0] * 29
+                            + [0.0, 0.0, 1.0] + [0.0] * 29
+                        ),
+                    },
+                    "textures": [{
+                        "usage": "index",
+                        "samplerId": 0x565F8FD8,
+                        "samplerFlags": 0,
+                        "gamePath": "chara/equipment/e0001/texture/test_id.tex",
+                        "file": "index.rgba",
+                        "width": 2,
+                        "height": 1,
+                        "uvSet": 0,
+                        "colorSpace": "Non-Color",
+                    }, {
+                        "usage": "normal",
+                        "samplerId": 0x0C5EC1F1,
+                        "samplerFlags": 0,
+                        "gamePath": "chara/equipment/e0001/texture/test_n.tex",
+                        "file": "normal.rgba",
+                        "width": 1,
+                        "height": 1,
+                        "uvSet": 0,
+                        "colorSpace": "Non-Color",
+                    }],
+                }, {
+                    "modelMaterial": "/mt_empty.mtrl",
+                    "gamePath": "chara/equipment/e0001/material/v0001/mt_empty.mtrl",
+                    "shaderPackage": "character.shpk",
+                    "additionalData": "",
+                    "shaderKeys": [],
+                    "shaderConstants": [],
+                    "colorSet": None,
+                    "textures": [],
+                }],
+            }
+            manifest_path = preview_directory / "materials.json"
+            manifest_path.write_text(json.dumps(preview_manifest), encoding="utf-8")
+            preview_package = material_preview.load_preview_manifest(
+                str(manifest_path),
+                str(model_path),
+            )
+            _require(
+                len(preview_package.materials) == 3,
+                "a bounded synthetic material-preview manifest is accepted",
+            )
+            warning_count = len(preview_package.warnings)
+            _require(
+                material_preview.create_preview_material(
+                    "/mt_c0201b0001_bibo.mtrl",
+                    (0.8, 0.1, 0.8, 1.0),
+                    preview_package,
+                    "excluded-context",
+                ) is None and len(preview_package.warnings) == warning_count,
+                "intentionally excluded body materials retain placeholders without warnings",
+            )
+            preview_material_one = material_preview.create_preview_material(
+                "/mt_c0101e0001_top_a.mtrl",
+                (0.2, 0.3, 0.4, 1.0),
+                preview_package,
+                "context-one",
+            )
+            preview_material_two = material_preview.create_preview_material(
+                "/mt_c0101e0001_top_a.mtrl",
+                (0.2, 0.3, 0.4, 1.0),
+                preview_package,
+                "context-two",
+            )
+            _require(
+                preview_material_one is not None and preview_material_two is not None,
+                "synthetic preview materials are created",
+            )
+            _require(
+                preview_material_one.as_pointer() != preview_material_two.as_pointer(),
+                "preview materials remain local to each import context",
+            )
+            _require(
+                preview_material_one["xiv_shader_package"] == "character.shpk"
+                and "xiv_colorset" in preview_material_one,
+                "shader and colorset metadata are retained on the Blender material",
+            )
+            principled = next(
+                node for node in preview_material_one.node_tree.nodes
+                if node.bl_idname == "ShaderNodeBsdfPrincipled"
+            )
+            _require(
+                principled.inputs["Base Color"].is_linked,
+                "the diffuse image drives Principled base color",
+            )
+            _require(
+                principled.inputs["Normal"].is_linked,
+                "the tangent normal map drives the Principled normal input",
+            )
+            gear_material = material_preview.create_preview_material(
+                "/mt_gear.mtrl",
+                (0.8, 0.1, 0.8, 1.0),
+                preview_package,
+                "gear-context",
+            )
+            _require(
+                gear_material is not None,
+                "character gear can build a preview without a diffuse texture",
+            )
+            gear_principled = next(
+                node for node in gear_material.node_tree.nodes
+                if node.bl_idname == "ShaderNodeBsdfPrincipled"
+            )
+            gear_base_node = gear_principled.inputs["Base Color"].links[0].from_node
+            _require(
+                gear_base_node.image.get("instant_edit_preview_usage") == "colorset-base",
+                "gear base color is synthesized from its colorset and index texture",
+            )
+            gear_pixels = np.asarray(gear_base_node.image.pixels[:], dtype=np.float32).reshape((1, 2, 4))
+            _require(
+                gear_pixels[0, 0, 0] > 0.99 and gear_pixels[0, 0, 2] < 0.01
+                and gear_pixels[0, 1, 2] > 0.99 and gear_pixels[0, 1, 0] < 0.01,
+                "colorset row selection and interpolation produce the expected gear colors",
+            )
+            preview_images = list(preview_package.created_images)
+            _require(
+                {image.colorspace_settings.name for image in preview_images} == {"sRGB", "Non-Color"},
+                "diffuse and data images use the expected Blender color spaces",
+            )
+            mask_image = next(
+                image for image in preview_images
+                if image.get("instant_edit_preview_usage") == "mask"
+            )
+            _require(
+                mask_image["xiv_sampler_id"] == "0x8A4E82B6",
+                "unsigned FFXIV sampler IDs are retained without overflowing Blender properties",
+            )
+            _require(
+                all(image.packed_file is not None or image.source == "GENERATED" for image in preview_images),
+                "all preview images are packed or blend-resident generated images",
+            )
+            _require(
+                material_preview.create_preview_material(
+                    "/mt_empty.mtrl",
+                    (0.8, 0.1, 0.8, 1.0),
+                    preview_package,
+                    "context-missing",
+                ) is None,
+                "a material without usable textures retains the importer placeholder fallback",
+            )
+
+            escaped_file = import_directory / "escape.rgba"
+            escaped_file.write_bytes(normal_bytes)
+            wrong_size_manifest = json.loads(json.dumps(preview_manifest))
+            wrong_size_manifest["materials"][0]["textures"][0].update({
+                "file": "normal.rgba",
+                "width": 2,
+                "height": 2,
+            })
+            wrong_size_manifest["materials"][0]["textures"] = [
+                wrong_size_manifest["materials"][0]["textures"][0]
+            ]
+            manifest_path.write_text(json.dumps(wrong_size_manifest), encoding="utf-8")
+            try:
+                material_preview.load_preview_manifest(str(manifest_path), str(model_path))
+            except material_preview.PreviewValidationError:
+                print("[PASS] preview texture byte-count mismatches are rejected")
+            else:
+                raise AssertionError("a preview texture byte-count mismatch was accepted")
+
+            traversal_manifest = json.loads(json.dumps(preview_manifest))
+            traversal_manifest["materials"][0]["textures"][0].update({
+                "file": "../escape.rgba",
+                "width": 1,
+                "height": 1,
+            })
+            traversal_manifest["materials"][0]["textures"] = [
+                traversal_manifest["materials"][0]["textures"][0]
+            ]
+            manifest_path.write_text(json.dumps(traversal_manifest), encoding="utf-8")
+            try:
+                material_preview.load_preview_manifest(str(manifest_path), str(model_path))
+            except material_preview.PreviewValidationError:
+                print("[PASS] preview manifest path traversal is rejected")
+            else:
+                raise AssertionError("preview manifest path traversal was accepted")
+            material_preview.discard_preview_data(preview_package)
 
         instant_props = bpy.context.scene.xiv_ie_instant_edit_props
+        instant_props.last_status = "Full preview warning details for clipboard regression"
+        _require(
+            bpy.ops.xiv_ie.copy_status() == {"FINISHED"},
+            "the complete import-status clipboard action executes",
+        )
         _require(
             instant_props.redraw_mode == "SELF",
             "Self redraw is the default redraw mode",
