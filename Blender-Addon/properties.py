@@ -1,7 +1,7 @@
 import bpy
 
 from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
-from bpy.types import PropertyGroup
+from bpy.types import Object, PropertyGroup
 
 
 MODEL_FLAG_DEFAULTS = {
@@ -47,12 +47,12 @@ NECK_MORPH_ITEMS = [
 
 class XIVIEExportSettings(PropertyGroup):
     show_mesh_materials: BoolProperty(name="Mesh Materials", default=True)  # type: ignore
-    show_simple_export: BoolProperty(name="Simple Export", default=False)  # type: ignore
+    show_simple_export: BoolProperty(name="Simple Import/Export", default=False)  # type: ignore
     simple_io_tab: EnumProperty(
-        name="Simple I/O",
+        name="Simple Import/Export",
         items=[
-            ("EXPORT", "Export", "Export visible mesh objects"),
             ("IMPORT", "Import", "Import an MDL or FBX file"),
+            ("EXPORT", "Export", "Export visible mesh objects"),
         ],
         default="EXPORT",
     )  # type: ignore
@@ -75,6 +75,17 @@ class XIVIEExportSettings(PropertyGroup):
         name="Format",
         items=[("MDL", "MDL", "FFXIV model"), ("FBX", "FBX", "Autodesk FBX")],
         default="MDL",
+    )  # type: ignore
+    simple_import_use_existing_skeleton: BoolProperty(
+        name="Use Existing Skeleton",
+        description="Remove the imported armature and bind meshes to an existing Blender armature",
+        default=False,
+    )  # type: ignore
+    simple_import_skeleton: PointerProperty(
+        type=Object,
+        name="Skeleton Object",
+        description="Existing Blender armature to use for Simple Import",
+        poll=lambda _self, obj: obj.type == "ARMATURE",
     )  # type: ignore
     keep_shapekeys: BoolProperty(name="Keep Shape Keys", default=True)  # type: ignore
     check_tris: BoolProperty(name="Check Triangulation", default=True)  # type: ignore

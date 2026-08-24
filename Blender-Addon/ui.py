@@ -240,7 +240,7 @@ class XIVIE_PT_main(Panel):
             icon="TRIA_DOWN" if expanded else "TRIA_RIGHT",
             emboss=False,
         )
-        header.label(text="Simple Export", icon="EXPORT")
+        header.label(text="Simple Import/Export", icon="EXPORT")
         if not expanded:
             return
 
@@ -249,6 +249,13 @@ class XIVIE_PT_main(Panel):
 
         if settings.simple_io_tab == "IMPORT":
             box.prop(settings, "import_format", expand=True)
+            box.prop(
+                settings,
+                "simple_import_use_existing_skeleton",
+                text="Remove imported armature and use existing skeleton",
+            )
+            if settings.simple_import_use_existing_skeleton:
+                box.prop(settings, "simple_import_skeleton", text="Skeleton Object")
             box.operator("xiv_ie.simple_import", text="Import", icon="IMPORT")
             return
 

@@ -3,7 +3,7 @@
     "Author": "Luci",
     "Name": "Instant Edit",
     "InternalName": "InstantEdit",
-    "AssemblyVersion": "1.0.0.0",
+    "AssemblyVersion": "1.0.1.0",
     "Description": "Lists models currently on screen and sends them to Blender through the XIV Instant Edit add-on. Quick Export writes edited models back to their original Penumbra mod path.",
     "Punchline": "Send on-screen models straight to Blender and back.",
     "ApplicableVersion": "any",

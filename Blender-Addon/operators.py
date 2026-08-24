@@ -26,6 +26,7 @@ from .materials import (
 from .mesh.export import check_triangulation, export_result, get_export_stats
 from .mesh.objects import visible_meshobj
 from .properties import get_settings
+from .xivpy.model import XIVModel
 from .backups import clear_backups, list_backups, restore_local, target_folder
 
 
@@ -68,6 +69,98 @@ def _move_mesh_part_once(
     new_part = parts[neighbor]
     swap_mesh_parts(visible_meshobj(), mesh_group, mesh_part, new_part)
     return new_part
+
+
+def _simple_import_bind_existing_skeleton(imported_objects: list, skeleton) -> list:
+    """Rebind this import's meshes and remove only its imported armatures."""
+    mesh_objects = [obj for obj in imported_objects if obj.type == "MESH"]
+    for obj in mesh_objects:
+        for modifier in tuple(obj.modifiers):
+            if modifier.type == "ARMATURE":
+                obj.modifiers.remove(modifier)
+        obj.parent = None
+        modifier = obj.modifiers.new(name="Armature", type="ARMATURE")
+        modifier.object = skeleton
+
+    remaining = []
+    for obj in imported_objects:
+        if obj.type != "ARMATURE":
+            remaining.append(obj)
+            continue
+        data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is not None and data.users == 0 and data.name in bpy.data.armatures:
+            bpy.data.armatures.remove(data)
+    return remaining
+
+
+def _simple_import_create_armature(
+    context: Context,
+    file_path: Path,
+    mesh_objects: list,
+    imported_objects: list | None = None,
+):
+    """Create the generated armature used by plugin-driven MDL imports."""
+    model = XIVModel.from_file(str(file_path))
+    armature_data = bpy.data.armatures.new("InstantEditArmature")
+    armature_obj = bpy.data.objects.new("InstantEditArmature", armature_data)
+    target_collection = context.collection or context.scene.collection
+    target_collection.objects.link(armature_obj)
+    if imported_objects is not None:
+        imported_objects.append(armature_obj)
+
+    previous_selection = tuple(context.selected_objects)
+    previous_active = context.view_layer.objects.active
+    for obj in previous_selection:
+        obj.select_set(False)
+    context.view_layer.objects.active = armature_obj
+    armature_obj.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    try:
+        for bone_name in model.bones:
+            edit_bone = armature_data.edit_bones.new(bone_name)
+            edit_bone.head = (0, 0, 0)
+            edit_bone.tail = (0, 0, 0.1)
+    finally:
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    for obj in mesh_objects:
+        obj.parent = armature_obj
+        modifier = obj.modifiers.new(name="Armature", type="ARMATURE")
+        modifier.object = armature_obj
+
+    for obj in previous_selection:
+        if obj.name in bpy.data.objects:
+            obj.select_set(True)
+    context.view_layer.objects.active = (
+        previous_active
+        if previous_active is not None and previous_active.name in bpy.data.objects
+        else armature_obj
+    )
+    return armature_obj
+
+
+def _simple_import_remove_objects(objects: list) -> None:
+    """Remove only objects created by a failed simple import."""
+    for obj in reversed(objects):
+        if obj.name not in bpy.data.objects:
+            continue
+        data = getattr(obj, "data", None)
+        object_type = getattr(obj, "type", "")
+        bpy.data.objects.remove(obj, do_unlink=True)
+        data_collection = {"MESH": bpy.data.meshes, "ARMATURE": bpy.data.armatures}.get(object_type)
+        if data is not None and data_collection is not None and data.users == 0 and data.name in data_collection:
+            data_collection.remove(data)
+
+
+def _simple_import_select_objects(objects: list) -> None:
+    for obj in tuple(bpy.context.selected_objects):
+        obj.select_set(False)
+    valid_objects = [obj for obj in objects if obj.name in bpy.data.objects]
+    for obj in valid_objects:
+        obj.select_set(True)
+    if valid_objects:
+        bpy.context.view_layer.objects.active = valid_objects[-1]
 
 
 class XIVIE_OT_simple_export(Operator):
@@ -144,26 +237,58 @@ class XIVIE_OT_simple_import(Operator):
         file_path = Path(bpy.path.abspath(self.filepath)).resolve()
         import_format = self.import_format
         expected_suffix = {"MDL": ".mdl", "FBX": ".fbx"}[import_format]
+        settings = get_settings()
+        skeleton = settings.simple_import_skeleton
+        use_existing_skeleton = settings.simple_import_use_existing_skeleton
 
         if not file_path.is_file() or file_path.suffix.casefold() != expected_suffix:
             self.report({"ERROR"}, f"Choose a valid {expected_suffix[1:].upper()} file.")
             return {"CANCELLED"}
+        if use_existing_skeleton and (skeleton is None or skeleton.type != "ARMATURE"):
+            self.report({"ERROR"}, "Choose an existing Blender Armature for the imported meshes.")
+            return {"CANCELLED"}
 
+        imported_objects = []
         try:
             if import_format == "MDL":
                 from .io.model import ModelImport
 
-                imported = ModelImport.from_file(str(file_path), file_path.stem)
-                imported_count = len(imported)
+                created_objects = []
+                imported = ModelImport.from_file(
+                    str(file_path),
+                    file_path.stem,
+                    select_objects=False,
+                    created_objects=created_objects,
+                )
+                imported_objects = list(created_objects or imported)
+                mesh_objects = [obj for obj in imported_objects if obj.type == "MESH"]
+                if use_existing_skeleton:
+                    imported_objects = _simple_import_bind_existing_skeleton(imported_objects, skeleton)
+                elif mesh_objects:
+                    _simple_import_create_armature(
+                        context,
+                        file_path,
+                        mesh_objects,
+                        imported_objects,
+                    )
             else:
+                existing_objects = {obj.as_pointer() for obj in bpy.data.objects}
                 result = bpy.ops.import_scene.fbx(
                     filepath=str(file_path),
                     colors_type="LINEAR",
                 )
                 if "FINISHED" not in result:
                     return set(result)
-                imported_count = 0
+                imported_objects = [
+                    obj for obj in bpy.data.objects if obj.as_pointer() not in existing_objects
+                ]
+                if use_existing_skeleton:
+                    imported_objects = _simple_import_bind_existing_skeleton(imported_objects, skeleton)
+
+            _simple_import_select_objects(imported_objects)
+            imported_count = sum(obj.type == "MESH" for obj in imported_objects)
         except Exception as error:
+            _simple_import_remove_objects(imported_objects)
             self.report({"ERROR"}, f"Import failed: {error}")
             return {"CANCELLED"}
 
