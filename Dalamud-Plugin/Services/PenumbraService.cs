@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using InstantEdit.Models;
@@ -31,6 +32,7 @@ public sealed class PenumbraService
     private readonly GetPlayerResourceTrees _getPlayerTrees;
     private readonly GetModDirectory           _getModDirectory;
     private readonly GetModList                 _getModList;
+    private readonly GetModPath                 _getModPath;
     private readonly AddMod                     _addMod;
     private readonly ReloadMod                  _reloadMod;
     private readonly GetCollectionForObject      _getCollectionForObject;
@@ -57,6 +59,7 @@ public sealed class PenumbraService
         _getPlayerTrees  = new GetPlayerResourceTrees(pi);
         _getModDirectory = new GetModDirectory(pi);
         _getModList      = new GetModList(pi);
+        _getModPath      = new GetModPath(pi);
         _addMod          = new AddMod(pi);
         _reloadMod       = new ReloadMod(pi);
         _getCollectionForObject = new GetCollectionForObject(pi);
@@ -318,7 +321,8 @@ public sealed class PenumbraService
         string? variantName,
         string? variantGroupName,
         bool setupVariantInPenumbra,
-        ExportRedrawMode redrawMode = ExportRedrawMode.Self)
+        ExportRedrawMode redrawMode = ExportRedrawMode.Self,
+        bool backupExisting = false)
     {
         if (objectIndex is < 0 or > ushort.MaxValue)
             return new ExportResult(false, "Invalid object index.");
@@ -354,7 +358,8 @@ public sealed class PenumbraService
             var writeError = WriteModelToOriginalLocation(
                 resolved.Target.Folder,
                 targetFile,
-                exportedFile);
+                exportedFile,
+                backupExisting);
             if (writeError is not null)
                 return new ExportResult(false, writeError);
 
@@ -457,7 +462,8 @@ public sealed class PenumbraService
     private static string? WriteModelToOriginalLocation(
         string modFolder,
         string targetFile,
-        string exportedFile)
+        string exportedFile,
+        bool backupExisting = false)
     {
         try
         {
@@ -470,6 +476,8 @@ public sealed class PenumbraService
                 return "The original mod destination is unsafe.";
 
             Directory.CreateDirectory(parent);
+            if (backupExisting && File.Exists(fullTarget))
+                CreateModelBackup(fullTarget);
             var temporary = Path.Combine(parent, $".instant-edit-{Guid.NewGuid():N}.tmp");
             try
             {
@@ -488,6 +496,239 @@ public sealed class PenumbraService
         {
             return $"Could not write the original model file: {e.Message}";
         }
+    }
+
+    public IReadOnlyList<PenumbraMod> GetMods()
+        => GetModList()
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+            .Select(pair => new PenumbraMod(pair.Key, pair.Value))
+            .OrderBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>Read the model, texture, and material files stored in one Penumbra mod.</summary>
+    public PenumbraModSnapshot? GetModResources(string modDirectory)
+    {
+        if (!IsSafeModName(modDirectory))
+            return null;
+
+        try
+        {
+            var mod = GetMods().FirstOrDefault(item =>
+                string.Equals(item.Directory, modDirectory, StringComparison.OrdinalIgnoreCase));
+            if (mod is null)
+                return null;
+
+            var candidateRoots = new List<string>();
+            var pathResult = _getModPath.Invoke(mod.Directory, string.Empty);
+            if (pathResult.Item1 is PenumbraApiEc.Success)
+                AddCandidateRoot(candidateRoots, pathResult.Item2);
+
+            // GetModPath can point at a manually configured location. Keep the
+            // standard Penumbra root as a fallback for older/API-incompatible
+            // installations where that path is not returned as expected.
+            var modDirectoryRoot = GetModDirectory();
+            if (!string.IsNullOrWhiteSpace(modDirectoryRoot))
+                AddCandidateRoot(candidateRoots, Path.Combine(modDirectoryRoot, mod.Directory));
+
+            foreach (var root in candidateRoots)
+            {
+                if (!Directory.Exists(root) || (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+                    continue;
+
+                var standardFilesRoot = Path.Combine(root, "Files");
+                var scanRoot = Directory.Exists(standardFilesRoot) ? standardFilesRoot : root;
+                var sourceRoot = root;
+                var relativePrefix = string.Empty;
+                if (string.Equals(Path.GetFileName(root), "Files", StringComparison.OrdinalIgnoreCase))
+                {
+                    sourceRoot = Directory.GetParent(root)?.FullName ?? root;
+                    scanRoot = root;
+                    relativePrefix = "Files/";
+                }
+
+                if (!Directory.Exists(scanRoot) || HasReparsePointInPath(sourceRoot, scanRoot))
+                    continue;
+
+                var optionMappings = ReadModOptionMappings(sourceRoot);
+                var resources = new List<PenumbraModResource>();
+                foreach (var file in Directory.EnumerateFiles(scanRoot, "*", SearchOption.AllDirectories))
+                {
+                    if (!IsSafeModResourceFile(sourceRoot, file))
+                        continue;
+
+                    var gamePath = Path.GetRelativePath(scanRoot, file).Replace('\\', '/');
+                    var extension = Path.GetExtension(gamePath);
+                    if (!extension.Equals(".mdl", StringComparison.OrdinalIgnoreCase) &&
+                        !extension.Equals(".tex", StringComparison.OrdinalIgnoreCase) &&
+                        !extension.Equals(".atex", StringComparison.OrdinalIgnoreCase) &&
+                        !extension.Equals(".mtrl", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    resources.Add(new PenumbraModResource(
+                        gamePath,
+                        file,
+                        relativePrefix + gamePath,
+                        OptionMappingFor(relativePrefix + gamePath, optionMappings)));
+                }
+
+                if (resources.Count > 0)
+                    return new PenumbraModSnapshot(
+                        mod.Directory,
+                        mod.Name,
+                        sourceRoot,
+                        resources.OrderBy(resource => resource.GamePath, StringComparer.OrdinalIgnoreCase).ToArray());
+            }
+
+            return new PenumbraModSnapshot(mod.Directory, mod.Name, candidateRoots.FirstOrDefault() ?? string.Empty, Array.Empty<PenumbraModResource>());
+        }
+        catch (Exception e)
+        {
+            _log.Debug($"Could not read Penumbra mod resources: {e.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Restore a timestamped MDL backup beside an authorized source model.</summary>
+    public async Task<ExportResult> RestoreSourceBackupAsync(
+        string sourceModDirectory,
+        string sourceFilePath,
+        string sourceGamePath,
+        string backupName,
+        int objectIndex,
+        ActorIdentity? actorIdentity,
+        ExportRedrawMode redrawMode = ExportRedrawMode.Self)
+    {
+        if (objectIndex is < 0 or > ushort.MaxValue ||
+            !IsSafeModName(sourceModDirectory) || !IsSafeGamePath(sourceGamePath) ||
+            !IsSafeLocalModelPath(sourceFilePath) || !TryGetBackupOriginal(backupName, out var originalName))
+            return new ExportResult(false, "The backup restore request is invalid.");
+
+        await _exportGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var resolved = await _framework.RunOnFrameworkThread(
+                () => ResolveSourceModTargetOnFramework(sourceModDirectory, sourceFilePath)).ConfigureAwait(false);
+            if (resolved.Target is null)
+                return new ExportResult(false, resolved.Error ?? "The original Penumbra mod is no longer available.");
+
+            var parent = Path.GetDirectoryName(resolved.Target.FilePath);
+            if (parent is null || !string.Equals(Path.GetExtension(originalName), ".mdl", StringComparison.OrdinalIgnoreCase))
+                return new ExportResult(false, "The backup target is invalid.");
+            var backupPath = Path.Combine(parent, backupName);
+            var targetPath = Path.Combine(parent, originalName);
+            if (!IsPathWithin(backupPath, resolved.Target.Folder) ||
+                !IsPathWithin(targetPath, resolved.Target.Folder) ||
+                !string.Equals(Path.GetDirectoryName(backupPath), parent, StringComparison.OrdinalIgnoreCase) ||
+                !File.Exists(backupPath) || new FileInfo(backupPath).Length == 0)
+                return new ExportResult(false, "The backup is not in the authorized model folder.");
+            if (HasReparsePointInPath(resolved.Target.Folder, parent) ||
+                (File.Exists(backupPath) && (File.GetAttributes(backupPath) & FileAttributes.ReparsePoint) != 0) ||
+                (File.Exists(targetPath) && (File.GetAttributes(targetPath) & FileAttributes.ReparsePoint) != 0))
+                return new ExportResult(false, "The backup target contains an unsupported reparse point.");
+
+            var writeError = RestoreModelBackup(targetPath, backupPath);
+            if (writeError is not null)
+                return new ExportResult(false, writeError);
+
+            var reloadError = await _framework.RunOnFrameworkThread(
+                () => ReloadModOnFramework(resolved.Target.Directory)).ConfigureAwait(false);
+            if (reloadError is not null)
+                return reloadError;
+            return await _framework.RunOnFrameworkThread(() =>
+            {
+                try
+                {
+                    switch (redrawMode)
+                    {
+                        case ExportRedrawMode.All:
+                            _redrawAll.Invoke();
+                            break;
+                        case ExportRedrawMode.Glamourer:
+                            return new ExportResult(true, $"Restored {originalName} and reloaded {resolved.Target.Directory}; redraw left to Glamourer.");
+                        default:
+                            _redrawObject.Invoke(objectIndex);
+                            break;
+                    }
+                    return new ExportResult(true, $"Restored {originalName}, reloaded {resolved.Target.Directory}, and redrew the source actor.");
+                }
+                catch (Exception e)
+                {
+                    _log.Error(e, "Penumbra redraw failed after restoring a backup.");
+                    return new ExportResult(false, $"Restore succeeded, but redraw failed: {e.Message}");
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            _log.Error(e, "Failed to restore a model backup.");
+            return new ExportResult(false, $"Failed to restore the model backup: {e.Message}");
+        }
+        finally
+        {
+            _exportGate.Release();
+        }
+    }
+
+    private static void CreateModelBackup(string targetFile)
+    {
+        var directory = Path.GetDirectoryName(targetFile)!;
+        var original = Path.GetFileName(targetFile);
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd'T'HHmmss.ffffff'Z'");
+            var backup = Path.Combine(directory, $"{original}.{stamp}.bak");
+            if (File.Exists(backup))
+                continue;
+            File.Copy(targetFile, backup, false);
+            return;
+        }
+
+        throw new IOException("Could not allocate a unique model backup filename.");
+    }
+
+    private static string? RestoreModelBackup(string targetFile, string backupFile)
+    {
+        try
+        {
+            if (File.Exists(targetFile))
+                CreateModelBackup(targetFile);
+            var temporary = Path.Combine(Path.GetDirectoryName(targetFile)!, $".instant-edit-restore-{Guid.NewGuid():N}.tmp");
+            try
+            {
+                File.Copy(backupFile, temporary, false);
+                File.Move(temporary, targetFile, true);
+            }
+            finally
+            {
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
+            }
+            return null;
+        }
+        catch (Exception e)
+        {
+            return $"Could not restore the model backup: {e.Message}";
+        }
+    }
+
+    private static bool TryGetBackupOriginal(string? backupName, out string originalName)
+    {
+        originalName = "";
+        if (string.IsNullOrWhiteSpace(backupName) || backupName.Length > 512 ||
+            backupName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || backupName.Contains('/') || backupName.Contains('\\'))
+            return false;
+        var match = Regex.Match(
+            backupName,
+            @"^(?<original>.+\.mdl)\.\d{8}T\d{6}\.\d{6}Z\.bak$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (match.Success)
+            originalName = match.Groups["original"].Value;
+        else if (backupName.EndsWith(".mdl.bak", StringComparison.OrdinalIgnoreCase))
+            originalName = backupName[..^4];
+        else
+            return false;
+        return originalName.Length <= 255 && originalName is not ".mdl" and not "." and not "..";
     }
 
     private (bool Success, bool Exists) GetModStateOnFramework(string modName)
@@ -1147,6 +1388,113 @@ public sealed class PenumbraService
             ?? throw new InvalidDataException($"Penumbra metadata is not a JSON object: {path}");
     }
 
+    private static Dictionary<string, string> ReadModOptionMappings(string modRoot)
+    {
+        var labelsByPath = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        void AddFileMappings(JsonNode? container, string label)
+        {
+            if (container is not JsonObject value || value["Files"] is not JsonObject files)
+                return;
+
+            foreach (var file in files)
+            {
+                var relativePath = JsonString(file.Value);
+                if (string.IsNullOrWhiteSpace(relativePath))
+                    continue;
+
+                foreach (var key in ModPathKeys(relativePath))
+                {
+                    if (!labelsByPath.TryGetValue(key, out var labels))
+                        labelsByPath[key] = labels = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                    labels.Add(label);
+                }
+            }
+        }
+
+        void AddGroup(JsonNode? group)
+        {
+            if (group is not JsonObject value)
+                return;
+
+            var groupName = JsonString(value["Name"]);
+            if (string.IsNullOrWhiteSpace(groupName))
+                groupName = "Unnamed group";
+
+            if (value["Options"] is JsonArray options)
+            {
+                foreach (var option in options.OfType<JsonObject>())
+                {
+                    var optionName = JsonString(option["Name"]);
+                    var label = string.IsNullOrWhiteSpace(optionName)
+                        ? groupName
+                        : $"{groupName}: {optionName}";
+                    AddFileMappings(option, label);
+                }
+            }
+
+            if (value["Containers"] is JsonArray containers)
+            {
+                foreach (var container in containers.OfType<JsonObject>())
+                {
+                    var containerName = JsonString(container["Name"]);
+                    var label = string.IsNullOrWhiteSpace(containerName)
+                        ? groupName
+                        : $"{groupName}: {containerName}";
+                    AddFileMappings(container, label);
+                }
+            }
+        }
+
+        AddFileMappings(LoadJsonObject(Path.Combine(modRoot, "default_mod.json")), "Default");
+
+        var meta = LoadJsonObject(Path.Combine(modRoot, "meta.json"));
+        AddFileMappings(meta["DefaultData"], "Default");
+        if (meta["Groups"] is JsonArray metaGroups)
+            foreach (var group in metaGroups)
+                AddGroup(group);
+
+        try
+        {
+            foreach (var groupPath in Directory.EnumerateFiles(modRoot, "group_*.json", SearchOption.TopDirectoryOnly))
+                AddGroup(LoadJsonObject(groupPath));
+        }
+        catch
+        {
+            // A missing or inaccessible legacy group file should not hide the
+            // resources that were successfully discovered from the mod folder.
+        }
+
+        return labelsByPath.ToDictionary(
+            pair => pair.Key,
+            pair => string.Join(" | ", pair.Value),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string OptionMappingFor(string relativePath, IReadOnlyDictionary<string, string> mappings)
+    {
+        foreach (var key in ModPathKeys(relativePath))
+            if (mappings.TryGetValue(key, out var label))
+                return label;
+        return "Unmapped";
+    }
+
+    private static IEnumerable<string> ModPathKeys(string path)
+    {
+        var normalized = path.Replace('\\', '/').Trim();
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+            normalized = normalized[2..];
+        normalized = normalized.TrimStart('/');
+        if (normalized.Length == 0)
+            yield break;
+
+        yield return normalized;
+        if (normalized.StartsWith("Files/", StringComparison.OrdinalIgnoreCase))
+            yield return normalized[6..];
+        else
+            yield return "Files/" + normalized;
+    }
+
     private static void WriteJsonAtomic(string path, JsonObject value)
     {
         var tempPath = path + ".tmp." + Guid.NewGuid().ToString("N");
@@ -1252,6 +1600,44 @@ public sealed class PenumbraService
         return path.Split('/').All(segment => segment.Length > 0 && segment is not ("." or ".."));
     }
 
+    private static bool IsSafeModResourceFile(string root, string file)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(file);
+            return IsPathWithin(fullPath, root) &&
+                   (File.GetAttributes(fullPath) & FileAttributes.ReparsePoint) == 0 &&
+                   !HasReparsePointInPath(root, fullPath);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? NormalizePhysicalPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void AddCandidateRoot(List<string> roots, string? path)
+    {
+        var normalized = NormalizePhysicalPath(path);
+        if (normalized is not null && !roots.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            roots.Add(normalized);
+    }
+
     private static bool IsPathWithin(string path, string root)
     {
         var fullPath = Path.GetFullPath(path);
@@ -1280,3 +1666,17 @@ public sealed class PenumbraService
         WriteIndented = true,
     };
 }
+
+public sealed record PenumbraMod(string Directory, string Name);
+
+public sealed record PenumbraModResource(
+    string GamePath,
+    string ActualPath,
+    string RelativePath,
+    string OptionMapping);
+
+public sealed record PenumbraModSnapshot(
+    string Directory,
+    string Name,
+    string RootPath,
+    IReadOnlyList<PenumbraModResource> Resources);

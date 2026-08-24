@@ -2,7 +2,7 @@
 
 XIV Instant Edit is a focused Blender extension for the Instant Edit Dalamud
 plugin. It contains only the model I/O and scene tools needed for the bridge,
-plus a standalone Simple Export panel.
+plus a standalone Simple Import/Export panel.
 
 ## Features
 
@@ -20,6 +20,7 @@ plus a standalone Simple Export panel.
 - Penumbra-compatible SELF, ALL, and Glamourer-assisted redraw modes after
   Quick Export.
 - Simple Export to MDL, FBX, or glTF for visible mesh objects.
+- Simple Import from MDL or FBX files.
 - Export-time UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup.
 
 ## Installation

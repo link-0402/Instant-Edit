@@ -26,6 +26,7 @@ from .materials import (
 from .mesh.export import check_triangulation, export_result, get_export_stats
 from .mesh.objects import visible_meshobj
 from .properties import get_settings
+from .backups import clear_backups, list_backups, restore_local, target_folder
 
 
 def _redraw(context: Context) -> None:
@@ -108,6 +109,191 @@ class XIVIE_OT_simple_export(Operator):
             return {"CANCELLED"}
 
         self.report({"INFO"}, f"Exported {name}{suffix}")
+        return {"FINISHED"}
+
+
+class XIVIE_OT_simple_import(Operator):
+    bl_idname = "xiv_ie.simple_import"
+    bl_label = "Simple Import"
+    bl_description = "Import an MDL or FBX file into the current scene"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: StringProperty(options={"HIDDEN"})  # type: ignore
+    filter_glob: StringProperty(subtype="FILE_PATH", options={"HIDDEN"})  # type: ignore
+    import_format: EnumProperty(
+        items=[
+            ("MDL", "MDL", "FFXIV model"),
+            ("FBX", "FBX", "Autodesk FBX"),
+        ],
+        default="MDL",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )  # type: ignore
+
+    @classmethod
+    def poll(cls, context: Context):
+        return context.mode == "OBJECT"
+
+    def invoke(self, context: Context, event):
+        settings = get_settings()
+        self.import_format = settings.import_format
+        self.filter_glob = {"MDL": "*.mdl", "FBX": "*.fbx"}[self.import_format]
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context: Context):
+        file_path = Path(bpy.path.abspath(self.filepath)).resolve()
+        import_format = self.import_format
+        expected_suffix = {"MDL": ".mdl", "FBX": ".fbx"}[import_format]
+
+        if not file_path.is_file() or file_path.suffix.casefold() != expected_suffix:
+            self.report({"ERROR"}, f"Choose a valid {expected_suffix[1:].upper()} file.")
+            return {"CANCELLED"}
+
+        try:
+            if import_format == "MDL":
+                from .io.model import ModelImport
+
+                imported = ModelImport.from_file(str(file_path), file_path.stem)
+                imported_count = len(imported)
+            else:
+                result = bpy.ops.import_scene.fbx(
+                    filepath=str(file_path),
+                    colors_type="LINEAR",
+                )
+                if "FINISHED" not in result:
+                    return set(result)
+                imported_count = 0
+        except Exception as error:
+            self.report({"ERROR"}, f"Import failed: {error}")
+            return {"CANCELLED"}
+
+        count_text = f" ({imported_count} mesh object{'s' if imported_count != 1 else ''})" if imported_count else ""
+        self.report({"INFO"}, f"Imported {file_path.name}{count_text}")
+        return {"FINISHED"}
+
+
+class XIVIE_OT_restore_backup(Operator):
+    bl_idname = "xiv_ie.restore_backup"
+    bl_label = "Restore Backup"
+    bl_description = "Restore this model backup and preserve the current model first"
+    bl_options = {"REGISTER", "UNDO"}
+
+    backup_name: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+
+    def execute(self, context: Context):
+        settings = get_settings()
+        folder, _source = target_folder(settings, context)
+        if folder is None:
+            self.report({"ERROR"}, "The current target export folder is unavailable.")
+            return {"CANCELLED"}
+        entry = next((item for item in list_backups(folder) if item.path.name == self.backup_name), None)
+        if entry is None:
+            self.report({"ERROR"}, "That backup no longer exists.")
+            return {"CANCELLED"}
+        try:
+            quick = False
+            try:
+                from .instant_edit.context import ContextValidationError
+                from .instant_edit.ops import export_destination_context, restore_quick_backup
+
+                ref = export_destination_context(context)
+                quick = (
+                    Path(ref.target_file_path).resolve().parent == folder
+                    and entry.original_name.lower().endswith(".mdl")
+                )
+                if quick:
+                    restore_quick_backup(context, entry.path.name)
+            except (ContextValidationError, ImportError):
+                pass
+            if not quick:
+                restore_local(folder, entry)
+        except Exception as error:
+            self.report({"ERROR"}, f"Restore failed: {error}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Restored {entry.original_name}")
+        return {"FINISHED"}
+
+
+class XIVIE_OT_import_backup(Operator):
+    bl_idname = "xiv_ie.import_backup"
+    bl_label = "Import Backup"
+    bl_description = "Import this model backup into a new collection"
+    bl_options = {"REGISTER", "UNDO"}
+
+    backup_name: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+
+    @classmethod
+    def poll(cls, context: Context):
+        return context.mode == "OBJECT"
+
+    def execute(self, context: Context):
+        folder, _source = target_folder(get_settings(), context)
+        if folder is None:
+            self.report({"ERROR"}, "The current target export folder is unavailable.")
+            return {"CANCELLED"}
+        entry = next((item for item in list_backups(folder) if item.path.name == self.backup_name), None)
+        if entry is None:
+            self.report({"ERROR"}, "That backup no longer exists.")
+            return {"CANCELLED"}
+        collection = bpy.data.collections.new(f"Backup - {Path(entry.original_name).stem}")
+        context.scene.collection.children.link(collection)
+        before = set(bpy.data.objects)
+        try:
+            if entry.original_name.lower().endswith(".mdl"):
+                from .io.model import ModelImport
+
+                imported = ModelImport.from_file(
+                    str(entry.path), Path(entry.original_name).stem,
+                    collection=collection, require_collection=True,
+                )
+                count = len(imported)
+            else:
+                result = bpy.ops.import_scene.fbx(filepath=str(entry.path), colors_type="LINEAR")
+                if "FINISHED" not in result:
+                    raise RuntimeError("Blender FBX importer did not finish")
+                new_objects = [obj for obj in bpy.data.objects if obj not in before]
+                for obj in new_objects:
+                    if collection not in obj.users_collection:
+                        collection.objects.link(obj)
+                    for old_collection in tuple(obj.users_collection):
+                        if old_collection != collection:
+                            old_collection.objects.unlink(obj)
+                count = len(new_objects)
+        except Exception as error:
+            for obj in tuple(bpy.data.objects):
+                if obj not in before:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+            if collection.name in bpy.data.collections:
+                bpy.data.collections.remove(collection)
+            self.report({"ERROR"}, f"Import failed: {error}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Imported {entry.original_name} into {collection.name} ({count} object{'s' if count != 1 else ''})")
+        return {"FINISHED"}
+
+
+class XIVIE_OT_clear_backups(Operator):
+    bl_idname = "xiv_ie.clear_backups"
+    bl_label = "Clear All Backups"
+    bl_description = "Delete all recognized model backups in the current target folder"
+    bl_options = {"REGISTER", "UNDO"}
+
+    folder_label: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+    backup_count: IntProperty(default=0, options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+
+    def invoke(self, context: Context, event):
+        folder, _source = target_folder(get_settings(), context)
+        self.folder_label = str(folder) if folder is not None else "Unavailable folder"
+        self.backup_count = len(list_backups(folder))
+        return context.window_manager.invoke_confirm(self, event)
+
+    def draw(self, context: Context):
+        self.layout.label(text=f"Delete {self.backup_count} backup(s) from:")
+        self.layout.label(text=self.folder_label)
+
+    def execute(self, context: Context):
+        folder, _source = target_folder(get_settings(), context)
+        removed = clear_backups(folder)
+        self.report({"INFO"}, f"Cleared {removed} backup{'s' if removed != 1 else ''}.")
         return {"FINISHED"}
 
 

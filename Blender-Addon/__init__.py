@@ -12,7 +12,11 @@ from .operators import (
     XIVIE_OT_mesh_material,
     XIVIE_OT_mesh_tags,
     XIVIE_OT_rename_mesh_part,
+    XIVIE_OT_simple_import,
     XIVIE_OT_simple_export,
+    XIVIE_OT_restore_backup,
+    XIVIE_OT_import_backup,
+    XIVIE_OT_clear_backups,
 )
 from .preferences import XIVIEPreferences
 from .properties import XIVIEExportSettings, set_addon_properties, remove_addon_properties
@@ -30,7 +34,11 @@ CLASSES = [
     XIVIE_OT_mesh_material,
     XIVIE_OT_mesh_tags,
     XIVIE_OT_rename_mesh_part,
+    XIVIE_OT_simple_import,
     XIVIE_OT_simple_export,
+    XIVIE_OT_restore_backup,
+    XIVIE_OT_import_backup,
+    XIVIE_OT_clear_backups,
     XIVIE_PT_main,
 ]
 

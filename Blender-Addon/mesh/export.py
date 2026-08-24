@@ -10,6 +10,7 @@ from ..io.model      import ModelExport, SceneHandler
 from ..io.logging    import YetAnotherLogger
 from ..io.model.data import get_neck_morphs
 from ..properties    import get_settings
+from ..backups       import create_backup
 
 
 
@@ -232,6 +233,9 @@ class FileExport:
                                 )
 
             elif self.file_format == 'FBX':
+                settings = get_settings()
+                if settings.backup_models_on_export:
+                    create_backup(self.file_path.parent, self.file_path.name + ".fbx")
                 bpy.ops.export_scene.fbx(
                                     filepath=str(self.file_path) + ".fbx", 
                                     **get_export_settings('FBX')
@@ -241,6 +245,8 @@ class FileExport:
                 if self.logger:
                     self.logger.log(f"Converting to MDL...", 2)
                 settings = get_settings()
+                if settings.backup_models_on_export:
+                    create_backup(self.file_path.parent, self.file_path.name + ".mdl")
                 _export_stats = ModelExport.export_scene(
                                                 scene_handler.export_objs, 
                                                 str(self.file_path) + ".mdl",

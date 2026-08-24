@@ -223,7 +223,8 @@ public sealed class BlenderClient : IDisposable
         string sourceModName,
         CancellationToken cancellationToken = default,
         BlenderImportOptions? importOptions = null,
-        string? sourceModRootPath = null)
+        string? sourceModRootPath = null,
+        bool validateActorTarget = true)
     {
         if (port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -237,7 +238,7 @@ public sealed class BlenderClient : IDisposable
         InstantEditImportContext? context = null;
         if (_contexts is not null)
         {
-            var actorIdentity = _actorIdentityProvider?.Invoke(objectIndex);
+            var actorIdentity = validateActorTarget ? _actorIdentityProvider?.Invoke(objectIndex) : null;
             context = _contexts.CreateContext(
                 gamePath,
                 objectIndex,

@@ -32,6 +32,8 @@ def run() -> None:
     try:
         if bpy.context.scene.xiv_ie_settings.create_backfaces:
             raise AssertionError("Create Backfaces should default to disabled")
+        if bpy.context.scene.xiv_ie_settings.backup_models_on_export:
+            raise AssertionError("Backup models on Export should default to disabled")
         if bpy.context.scene.xiv_ie_instant_edit_props.show_utilities:
             raise AssertionError("Utilities should be collapsed by default")
 
@@ -241,6 +243,7 @@ def run() -> None:
             settings.export_name = "smoke"
             settings.model_format = "MDL"
             settings.create_backfaces = False
+            settings.backup_models_on_export = True
             result = bpy.ops.xiv_ie.simple_export()
             target = Path(temp_dir) / "smoke.mdl"
             if result != {"FINISHED"} or not target.is_file() or target.stat().st_size == 0:
@@ -254,6 +257,25 @@ def run() -> None:
                 raise AssertionError("Export did not contain the new mesh group's material")
             print("[PASS] Exported MDL contains added parts, groups, and material")
             print(f"[PASS] Simple Export produced {target.stat().st_size} bytes")
+
+            result = bpy.ops.xiv_ie.simple_export()
+            backup_module = importlib.import_module(f"{addon.__name__}.backups")
+            backups = backup_module.list_backups(Path(temp_dir))
+            if result != {"FINISHED"} or len(backups) != 1:
+                raise AssertionError("Replacing an MDL did not create one timestamped backup")
+            result = bpy.ops.xiv_ie.simple_export()
+            backups = backup_module.list_backups(Path(temp_dir))
+            if result != {"FINISHED"} or len(backups) != 2 or backups[0].created < backups[1].created:
+                raise AssertionError("Repeated MDL exports did not retain backups newest first")
+            print("[PASS] Simple Export retains timestamped backups in newest-first order")
+            selected_backup = backups[-1]
+            backup_module.restore_local(Path(temp_dir), selected_backup)
+            if target.read_bytes() != selected_backup.path.read_bytes():
+                raise AssertionError("Restoring an MDL backup did not replace the target model")
+            if backup_module.clear_backups(Path(temp_dir)) < 3 or backup_module.list_backups(Path(temp_dir)):
+                raise AssertionError("Clearing backups did not remove the recognized model backups")
+            print("[PASS] Backup restore preserves the selected history and clear removes backups")
+            settings.backup_models_on_export = False
 
             obj.parent = None
             settings.export_name = "smoke_modifier_only"

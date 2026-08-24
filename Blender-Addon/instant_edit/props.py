@@ -55,7 +55,7 @@ def _save_as_variant_changed(self, _context) -> None:
 class XIVIEInstantEditProps(PropertyGroup):
 
     show_utilities: BoolProperty(
-        name="Utilities",
+        name="Toolbox",
         description="Show maintenance actions for Instant Edit context data",
         default=False,
     )  # type: ignore
@@ -162,7 +162,7 @@ class XIVIEInstantEditProps(PropertyGroup):
     variant_group_name: StringProperty(
         name="Penumbra Option Group",
         description="Existing Penumbra option group to reuse, or name for a new group",
-        default="Instant Edit Variants",
+        default="New Group",
         maxlen=120,
     )  # type: ignore
 

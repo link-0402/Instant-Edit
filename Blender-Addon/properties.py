@@ -48,13 +48,32 @@ NECK_MORPH_ITEMS = [
 class XIVIEExportSettings(PropertyGroup):
     show_mesh_materials: BoolProperty(name="Mesh Materials", default=True)  # type: ignore
     show_simple_export: BoolProperty(name="Simple Export", default=False)  # type: ignore
+    simple_io_tab: EnumProperty(
+        name="Simple I/O",
+        items=[
+            ("EXPORT", "Export", "Export visible mesh objects"),
+            ("IMPORT", "Import", "Import an MDL or FBX file"),
+        ],
+        default="EXPORT",
+    )  # type: ignore
     show_export_options: BoolProperty(name="Export Options", default=True)  # type: ignore
+    backup_models_on_export: BoolProperty(
+        name="Backup models on Export",
+        description="Keep timestamped backups before replacing existing MDL or FBX files",
+        default=False,
+    )  # type: ignore
+    show_backups: BoolProperty(name="Backup", default=False)  # type: ignore
 
     export_directory: StringProperty(name="Export Folder", subtype="DIR_PATH", default="")  # type: ignore
     export_name: StringProperty(name="File Name", default="model", maxlen=255)  # type: ignore
     model_format: EnumProperty(
         name="Format",
         items=[("MDL", "MDL", "FFXIV model"), ("FBX", "FBX", "Autodesk FBX"), ("GLTF", "glTF", "glTF")],
+        default="MDL",
+    )  # type: ignore
+    import_format: EnumProperty(
+        name="Format",
+        items=[("MDL", "MDL", "FFXIV model"), ("FBX", "FBX", "Autodesk FBX")],
         default="MDL",
     )  # type: ignore
     keep_shapekeys: BoolProperty(name="Keep Shape Keys", default=True)  # type: ignore

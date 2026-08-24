@@ -14,6 +14,7 @@ from .materials import (
     visible_material_groups,
 )
 from .properties import get_settings
+from .backups import list_backups, target_folder
 
 
 class XIVIE_PT_main(Panel):
@@ -29,6 +30,7 @@ class XIVIE_PT_main(Panel):
         self._draw_mesh_materials(layout, context)
         self._draw_simple_export(layout)
         self._draw_export_options(layout)
+        self._draw_backups(layout, context)
         self._draw_utilities(layout)
 
     @staticmethod
@@ -49,8 +51,9 @@ class XIVIE_PT_main(Panel):
             model_name = str(_value(ref.collection, "import_file_name", "") or props.display_name).strip()
             if not model_name:
                 model_name = model_path.rsplit("/", 1)[-1]
+            model_directory = model_path.rsplit("/", 1)[0] if "/" in model_path else ""
             box.label(text=f"Model Name: {model_name}")
-            box.label(text=f"Model Path: {model_path}")
+            box.label(text=f"Model Path: {model_directory}")
             source_mod = ref.source_mod_root_path or ref.source_mod_name or ref.source_mod_directory
             box.label(text=f"Source Mod: {source_mod}")
             box.prop(props, "export_scope")
@@ -115,7 +118,7 @@ class XIVIE_PT_main(Panel):
             box.label(text="No visible FFXIV mesh groups.", icon="INFO")
             return
 
-        columns = box.row(align=True).split(factor=0.3, align=True)
+        columns = box.row(align=True).split(factor=0.4, align=True)
         for title in ("OBJECT", "PART", "ATTR"):
             column = columns.row(align=True)
             column.alignment = "CENTER"
@@ -129,7 +132,7 @@ class XIVIE_PT_main(Panel):
             total_triangles += sum(triangle_count(obj) for obj in lod_zero)
 
             mesh_box = box.box()
-            mesh_header = mesh_box.row(align=True).split(factor=0.3, align=True)
+            mesh_header = mesh_box.row(align=True).split(factor=0.4, align=True)
             mesh_id_row = mesh_header.row(align=True)
             mesh_id_row.label(text=f"Mesh #{group.mesh_index}")
             drag = mesh_id_row.operator(
@@ -156,7 +159,7 @@ class XIVIE_PT_main(Panel):
                 representative = display_objects[0]
                 duplicate_ids = len(display_objects) > 1
 
-                object_row = mesh_column.row(align=True).split(factor=0.3, align=True)
+                object_row = mesh_column.row(align=True).split(factor=0.4, align=True)
 
                 name_row = object_row.row(align=True)
                 rename = name_row.operator(
@@ -241,6 +244,14 @@ class XIVIE_PT_main(Panel):
         if not expanded:
             return
 
+        tabs = box.row(align=True)
+        tabs.prop(settings, "simple_io_tab", expand=True)
+
+        if settings.simple_io_tab == "IMPORT":
+            box.prop(settings, "import_format", expand=True)
+            box.operator("xiv_ie.simple_import", text="Import", icon="IMPORT")
+            return
+
         box.prop(settings, "export_directory")
         row = box.row(align=True)
         row.prop(settings, "export_name")
@@ -286,6 +297,45 @@ class XIVIE_PT_main(Panel):
         row.prop(settings, "clear_flow_data")
 
     @staticmethod
+    def _draw_backups(layout, context: Context) -> None:
+        settings = get_settings()
+        if not settings.backup_models_on_export:
+            return
+        box = layout.box()
+        expanded = settings.show_backups
+        header = box.row(align=True)
+        header.prop(
+            settings,
+            "show_backups",
+            text="",
+            icon="TRIA_DOWN" if expanded else "TRIA_RIGHT",
+            emboss=False,
+        )
+        header.label(text="Backup", icon="FILE_BACKUP")
+        if not expanded:
+            return
+
+        folder, source = target_folder(settings, context)
+        if folder is None:
+            box.label(text=f"{source} is unavailable.", icon="INFO")
+            return
+        box.label(text=f"Folder: {folder}")
+        entries = list_backups(folder)
+        if not entries:
+            box.label(text="No model backups found.", icon="INFO")
+        for entry in entries:
+            row = box.row(align=True)
+            row.label(text=entry.original_name, icon="FILE")
+            row.label(text=entry.created.astimezone().strftime("%Y-%m-%d %H:%M:%S"))
+            restore = row.operator("xiv_ie.restore_backup", text="", icon="FILE_REFRESH")
+            restore.backup_name = entry.path.name
+            import_op = row.operator("xiv_ie.import_backup", text="", icon="IMPORT")
+            import_op.backup_name = entry.path.name
+        clear = box.row()
+        clear.enabled = bool(entries)
+        clear.operator("xiv_ie.clear_backups", text="Clear All Backups", icon="TRASH")
+
+    @staticmethod
     def _draw_utilities(layout) -> None:
         props = get_instant_edit_props()
         box = layout.box()
@@ -298,6 +348,6 @@ class XIVIE_PT_main(Panel):
             icon="TRIA_DOWN" if expanded else "TRIA_RIGHT",
             emboss=False,
         )
-        header.label(text="Utilities", icon="TOOL_SETTINGS")
+        header.label(text="Toolbox", icon="TOOL_SETTINGS")
         if expanded:
             box.operator("xiv_ie.clear_contexts", text="Clear Contexts", icon="TRASH")

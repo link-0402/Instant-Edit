@@ -417,7 +417,7 @@ class ClearInstantEditContexts(Operator):
             "capability": "",
             "managed_destination": "",
             "last_export_id": "",
-            "variant_group_name": "Instant Edit Variants",
+            "variant_group_name": "New Group",
             "last_status": "Instant Edit contexts cleared.",
         }.items():
             setattr(props, field, value)
@@ -428,7 +428,8 @@ class ClearInstantEditContexts(Operator):
 
 def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
                          sha256: str, props, variant_name: str | None,
-                         variant_group_name: str | None = None) -> dict:
+                         variant_group_name: str | None = None,
+                         backup_existing: bool | None = None) -> dict:
     """Build the versioned Dalamud export envelope."""
     payload = {
         "schema": "instant-edit.export",
@@ -441,6 +442,10 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
         "size": byte_size,
         "sha256": sha256,
         "redrawMode": props.redraw_mode,
+        "backupExisting": bool(
+            getattr(get_settings(), "backup_models_on_export", False)
+            if backup_existing is None else backup_existing
+        ),
     }
     if variant_name is not None:
         payload["variantName"] = variant_name
@@ -494,6 +499,59 @@ def _send_plugin_export(ref, payload: dict) -> None:
         raise _plugin_error_from_body(body, error.code) from error
     except (URLError, TimeoutError, OSError) as error:
         raise ValueError(str(error) or "invalid plugin response") from error
+
+
+def _send_plugin_restore(ref, backup_name: str, redraw_mode: str) -> None:
+    payload = {
+        "schema": "instant-edit.backup-restore",
+        "version": 1,
+        "pluginInstanceId": ref.plugin_instance_id,
+        "contextId": ref.context_id,
+        "capability": ref.capability,
+        "backupName": backup_name,
+        "redrawMode": redraw_mode,
+    }
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{ref.callback_port}/backup/restore",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+        if len(body) > MAX_PLUGIN_RESPONSE_SIZE:
+            raise ValueError("plugin response is too large")
+        result = json.loads(body.decode("utf-8"))
+        if not 200 <= status < 300 or not isinstance(result, dict) or not result.get("ok"):
+            raise PluginResponseError(
+                status,
+                str((result or {}).get("code", "plugin_error")),
+                str((result or {}).get("error", "plugin rejected the restore")),
+            )
+    except HTTPError as error:
+        body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+        raise _plugin_error_from_body(body, error.code) from error
+    except (URLError, TimeoutError, OSError) as error:
+        raise ValueError(str(error) or "invalid plugin response") from error
+
+
+def restore_quick_backup(context: Context, backup_name: str) -> None:
+    """Restore an authorized MDL backup through the plugin and reload Penumbra."""
+    ref = export_destination_context(context)
+    props = get_instant_edit_props()
+    try:
+        _send_plugin_restore(ref, backup_name, props.redraw_mode)
+    except PluginResponseError as error:
+        if error.status != 410 and not (error.status == 401 and error.code == "plugin_instance_mismatch"):
+            raise
+        from .recovery import reattach_collection
+
+        if not reattach_collection(ref.collection, context.scene):
+            raise ValueError(f"plugin returned HTTP {error.status} ({error.code}); context recovery failed") from error
+        ref = export_destination_context(context)
+        _send_plugin_restore(ref, backup_name, props.redraw_mode)
 
 
 def export_destination_context(context: Context, destination: str | None = None):

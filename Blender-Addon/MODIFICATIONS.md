@@ -20,7 +20,7 @@ Modifications made in 2026 include:
 - allowing export through an Armature modifier without requiring object
   parenting;
 - adding UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup;
-- adding a focused Simple Export operator and UI; and
+- adding focused Simple Import and Simple Export operators with a tabbed UI; and
 - removing registration of unrelated outfit, pose, animation, modpack, and
   general utility tools.
 

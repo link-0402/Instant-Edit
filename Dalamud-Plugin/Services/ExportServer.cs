@@ -55,6 +55,9 @@ public sealed class ExportServer : IDisposable
 
         [JsonPropertyName("redrawMode")]
         public string? RedrawMode { get; set; }
+
+        [JsonPropertyName("backupExisting")]
+        public bool BackupExisting { get; set; }
     }
 
     private sealed class ReattachRequest
@@ -73,6 +76,30 @@ public sealed class ExportServer : IDisposable
 
         [JsonPropertyName("capability")]
         public string? Capability { get; set; }
+    }
+
+    private sealed class BackupRestoreRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+
+        [JsonPropertyName("pluginInstanceId")]
+        public string? PluginInstanceId { get; set; }
+
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+
+        [JsonPropertyName("backupName")]
+        public string? BackupName { get; set; }
+
+        [JsonPropertyName("redrawMode")]
+        public string? RedrawMode { get; set; }
     }
 
     private sealed record HttpRequest(string Method, string Path, byte[] Body);
@@ -220,7 +247,7 @@ public sealed class ExportServer : IDisposable
                 ok = true,
                 running = true,
                 target = "original_source_mod",
-                capabilities = new[] { "instant-edit.context-reattach.v1" },
+                capabilities = new[] { "instant-edit.context-reattach.v1", "instant-edit.backup-restore.v1" },
             }));
 
         if (method == "POST" && path.TrimEnd('/') == "/context/reattach")
@@ -263,6 +290,52 @@ public sealed class ExportServer : IDisposable
                 return Error(StatusForCode(registryCode), registryCode, "export context was rejected");
 
             return (200, Json(new { ok = true, code = registryCode, context }));
+        }
+
+        if (method == "POST" && path.TrimEnd('/') == "/backup/restore")
+        {
+            string body;
+            try
+            {
+                body = new UTF8Encoding(false, true).GetString(request.Body);
+            }
+            catch (DecoderFallbackException)
+            {
+                return Error(400, "invalid_utf8", "request body is not valid UTF-8");
+            }
+
+            BackupRestoreRequest? restore;
+            try
+            {
+                restore = JsonSerializer.Deserialize<BackupRestoreRequest>(body, JsonOpts);
+            }
+            catch (Exception e)
+            {
+                _log.Error(e, "Failed to parse backup restore request.");
+                return Error(400, "invalid_json", "request body is not valid JSON");
+            }
+            if (restore is null)
+                return Error(400, "malformed_request", "request must be a JSON object");
+            var restoreError = ValidateBackupRestoreEnvelope(restore);
+            if (restoreError is not null)
+                return Error(StatusForCode(restoreError), restoreError, "unsupported or malformed backup restore envelope");
+            if (!_contexts.TryAuthorizeOperation(
+                    restore.PluginInstanceId!, restore.ContextId!, restore.Capability!,
+                    out var target, out var registryCode) || target is null)
+                return Error(StatusForCode(registryCode), registryCode, "export context was rejected");
+
+            var result = await _penumbra.RestoreSourceBackupAsync(
+                target.SourceModDirectory,
+                target.TargetFilePath,
+                target.GamePath,
+                restore.BackupName!,
+                target.ObjectIndex,
+                target.ActorIdentity,
+                ParseRedrawMode(restore.RedrawMode)).ConfigureAwait(false);
+            return ResultResponse(new ExportReceipt(
+                result.Success,
+                result.Success ? "backup_restored" : "restore_failed",
+                result.Message));
         }
 
         if (method == "POST" && path.TrimEnd('/') == "/export")
@@ -333,7 +406,8 @@ public sealed class ExportServer : IDisposable
                         export.VariantName,
                         export.VariantGroupName,
                         export.SetupInPenumbra,
-                        ParseRedrawMode(export.RedrawMode)).ConfigureAwait(false);
+                        ParseRedrawMode(export.RedrawMode),
+                        export.BackupExisting).ConfigureAwait(false);
                 }
             }
             catch (Exception e)
@@ -355,7 +429,8 @@ public sealed class ExportServer : IDisposable
             string? variantName,
             string? variantGroupName,
             bool setupVariantInPenumbra,
-            ExportRedrawMode redrawMode)
+            ExportRedrawMode redrawMode,
+            bool backupExisting)
         {
             if (string.IsNullOrWhiteSpace(target.TargetFilePath) ||
                 string.IsNullOrWhiteSpace(target.SourceModDirectory))
@@ -371,7 +446,8 @@ public sealed class ExportServer : IDisposable
                 variantName,
                 variantGroupName,
                 setupVariantInPenumbra,
-                redrawMode).ConfigureAwait(false);
+                redrawMode,
+                backupExisting).ConfigureAwait(false);
             return new ExportReceipt(
                 result.Success,
                 result.Success ? "export_applied" : "apply_failed",
@@ -402,6 +478,26 @@ public sealed class ExportServer : IDisposable
             return "penumbra_setup_requires_variant";
         if (request.SetupInPenumbra && !PenumbraService.IsSafeVariantGroupName(request.VariantGroupName))
             return "penumbra_setup_requires_group_name";
+        if (!TryParseRedrawMode(request.RedrawMode, out _))
+            return "invalid_redraw_mode";
+        return null;
+    }
+
+    private static string? ValidateBackupRestoreEnvelope(BackupRestoreRequest request)
+    {
+        if (!string.Equals(request.Schema, "instant-edit.backup-restore", StringComparison.Ordinal))
+            return request.Version == 1 ? "unsupported_schema" : "unsupported_version";
+        if (request.Version != 1)
+            return "unsupported_version";
+        if (string.IsNullOrWhiteSpace(request.PluginInstanceId) ||
+            string.IsNullOrWhiteSpace(request.ContextId) ||
+            string.IsNullOrWhiteSpace(request.Capability) ||
+            string.IsNullOrWhiteSpace(request.BackupName))
+            return "missing_field";
+        if (request.BackupName.Length > 512 ||
+            request.BackupName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            request.BackupName.Contains('/') || request.BackupName.Contains('\\'))
+            return "invalid_backup_name";
         if (!TryParseRedrawMode(request.RedrawMode, out _))
             return "invalid_redraw_mode";
         return null;

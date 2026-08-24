@@ -296,6 +296,44 @@ public sealed class ExportContextRegistry : IDisposable
         }
     }
 
+    public bool TryAuthorizeOperation(
+        string pluginInstanceId,
+        string contextId,
+        string capability,
+        out InstantEditImportContext? context,
+        out string code)
+    {
+        context = null;
+        code = "invalid_context";
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                code = "server_stopped";
+                return false;
+            }
+            RemoveExpiredLocked(DateTimeOffset.UtcNow);
+            if (!string.Equals(pluginInstanceId, PluginInstanceId, StringComparison.Ordinal))
+            {
+                code = "plugin_instance_mismatch";
+                return false;
+            }
+            if (!IsSafeId(contextId) || !_contexts.TryGetValue(contextId, out var entry))
+            {
+                code = "stale_context";
+                return false;
+            }
+            if (!CapabilityMatches(entry.Context.Capability, capability))
+            {
+                code = "invalid_capability";
+                return false;
+            }
+            context = entry.Context;
+            code = "accepted";
+            return true;
+        }
+    }
+
     public void CompleteExport(string contextId, string exportId, ExportReceipt receipt)
     {
         lock (_lock)

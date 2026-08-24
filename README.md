@@ -55,8 +55,9 @@ I do not recommend changing them unless necessary and you know what you are doin
 Saved Instant Edit scenes reconnect their export context automatically when the
 add-on and Dalamud plugin are running.
 
-The Blender add-on also includes **Simple Export** for exporting visible mesh
-objects as MDL, FBX, or glTF files, even if they haven't been imported through the IE plugin before.
+The Blender add-on also includes **Simple Import/Export** tabs for importing MDL
+or FBX files and exporting visible mesh objects as MDL, FBX, or glTF files, even
+if they haven't been imported through the IE plugin before.
 In this case you may be required to configure the material names for mesh groups manually via the addon UI.
 
 You may also save a model imported through IE as a variant, giving it a new file name. The addon will then
