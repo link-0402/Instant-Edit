@@ -42,16 +42,18 @@ Note that you will not be getting automatic feature and compatability updates th
 
 1. Start Blender and make sure the XIV Instant Edit add-on is enabled.
 2. Start FFXIV and run `/ie` to open the plugin window.
-3. Select a model from the list. Use **Refresh** if the model is not shown.
+3. Click **Refresh character list** at the top and browse to the model you are looking for, then click Edit.
 4. Edit the model in Blender. Instant Edit tools are available in the
    **XIV Instant Edit** tab of the 3D Viewport sidebar.
 5. Click **Quick Export** to send the edited model back to its Penumbra mod.
 
 Blender and FFXIV must be running at the same time. If the plugin reports that
-Blender is offline, restart Blender with the add-on enabled.
+Blender is offline, restart Blender with the add-on enabled. In order for the communication
+between game plugin and blender addon to work, the port configurations in the settings need to match.
+I do not recommend changing them unless necessary and you know what you are doing.
 
 Saved Instant Edit scenes reconnect their export context automatically when the
-updated add-on and Dalamud plugin are running.
+add-on and Dalamud plugin are running.
 
 The Blender add-on also includes **Simple Export** for exporting visible mesh
 objects as MDL, FBX, or glTF files, even if they haven't been imported through the IE plugin before.
