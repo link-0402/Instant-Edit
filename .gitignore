@@ -37,3 +37,6 @@ ideas.txt
 
 # Agent-local release workflow notes.
 coding-agent-release-workflow.txt
+
+# Local agent scripts.
+.scripts/
