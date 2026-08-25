@@ -2,7 +2,6 @@
 import bpy
 import json
 import hashlib
-import tempfile
 import uuid
 import urllib.request
 from urllib.error import HTTPError, URLError
@@ -18,14 +17,17 @@ from ..properties    import get_settings
 from ..xivpy.model   import XIVModel
 from .props          import get_instant_edit_props
 from .context        import (SCHEMA, VERSION, ContextValidationError,
-                             active_context, clear_context_metadata, create_collection,
-                             tag_object, validate_context)
+                             _value, active_context, clear_context_metadata,
+                             context_collections, create_collection, tag_object,
+                             validate_context)
 from .material_preview import (cleanup_preview_bundle, discard_preview_data,
                                load_preview_manifest)
+from .cache import create_job, finish_job
 
 
 MAX_PLUGIN_RESPONSE_SIZE = 64 * 1024
 INVALID_VARIANT_CHARS = frozenset('<>:"/\\|?*')
+_QUICK_EXPORT_TARGET_ITEMS = []
 
 
 class PluginResponseError(ValueError):
@@ -171,6 +173,7 @@ class InstantImport(Operator):
     armature_target: bpy.props.StringProperty(default="Skeleton", options={'HIDDEN'})  # type: ignore
     apply_textures_and_materials: bpy.props.BoolProperty(default=False, options={'HIDDEN'})  # type: ignore
     preview_manifest_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    cache_job_directory: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
 
     @classmethod
     def poll(cls, context: Context):
@@ -296,6 +299,11 @@ class InstantImport(Operator):
         finally:
             _restore_object_state(context, user_state)
             cleanup_preview_bundle(preview_package)
+            if self.cache_job_directory:
+                try:
+                    finish_job(self.cache_job_directory)
+                except OSError as error:
+                    print(f"Instant Edit: could not remove import cache job: {error}")
 
         if preview_validation_warning or (preview_package is not None and preview_package.warnings):
             self.report({"WARNING"}, props.last_status)
@@ -398,11 +406,43 @@ class InstantImport(Operator):
             modifier.object = armature_obj
 
 
+def _valid_export_contexts(context: Context) -> list:
+    refs = []
+    for collection in context_collections(context.scene):
+        context_id = _value(collection, "context_id", "")
+        try:
+            refs.append(validate_context(context_id, context.scene))
+        except ContextValidationError:
+            continue
+    return refs
+
+
+def _quick_export_target_items(_self, context):
+    global _QUICK_EXPORT_TARGET_ITEMS
+    refs = _valid_export_contexts(context or bpy.context)
+    items = []
+    for ref in refs:
+        model_name = ref.source_game_path.replace("\\", "/").rsplit("/", 1)[-1]
+        mod_name = ref.source_mod_name or ref.source_mod_directory
+        label = f"{model_name} ({mod_name})" if mod_name else model_name
+        description = f"Write the exported geometry to {ref.target_file_path}"
+        items.append((ref.context_id, label, description))
+    _QUICK_EXPORT_TARGET_ITEMS = items
+    return _QUICK_EXPORT_TARGET_ITEMS
+
+
 class QuickExport(Operator):
     bl_idname      = "xiv_ie.instant_export"
     bl_label       = "Quick Export"
     bl_description = "Exports the current model back to the game path it was imported from via Penumbra"
     bl_options     = {"UNDO"}
+
+    target_context_id: bpy.props.EnumProperty(
+        name="Export Destination",
+        description="Choose the imported model that will receive all exported geometry",
+        items=_quick_export_target_items,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )  # type: ignore
 
     @classmethod
     def poll(cls, context: Context):
@@ -412,9 +452,48 @@ class QuickExport(Operator):
         except ContextValidationError:
             return False
 
+    def invoke(self, context: Context, _event):
+        props = get_instant_edit_props()
+        if props.export_destination != "ACTIVE":
+            self.target_context_id = props.export_destination
+            return self.execute(context)
+
+        refs = _valid_export_contexts(context)
+        if len(refs) <= 1:
+            self.target_context_id = refs[0].context_id if refs else ""
+            return self.execute(context)
+
+        try:
+            preferred = active_context(context).context_id
+        except ContextValidationError:
+            preferred = refs[0].context_id
+        self.target_context_id = preferred
+        return context.window_manager.invoke_props_dialog(self, width=640)
+
+    def draw(self, context: Context):
+        self.layout.label(text="Multiple Instant Edit destinations are available.", icon="QUESTION")
+        self.layout.label(text="Choose where all geometry in the selected export scope should be written.")
+        self.layout.prop(self, "target_context_id")
+        if self.target_context_id:
+            try:
+                ref = validate_context(self.target_context_id, context.scene)
+                self.layout.label(text=f"Game path: {ref.source_game_path}")
+                self.layout.label(text=f"Target: {ref.target_file_path}")
+            except ContextValidationError:
+                self.layout.label(text="The selected destination is no longer valid.", icon="ERROR")
+
     def execute(self, context: Context):
         try:
-            perform_instant_export(context)
+            props = get_instant_edit_props()
+            destination = self.target_context_id or (
+                props.export_destination if props.export_destination != "ACTIVE" else ""
+            )
+            refs = _valid_export_contexts(context)
+            if not destination and len(refs) > 1:
+                raise ContextValidationError(
+                    "multiple Instant Edit contexts are available; invoke Quick Export and choose a destination"
+                )
+            perform_instant_export(context, destination or None)
         except Exception as e:
             props = get_instant_edit_props()
             props.last_status = f"Export failed: {e}"
@@ -614,9 +693,9 @@ def export_objects_for_scope(ref, scope: str) -> list:
     return objects
 
 
-def perform_instant_export(context: Context) -> Path:
+def perform_instant_export(context: Context, destination: str | None = None) -> Path:
     """Export one validated context and send only the v1 secure envelope."""
-    ref = export_destination_context(context)
+    ref = export_destination_context(context, destination)
     props = get_instant_edit_props()
     variant_name = validate_variant_name(ref.source_game_path, props.variant_name) if props.save_as_variant else None
     variant_group_name = (
@@ -640,50 +719,22 @@ def perform_instant_export(context: Context) -> Path:
         raise ValueError("Not Triangulated: " + ", ".join(not_triangulated) + ".")
 
     export_id = uuid.uuid4().hex
-    temp_dir = Path(tempfile.gettempdir()) / "InstantEdit" / "export" / export_id
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir = create_job("exports", export_id)
     mdl_path = temp_dir / f"model_{export_id}.mdl"
-    get_settings().model_format = "MDL"
-    export_result(mdl_path.with_suffix(""), "MDL", export_objects=export_objects)
-    if not mdl_path.is_file():
-        raise ValueError("Export produced no .mdl file.")
-
-    digest = hashlib.sha256()
-    byte_size = 0
-    with mdl_path.open("rb") as exported:
-        for chunk in iter(lambda: exported.read(1024 * 1024), b""):
-            byte_size += len(chunk)
-            digest.update(chunk)
-
-    # These are the only fields sent in the body. Port is routing only.
-    payload = build_export_payload(
-        ref,
-        export_id,
-        mdl_path,
-        byte_size,
-        digest.hexdigest(),
-        props,
-        variant_name,
-        variant_group_name,
-    )
     try:
-        _send_plugin_export(ref, payload)
-    except PluginResponseError as error:
-        if error.status != 410 and not (
-            error.status == 401 and error.code == "plugin_instance_mismatch"
-        ):
-            raise
+        get_settings().model_format = "MDL"
+        export_result(mdl_path.with_suffix(""), "MDL", export_objects=export_objects)
+        if not mdl_path.is_file():
+            raise ValueError("Export produced no .mdl file.")
 
-        # A saved scene may outlive the runtime context or the plugin instance.
-        # Reattach once and rebuild the envelope with the plugin-issued
-        # capability and instance id.
-        from .recovery import reattach_collection
+        digest = hashlib.sha256()
+        byte_size = 0
+        with mdl_path.open("rb") as exported:
+            for chunk in iter(lambda: exported.read(1024 * 1024), b""):
+                byte_size += len(chunk)
+                digest.update(chunk)
 
-        if not reattach_collection(ref.collection, context.scene):
-            raise ValueError(
-                f"plugin returned HTTP {error.status} ({error.code}); context recovery failed"
-            ) from error
-        ref = validate_context(ref.context_id, context.scene)
+        # These are the only fields sent in the body. Port is routing only.
         payload = build_export_payload(
             ref,
             export_id,
@@ -694,19 +745,52 @@ def perform_instant_export(context: Context) -> Path:
             variant_name,
             variant_group_name,
         )
-        _send_plugin_export(ref, payload)
+        try:
+            _send_plugin_export(ref, payload)
+        except PluginResponseError as error:
+            if error.status != 410 and not (
+                error.status == 401 and error.code == "plugin_instance_mismatch"
+            ):
+                raise
 
-    props.last_export_id = export_id
-    target_file_path = Path(ref.target_file_path)
-    if variant_name is not None:
-        target_file_path = target_file_path.with_name(f"{variant_name}.mdl")
-    setup_status = " and set up in Penumbra" if variant_name is not None and props.auto_setup_penumbra else ""
-    group_status = "; ".join(
-        f"{group.mesh_index}.({','.join(str(part) for part in group.parts)})"
-        for group in export_groups
-    )
-    props.last_status = f"Exported {group_status} to {target_file_path}{setup_status}"
-    return mdl_path
+            # A saved scene may outlive the runtime context or the plugin instance.
+            # Reattach once and rebuild the envelope with the plugin-issued
+            # capability and instance id.
+            from .recovery import reattach_collection
+
+            if not reattach_collection(ref.collection, context.scene):
+                raise ValueError(
+                    f"plugin returned HTTP {error.status} ({error.code}); context recovery failed"
+                ) from error
+            ref = validate_context(ref.context_id, context.scene)
+            payload = build_export_payload(
+                ref,
+                export_id,
+                mdl_path,
+                byte_size,
+                digest.hexdigest(),
+                props,
+                variant_name,
+                variant_group_name,
+            )
+            _send_plugin_export(ref, payload)
+
+        props.last_export_id = export_id
+        target_file_path = Path(ref.target_file_path)
+        if variant_name is not None:
+            target_file_path = target_file_path.with_name(f"{variant_name}.mdl")
+        setup_status = " and set up in Penumbra" if variant_name is not None and props.auto_setup_penumbra else ""
+        group_status = "; ".join(
+            f"{group.mesh_index}.({','.join(str(part) for part in group.parts)})"
+            for group in export_groups
+        )
+        props.last_status = f"Exported {group_status} to {target_file_path}{setup_status}"
+        return mdl_path
+    finally:
+        try:
+            finish_job(temp_dir)
+        except OSError as error:
+            print(f"Instant Edit: could not remove export cache job: {error}")
 
 
 class ApplyInstantEdit(Operator):

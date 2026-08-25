@@ -17,6 +17,8 @@ public sealed class ExportContextRegistry : IDisposable
         public required long Size { get; init; }
         public required string Sha256 { get; init; }
         public required TaskCompletionSource<ExportReceipt> Completion { get; init; }
+        public required DateTimeOffset CreatedAt { get; init; }
+        public DateTimeOffset? CompletedAt { get; set; }
     }
 
     private sealed class ContextEntry
@@ -46,6 +48,8 @@ public sealed class ExportContextRegistry : IDisposable
     private readonly TimeSpan _lifetime;
     private readonly Action<IReadOnlyList<PersistedExportContext>>? _persist;
     private readonly Func<int, ActorIdentity?>? _actorIdentityProvider;
+    private static readonly TimeSpan ReceiptRetention = TimeSpan.FromDays(1);
+    private const int MaxCompletedReceiptsPerContext = 128;
     private bool _disposed;
 
     public ExportContextRegistry(
@@ -268,6 +272,8 @@ public sealed class ExportContextRegistry : IDisposable
                 return false;
             }
 
+            PruneExportsLocked(entry, now);
+
             if (entry.Exports.TryGetValue(exportId, out var previous))
             {
                 if (string.Equals(previous.FilePath, filePath, StringComparison.OrdinalIgnoreCase) &&
@@ -289,6 +295,7 @@ public sealed class ExportContextRegistry : IDisposable
                 Size = size,
                 Sha256 = sha256,
                 Completion = completion,
+                CreatedAt = now,
             };
             reservation = new ExportReservation(entry.Context, completion.Task, true);
             code = "accepted";
@@ -339,7 +346,11 @@ public sealed class ExportContextRegistry : IDisposable
         lock (_lock)
         {
             if (_contexts.TryGetValue(contextId, out var context) && context.Exports.TryGetValue(exportId, out var export))
+            {
+                export.CompletedAt = DateTimeOffset.UtcNow;
                 export.Completion.TrySetResult(receipt);
+                PruneExportsLocked(context, DateTimeOffset.UtcNow);
+            }
         }
     }
 
@@ -347,7 +358,13 @@ public sealed class ExportContextRegistry : IDisposable
     {
         var removed = false;
         lock (_lock)
-            removed = _contexts.Remove(contextId);
+        {
+            if (_contexts.Remove(contextId, out var context))
+            {
+                CompletePendingLocked(context, "context_removed");
+                removed = true;
+            }
+        }
         if (removed)
             Persist();
     }
@@ -355,7 +372,34 @@ public sealed class ExportContextRegistry : IDisposable
     private void RemoveExpiredLocked(DateTimeOffset now)
     {
         foreach (var id in _contexts.Where(pair => pair.Value.ExpiresAt <= now).Select(pair => pair.Key).ToArray())
-            _contexts.Remove(id);
+        {
+            if (_contexts.Remove(id, out var context))
+                CompletePendingLocked(context, "context_expired");
+        }
+    }
+
+    private static void PruneExportsLocked(ContextEntry context, DateTimeOffset now)
+    {
+        foreach (var exportId in context.Exports
+                     .Where(pair => pair.Value.CompletedAt is { } completed && now - completed > ReceiptRetention)
+                     .Select(pair => pair.Key)
+                     .ToArray())
+            context.Exports.Remove(exportId);
+
+        var completedExports = context.Exports
+            .Where(pair => pair.Value.CompletedAt is not null)
+            .OrderByDescending(pair => pair.Value.CompletedAt)
+            .Skip(MaxCompletedReceiptsPerContext)
+            .Select(pair => pair.Key)
+            .ToArray();
+        foreach (var exportId in completedExports)
+            context.Exports.Remove(exportId);
+    }
+
+    private static void CompletePendingLocked(ContextEntry context, string code)
+    {
+        foreach (var export in context.Exports.Values)
+            export.Completion.TrySetResult(new ExportReceipt(false, code, "the export context is no longer available"));
     }
 
     private static bool IsSafeId(string? value)
@@ -442,7 +486,11 @@ public sealed class ExportContextRegistry : IDisposable
     {
         lock (_lock)
         {
+            if (_disposed)
+                return;
             _disposed = true;
+            foreach (var context in _contexts.Values)
+                CompletePendingLocked(context, "server_stopped");
             _contexts.Clear();
         }
     }

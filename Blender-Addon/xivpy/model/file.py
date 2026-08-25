@@ -171,12 +171,23 @@ class XIVModel:
             return strings
 
         model  = cls()
+        if len(data) < 4:
+            raise ValueError("Invalid MDL: the file is too short to contain a version header.")
+        version = int.from_bytes(data[:4], byteorder="little", signed=False)
+        if version != cls.V6:
+            if version == cls.V5:
+                raise ValueError(
+                    "Pre-Dawntrail MDL version 0x01000005 is not supported. "
+                    "Convert or update the source model before importing it."
+                )
+            raise ValueError(
+                f"Unsupported MDL version 0x{version:08X}; "
+                "XIV Instant Edit currently supports Dawntrail V6 models only."
+            )
+
         reader = BinaryReader(data)
 
         model.header = FileHeader.from_bytes(reader)
-
-        if model.header == cls.V5:
-            raise Exception("Model version not supported. Please use Dawntrail models.")
 
         data_offset = model._get_data_offset()
 
@@ -439,4 +450,3 @@ class XIVModel:
 
     def _get_data_offset(self) -> int:
         return self.FILE_HEADER_SIZE + self.header.runtime_size + self.header.stack_size
-    

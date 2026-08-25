@@ -115,8 +115,13 @@ public sealed class ExportServer : IDisposable
     private const long MaxExportBytes = 512L * 1024 * 1024;
 
     private readonly object _listenerLock = new();
+    private readonly SemaphoreSlim _clientGate = new(8, 8);
+    private readonly HashSet<TcpClient> _clients = new();
+    private readonly HashSet<Task> _clientTasks = new();
     private TcpListener? _listener;
     private CancellationTokenSource? _runCts;
+    private Task? _runTask;
+    private bool _disposed;
 
     public ExportServer(
         Configuration config,
@@ -150,7 +155,7 @@ public sealed class ExportServer : IDisposable
                 _listener = listener;
                 var runCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
                 _runCts = runCts;
-                _ = Task.Run(() => RunAsync(listener, runCts.Token));
+                _runTask = Task.Run(() => RunAsync(listener, runCts.Token));
             }
             catch (Exception e)
             {
@@ -158,6 +163,7 @@ public sealed class ExportServer : IDisposable
                 _listener = null;
                 _runCts?.Dispose();
                 _runCts = null;
+                _runTask = null;
                 return;
             }
         }
@@ -179,7 +185,38 @@ public sealed class ExportServer : IDisposable
             try
             {
                 var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
-                _ = Task.Run(() => HandleClient(client));
+                try
+                {
+                    await _clientGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    client.Dispose();
+                    throw;
+                }
+
+                Task task;
+                lock (_listenerLock)
+                {
+                    if (cancellationToken.IsCancellationRequested || !ReferenceEquals(_listener, listener))
+                    {
+                        client.Dispose();
+                        _clientGate.Release();
+                        break;
+                    }
+                    _clients.Add(client);
+                    task = Task.Run(() => HandleTrackedClientAsync(client, cancellationToken), CancellationToken.None);
+                    _clientTasks.Add(task);
+                }
+                _ = task.ContinueWith(
+                    completed =>
+                    {
+                        lock (_listenerLock)
+                            _clientTasks.Remove(completed);
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
             catch (OperationCanceledException)
             {
@@ -202,7 +239,25 @@ public sealed class ExportServer : IDisposable
         }
     }
 
-    private async Task HandleClient(TcpClient client)
+    private async Task HandleTrackedClientAsync(TcpClient client, CancellationToken cancellationToken)
+    {
+        using var cancellation = cancellationToken.Register(static state =>
+        {
+            try { ((TcpClient)state!).Close(); } catch { }
+        }, client);
+        try
+        {
+            await HandleClient(client, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_listenerLock)
+                _clients.Remove(client);
+            _clientGate.Release();
+        }
+    }
+
+    private async Task HandleClient(TcpClient client, CancellationToken cancellationToken)
     {
         using (client)
         using (var stream = client.GetStream())
@@ -218,8 +273,14 @@ public sealed class ExportServer : IDisposable
                     return;
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 var (status, body) = await ProcessRequestAsync(request).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 WriteResponse(stream, status, body);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Listener shutdown closes active sockets so blocked reads terminate promptly.
             }
             catch (Exception e)
             {
@@ -741,6 +802,12 @@ public sealed class ExportServer : IDisposable
 
     public void Dispose()
     {
+        lock (_listenerLock)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+        }
         _cts.Cancel();
         StopListener();
         _cts.Dispose();
@@ -750,12 +817,33 @@ public sealed class ExportServer : IDisposable
 
     private void StopListener()
     {
+        CancellationTokenSource? runCts;
+        TcpListener? listener;
+        Task[] tasks;
         lock (_listenerLock)
         {
-            _runCts?.Cancel();
+            runCts = _runCts;
             _runCts = null;
-            _listener?.Stop();
+            listener = _listener;
             _listener = null;
+            tasks = _clientTasks.Append(_runTask).Where(task => task is not null).Cast<Task>().ToArray();
+            _runTask = null;
+            runCts?.Cancel();
+            listener?.Stop();
+            foreach (var client in _clients.ToArray())
+            {
+                try { client.Close(); } catch { }
+            }
         }
+
+        try
+        {
+            Task.WhenAll(tasks).Wait(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception e)
+        {
+            _log.Debug($"Export receiver shutdown completed with active work: {e.Message}");
+        }
+        runCts?.Dispose();
     }
 }

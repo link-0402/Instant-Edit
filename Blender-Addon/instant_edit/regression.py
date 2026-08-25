@@ -8,6 +8,7 @@ test import, where ``sentinels`` are user objects captured before the import.
 import importlib
 import importlib.util
 import json
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -135,6 +136,18 @@ def run_staging_isolation_regression() -> None:
             f"{package_name}.instant_edit.material_preview"
         )
         export_streams = importlib.import_module(f"{package_name}.io.model.exp.streams")
+        model_file = importlib.import_module(f"{package_name}.xivpy.model.file")
+
+        for version, expected in (
+            (model_file.XIVModel.V5, "Pre-Dawntrail MDL version"),
+            (0xDEADBEEF, "Unsupported MDL version 0xDEADBEEF"),
+        ):
+            try:
+                model_file.XIVModel.from_bytes(struct.pack("<I", version))
+            except ValueError as error:
+                _require(expected in str(error), f"MDL version 0x{version:08X} is rejected clearly")
+            else:
+                raise AssertionError(f"unsupported MDL version 0x{version:08X} was accepted")
 
         stream_dtype = np.dtype([
             ("uv0", np.float32, (4,)),

@@ -31,7 +31,7 @@ def get_collection_obj(collection_name: str, type='ANY', sub_collections=False) 
 
     all_objects = []
     if type == 'ANY':
-        all_objects.extend[collection.objects]
+        all_objects.extend(collection.objects)
 
     else:
         objects = [obj for obj in collection.objects if obj.type == type]
@@ -142,4 +142,3 @@ def evaluate_obj(obj: Object, depsgraph: Depsgraph) -> Object:
                         eval_obj,
                         preserve_all_data_layers=True,
                         depsgraph=depsgraph)
-        

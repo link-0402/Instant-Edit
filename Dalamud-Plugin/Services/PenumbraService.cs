@@ -356,6 +356,12 @@ public sealed class PenumbraService
             if (resolved.Target is null)
                 return new ExportResult(false, resolved.Error ?? "The original Penumbra mod is no longer available.");
 
+            var targetError = await _framework.RunOnFrameworkThread(
+                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity, resolved.Target.FilePath))
+                .ConfigureAwait(false);
+            if (targetError is not null)
+                return new ExportResult(false, $"The source actor changed before export ({targetError}). Please import it again.");
+
             var targetFile = variantName is null
                 ? resolved.Target.FilePath
                 : Path.Combine(Path.GetDirectoryName(resolved.Target.FilePath)!, variantName + ".mdl");
@@ -389,6 +395,19 @@ public sealed class PenumbraService
             {
                 try
                 {
+                    if (redrawMode == ExportRedrawMode.Self)
+                    {
+                        var redrawError = ValidateTargetOnFramework(
+                            sourceGamePath,
+                            objectIndex,
+                            actorIdentity,
+                            resolved.Target.FilePath);
+                        if (redrawError is not null)
+                            return new ExportResult(
+                                true,
+                                $"Exported to {targetFile} and reloaded {resolved.Target.Directory}; the source actor changed, so redraw was skipped.");
+                    }
+
                     switch (redrawMode)
                     {
                         case ExportRedrawMode.All:
@@ -510,33 +529,64 @@ public sealed class PenumbraService
             .ThenBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-    /// <summary>Read the model, texture, and material files stored in one Penumbra mod.</summary>
-    public PenumbraModSnapshot? GetModResources(string modDirectory)
+    private sealed record ModScanRequest(PenumbraMod Mod, string[] CandidateRoots);
+
+    /// <summary>Resolve Penumbra state on the framework thread, then scan files on a worker.</summary>
+    public async Task<PenumbraModSnapshot?> GetModResourcesAsync(
+        string modDirectory,
+        CancellationToken cancellationToken = default)
     {
         if (!IsSafeModName(modDirectory))
             return null;
 
         try
         {
-            var mod = GetMods().FirstOrDefault(item =>
-                string.Equals(item.Directory, modDirectory, StringComparison.OrdinalIgnoreCase));
-            if (mod is null)
+            var request = await _framework.RunOnFrameworkThread(
+                () => ResolveModScanOnFramework(modDirectory)).ConfigureAwait(false);
+            if (request is null)
                 return null;
+            return await Task.Run(() => ScanModResources(request, cancellationToken), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception e)
+        {
+            _log.Debug($"Could not read Penumbra mod resources: {e.Message}");
+            return null;
+        }
+    }
 
-            var candidateRoots = new List<string>();
-            var pathResult = _getModPath.Invoke(mod.Directory, string.Empty);
-            if (pathResult.Item1 is PenumbraApiEc.Success)
-                AddCandidateRoot(candidateRoots, pathResult.Item2);
+    private ModScanRequest? ResolveModScanOnFramework(string modDirectory)
+    {
+        var mod = GetMods().FirstOrDefault(item =>
+            string.Equals(item.Directory, modDirectory, StringComparison.OrdinalIgnoreCase));
+        if (mod is null)
+            return null;
 
-            // GetModPath can point at a manually configured location. Keep the
-            // standard Penumbra root as a fallback for older/API-incompatible
-            // installations where that path is not returned as expected.
-            var modDirectoryRoot = GetModDirectory();
-            if (!string.IsNullOrWhiteSpace(modDirectoryRoot))
-                AddCandidateRoot(candidateRoots, Path.Combine(modDirectoryRoot, mod.Directory));
+        var candidateRoots = new List<string>();
+        var pathResult = _getModPath.Invoke(mod.Directory, string.Empty);
+        if (pathResult.Item1 is PenumbraApiEc.Success)
+            AddCandidateRoot(candidateRoots, pathResult.Item2);
 
-            foreach (var root in candidateRoots)
+        // GetModPath can point at a manually configured location. Keep the
+        // standard Penumbra root as a fallback for older/API-incompatible installs.
+        var modDirectoryRoot = GetModDirectory();
+        if (!string.IsNullOrWhiteSpace(modDirectoryRoot))
+            AddCandidateRoot(candidateRoots, Path.Combine(modDirectoryRoot, mod.Directory));
+        return new ModScanRequest(mod, candidateRoots.ToArray());
+    }
+
+    private PenumbraModSnapshot ScanModResources(ModScanRequest request, CancellationToken cancellationToken)
+    {
+        var mod = request.Mod;
+        try
+        {
+            foreach (var root in request.CandidateRoots)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!Directory.Exists(root) || (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
                     continue;
 
@@ -556,8 +606,15 @@ public sealed class PenumbraService
 
                 var mappings = ReadModMappings(sourceRoot);
                 var resources = new List<PenumbraModResource>();
-                foreach (var file in Directory.EnumerateFiles(scanRoot, "*", SearchOption.AllDirectories))
+                var enumeration = new EnumerationOptions
                 {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                    AttributesToSkip = FileAttributes.ReparsePoint,
+                };
+                foreach (var file in Directory.EnumerateFiles(scanRoot, "*", enumeration))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (!IsSafeModResourceFile(sourceRoot, file))
                         continue;
 
@@ -586,12 +643,16 @@ public sealed class PenumbraService
                         resources.OrderBy(resource => resource.GamePath, StringComparer.OrdinalIgnoreCase).ToArray());
             }
 
-            return new PenumbraModSnapshot(mod.Directory, mod.Name, candidateRoots.FirstOrDefault() ?? string.Empty, Array.Empty<PenumbraModResource>());
+            return new PenumbraModSnapshot(mod.Directory, mod.Name, request.CandidateRoots.FirstOrDefault() ?? string.Empty, Array.Empty<PenumbraModResource>());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception e)
         {
             _log.Debug($"Could not read Penumbra mod resources: {e.Message}");
-            return null;
+            return new PenumbraModSnapshot(mod.Directory, mod.Name, request.CandidateRoots.FirstOrDefault() ?? string.Empty, Array.Empty<PenumbraModResource>());
         }
     }
 
@@ -617,6 +678,12 @@ public sealed class PenumbraService
                 () => ResolveSourceModTargetOnFramework(sourceModDirectory, sourceFilePath)).ConfigureAwait(false);
             if (resolved.Target is null)
                 return new ExportResult(false, resolved.Error ?? "The original Penumbra mod is no longer available.");
+
+            var targetError = await _framework.RunOnFrameworkThread(
+                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity, resolved.Target.FilePath))
+                .ConfigureAwait(false);
+            if (targetError is not null)
+                return new ExportResult(false, $"The source actor changed before restore ({targetError}). Please import it again.");
 
             var parent = Path.GetDirectoryName(resolved.Target.FilePath);
             if (parent is null || !string.Equals(Path.GetExtension(originalName), ".mdl", StringComparison.OrdinalIgnoreCase))
@@ -645,6 +712,19 @@ public sealed class PenumbraService
             {
                 try
                 {
+                    if (redrawMode == ExportRedrawMode.Self)
+                    {
+                        var redrawError = ValidateTargetOnFramework(
+                            sourceGamePath,
+                            objectIndex,
+                            actorIdentity,
+                            resolved.Target.FilePath);
+                        if (redrawError is not null)
+                            return new ExportResult(
+                                true,
+                                $"Restored {originalName} and reloaded {resolved.Target.Directory}; the source actor changed, so redraw was skipped.");
+                    }
+
                     switch (redrawMode)
                     {
                         case ExportRedrawMode.All:

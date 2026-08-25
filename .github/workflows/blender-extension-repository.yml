@@ -21,6 +21,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 4.5.12
+            release: Blender4.5
+          - version: 5.2.0
+            release: Blender5.2
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Blender ${{ matrix.version }}
+        run: |
+          curl --fail --location --retry 3 \
+            "https://download.blender.org/release/${{ matrix.release }}/blender-${{ matrix.version }}-linux-x64.tar.xz" \
+            --output /tmp/blender.tar.xz
+          tar -xJf /tmp/blender.tar.xz --directory /tmp
+          echo "/tmp/blender-${{ matrix.version }}-linux-x64" >> "$GITHUB_PATH"
+
+      - name: Run add-on regressions
+        run: |
+          blender --background --python Blender-Addon/instant_edit/regression.py
+          blender --background --python Blender-Addon/testing/smoke_export.py
+          python3 Blender-Addon/testing/cache_regression.py
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -78,7 +106,7 @@ jobs:
           path: ./site
 
   deploy:
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

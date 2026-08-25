@@ -213,11 +213,19 @@ class SceneHandler:
 
             self.meshes[obj] = {
                 'shape'       : shape_key, 
+                'shape_values': [(key.name, key.value) for key in shape_key],
                 'transparency': transparency, 
                 'backfaces'   : backfaces,
                 'old_name'    : obj.name,
                 'armature'    : armature,
                 }
+
+            # Export evaluates the basis while retaining every selected shape as
+            # a separate key. Snapshotting above must happen before this mutation
+            # so restore_meshes can recover even when a later preparation step
+            # or the exporter itself raises.
+            for key in shape_key:
+                key.value = 0
             
             obj.name = "temp_export"
         
@@ -263,7 +271,6 @@ class SceneHandler:
                 # If waist and torso are present we then remove the yab key.
                 if self.buff and key.name.endswith("_yab"):
                     continue
-            key.value = 0
             shape_keys.append(key)
 
         return shape_keys
@@ -524,6 +531,12 @@ class SceneHandler:
             try:
                 obj.name = self.meshes[obj]["old_name"]
                 obj.hide_set(state=False)
+                if obj.data.shape_keys:
+                    key_blocks = obj.data.shape_keys.key_blocks
+                    for key_name, value in self.meshes[obj].get("shape_values", ()):
+                        key = key_blocks.get(key_name)
+                        if key is not None:
+                            key.value = value
             except Exception as e:
                 if self.logger:
                     self.logger.log_exception(f"Error deleting {obj.name}: {e}")

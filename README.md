@@ -51,11 +51,19 @@ Note that you will not be getting automatic feature and compatability updates th
 4. Edit the model in Blender. Instant Edit tools are available in the
    **XIV Instant Edit** tab of the 3D Viewport sidebar.
 5. Click **Quick Export** to send the edited model back to its Penumbra mod.
+   If the scene contains multiple Instant Edit contexts and the destination is
+   otherwise ambiguous, Quick Export asks you to choose the target first.
 
 Blender and FFXIV must be running at the same time. If the plugin reports that
 Blender is offline, restart Blender with the add-on enabled. In order for the communication
 between game plugin and blender addon to work, the port configurations in the settings need to match.
 I do not recommend changing them unless necessary and you know what you are doing.
+
+The same Blender add-on preferences contain the Instant Edit cache settings.
+Imports and Quick Exports are staged inside an add-on-owned `XIV-Instant-Edit`
+subfolder of the selected cache directory. Automatic cleanup removes completed
+jobs immediately and crash leftovers after 24 hours; **Clean Cache Now** removes
+inactive owned jobs on demand.
 
 Saved Instant Edit scenes reconnect their export context automatically when the
 add-on and Dalamud plugin are running.

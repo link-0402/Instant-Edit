@@ -126,15 +126,15 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
-        _exportServer.Dispose();
-        _contexts.Dispose();
-        _blender.Dispose();
         _commands.RemoveHandler("/ie");
         _pi.UiBuilder.Draw -= _window.Draw;
         _pi.UiBuilder.Draw -= _settingsWindow.Draw;
         _pi.UiBuilder.OpenMainUi -= _window.Open;
         _pi.UiBuilder.OpenConfigUi -= _settingsWindow.Open;
         _window.Dispose();
+        _exportServer.Dispose();
+        _contexts.Dispose();
+        _blender.Dispose();
         SaveConfiguration();
     }
 }

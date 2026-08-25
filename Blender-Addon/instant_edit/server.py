@@ -14,6 +14,7 @@ MAX_IMPORT_QUEUE_SIZE = 32
 REQUEST_TIMEOUT_SECONDS = 5
 IMPORT_OPTIONS_CAPABILITY = "instant-edit.import-options.v1"
 MATERIAL_PREVIEW_CAPABILITY = "instant-edit.material-preview.v1"
+CACHE_HANDOFF_CAPABILITY = "instant-edit.cache-handoff.v1"
 
 _import_queue: Queue = Queue(maxsize=MAX_IMPORT_QUEUE_SIZE)
 _server              = None
@@ -80,7 +81,11 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 "ready": True,
                 "addon": "XIV Instant Edit",
                 "addonId": "xiv_instant_edit",
-                "capabilities": [IMPORT_OPTIONS_CAPABILITY, MATERIAL_PREVIEW_CAPABILITY],
+                "capabilities": [
+                    IMPORT_OPTIONS_CAPABILITY,
+                    MATERIAL_PREVIEW_CAPABILITY,
+                    CACHE_HANDOFF_CAPABILITY,
+                ],
             })
         else:
             self._respond(404, {"ok": False, "error": "not found"})
@@ -110,6 +115,12 @@ class _ImportHandler(BaseHTTPRequestHandler):
 
             data = json.loads(body)
             data = self._validate_import(data)
+            cached = False
+            if data.get("schema") == "instant-edit.context" and data.get("version") == 1:
+                from .cache import stage_import
+
+                data = stage_import(data)
+                cached = True
         except (socket.timeout, TimeoutError):
             self._respond(408, {"ok": False, "error": "request body timed out"})
             return
@@ -120,9 +131,13 @@ class _ImportHandler(BaseHTTPRequestHandler):
         try:
             _import_queue.put_nowait(data)
         except Full:
+            cache_job = data.get("cacheJobDirectory", "")
+            if cache_job:
+                from .cache import remove_job
+                remove_job(cache_job)
             self._respond(503, {"ok": False, "error": "import queue is full"})
             return
-        self._respond(200, {"ok": True, "queued": True})
+        self._respond(200, {"ok": True, "queued": True, "cached": cached})
 
     @staticmethod
     def _validate_import(data) -> dict:
@@ -345,6 +360,7 @@ def poll_import_queue() -> float:
                     armature_target=data.get("importOptions", {}).get("targetObject", "Skeleton"),
                     apply_textures_and_materials=data.get("importOptions", {}).get("applyTexturesAndMaterials", False),
                     preview_manifest_path=data.get("previewManifestPath", ""),
+                    cache_job_directory=data.get("cacheJobDirectory", ""),
                 )
             except Exception as e:
                 print(f"Instant Edit: import failed: {e}")

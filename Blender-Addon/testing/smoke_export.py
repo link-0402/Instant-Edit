@@ -248,6 +248,9 @@ def run() -> None:
 
         original_urlopen = instant_ops.urllib.request.urlopen
         instant_ops.urllib.request.urlopen = lambda request, timeout=0: FakeResponse()
+        cache_module = importlib.import_module(f"{addon.__name__}.instant_edit.cache")
+        original_auto_cleanup = cache_module.automatic_cleanup_enabled()
+        cache_module.configure_cache(cache_module.cache_root().parent, False)
         armature.data.pose_position = "POSE"
         pose_bone = armature.pose.bones["root"]
         pose_bone.rotation_mode = "XYZ"
@@ -262,6 +265,10 @@ def run() -> None:
             mesh_obj: mesh_obj.scale.copy()
             for mesh_obj in (obj, second, added_group)
         }
+        if obj.data.shape_keys is None:
+            obj.shape_key_add(name="Basis")
+        smoke_shape = obj.shape_key_add(name="Smoke Shape")
+        smoke_shape.value = 0.65
         if export_module._armature_for_object(obj) is not armature:
             raise AssertionError("Smoke mesh is not associated with the expected armature")
         with export_module._clean_export_state([obj, second, added_group]):
@@ -297,7 +304,9 @@ def run() -> None:
             for actual, expected in zip(actual_row, expected_row)
         ):
             raise AssertionError("Quick Export did not restore armature pose")
-        print("[PASS] Quick Export temporarily resets and restores armature pose and scale")
+        if abs(smoke_shape.value - 0.65) > 1e-6:
+            raise AssertionError(f"Quick Export did not restore shape-key value: {smoke_shape.value}")
+        print("[PASS] Quick Export temporarily resets and restores pose, scale, and shape keys")
 
         model_module = importlib.import_module(f"{addon.__name__}.xivpy.model")
         quick_model = model_module.XIVModel.from_file(quick_target)
@@ -310,6 +319,31 @@ def run() -> None:
         if "0.(0,1); 1.(0)" not in bpy.context.scene.xiv_ie_instant_edit_props.last_status:
             raise AssertionError("Quick Export status did not report the exported group layout")
         print("[PASS] Actual Quick Export contains all visible parts, groups, and materials")
+        cache_module.remove_job(Path(quick_target).parent)
+        cache_module.configure_cache(cache_module.cache_root().parent, original_auto_cleanup)
+
+        original_export_scene = export_module.ModelExport.__dict__["export_scene"]
+        def fail_after_scene_preparation(_cls, *_args, **_kwargs):
+            raise RuntimeError("forced exporter failure")
+        export_module.ModelExport.export_scene = classmethod(fail_after_scene_preparation)
+        try:
+            with tempfile.TemporaryDirectory(prefix="xiv-instant-edit-failure-") as failure_dir:
+                try:
+                    export_module.export_result(
+                        Path(failure_dir) / "forced_failure",
+                        "MDL",
+                        export_objects=[obj, second, added_group],
+                    )
+                except RuntimeError as error:
+                    if str(error) != "forced exporter failure":
+                        raise
+                else:
+                    raise AssertionError("Forced exporter failure did not occur")
+        finally:
+            export_module.ModelExport.export_scene = original_export_scene
+        if abs(smoke_shape.value - 0.65) > 1e-6:
+            raise AssertionError("Shape-key value was not restored after a failed export")
+        print("[PASS] Failed export restores shape-key values")
 
         for selected in bpy.context.selected_objects:
             selected.select_set(False)

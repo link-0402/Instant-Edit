@@ -21,6 +21,7 @@ public sealed class MainWindow : IDisposable
     private readonly MaterialPreviewBundleBuilder _materialPreviews;
     private readonly Action _saveConfig;
     private readonly object _stateLock = new();
+    private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
     private readonly HashSet<string> _collapsedFiltered = new(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, IDalamudTextureWrap> _slotIcons = new Dictionary<string, IDalamudTextureWrap>();
@@ -31,6 +32,8 @@ public sealed class MainWindow : IDisposable
     private string? _selectedModDirectory, _loadedModDirectory;
     private IReadOnlyList<PenumbraMod> _mods = Array.Empty<PenumbraMod>();
     private ActorView? _loadedModView;
+    private CancellationTokenSource? _modLoadCts;
+    private bool _modLoading, _modLoadFailed;
     private bool _statusOk = true;
 
     public MainWindow(Configuration config, PenumbraService penumbra, OnScreenService onScreen, BlenderClient blender,
@@ -45,6 +48,10 @@ public sealed class MainWindow : IDisposable
 
     public void Dispose()
     {
+        _lifetimeCts.Cancel();
+        _modLoadCts?.Cancel();
+        _modLoadCts?.Dispose();
+        _modLoadCts = null;
         IReadOnlyDictionary<string, IDalamudTextureWrap> icons;
         lock (_stateLock)
         {
@@ -54,6 +61,7 @@ public sealed class MainWindow : IDisposable
 
         foreach (var icon in icons.Values.Distinct())
             icon.Dispose();
+        _lifetimeCts.Dispose();
     }
 
     public bool IsOpen { get => _open; set => _open = value; }
@@ -111,6 +119,7 @@ public sealed class MainWindow : IDisposable
                     var selected = string.Equals(_selectedModDirectory, mod.Directory, StringComparison.OrdinalIgnoreCase);
                     if (ImGui.Selectable($"{mod.Name}##mod:{SafeId(mod.Directory)}", selected))
                     {
+                        CancelModLoad();
                         _selectedModDirectory = mod.Directory;
                         _loadedModDirectory = null;
                         _loadedModView = null;
@@ -132,7 +141,17 @@ public sealed class MainWindow : IDisposable
         if (modView is null)
         {
             ImGui.Spacing();
-            ImGui.TextColored(new Vector4(.9f, .55f, .35f, 1), "Could not read the selected Penumbra mod.");
+            bool loading;
+            bool failed;
+            lock (_stateLock)
+            {
+                loading = _modLoading;
+                failed = _modLoadFailed;
+            }
+            var message = loading ? "Scanning the selected Penumbra mod..." :
+                failed ? "Could not read the selected Penumbra mod." : "No supported resources found.";
+            var color = failed ? new Vector4(.9f, .55f, .35f, 1) : new Vector4(.65f, .68f, .75f, 1);
+            ImGui.TextColored(color, message);
             return;
         }
 
@@ -508,6 +527,7 @@ public sealed class MainWindow : IDisposable
             if (_selectedModDirectory is not null && !_mods.Any(mod =>
                     string.Equals(mod.Directory, _selectedModDirectory, StringComparison.OrdinalIgnoreCase)))
             {
+                CancelModLoad();
                 _selectedModDirectory = null;
                 _loadedModDirectory = null;
                 _loadedModView = null;
@@ -524,17 +544,61 @@ public sealed class MainWindow : IDisposable
 
     private ActorView? GetModView(PenumbraMod mod)
     {
-        if (string.Equals(_loadedModDirectory, mod.Directory, StringComparison.OrdinalIgnoreCase))
-            return _loadedModView;
-
-        _loadedModDirectory = mod.Directory;
-        var snapshot = _penumbra.GetModResources(mod.Directory);
-        if (snapshot is null)
+        lock (_stateLock)
         {
-            _loadedModView = null;
-            return null;
+            if (string.Equals(_loadedModDirectory, mod.Directory, StringComparison.OrdinalIgnoreCase))
+                return _loadedModView;
         }
 
+        StartModLoad(mod);
+        return null;
+    }
+
+    private void StartModLoad(PenumbraMod mod)
+    {
+        CancelModLoad();
+        var cts = new CancellationTokenSource();
+        var importObjectIndex = _onScreen.Items.FirstOrDefault()?.ObjectIndex ?? 0;
+        lock (_stateLock)
+        {
+            _modLoadCts = cts;
+            _loadedModDirectory = mod.Directory;
+            _loadedModView = null;
+            _modLoading = true;
+            _modLoadFailed = false;
+        }
+
+        _ = LoadModViewAsync(mod, importObjectIndex, cts);
+    }
+
+    private async Task LoadModViewAsync(PenumbraMod mod, int importObjectIndex, CancellationTokenSource owner)
+    {
+        PenumbraModSnapshot? snapshot = null;
+        try
+        {
+            snapshot = await _penumbra.GetModResourcesAsync(mod.Directory, owner.Token).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            _log.Debug($"Could not load Penumbra mod resources: {e.Message}");
+        }
+
+        ActorView? view = null;
+        if (snapshot is not null)
+            view = BuildModView(snapshot, importObjectIndex);
+
+        lock (_stateLock)
+        {
+            if (!ReferenceEquals(_modLoadCts, owner))
+                return;
+            _loadedModView = view;
+            _modLoading = false;
+            _modLoadFailed = snapshot is null && !owner.IsCancellationRequested;
+        }
+    }
+
+    private static ActorView BuildModView(PenumbraModSnapshot snapshot, int importObjectIndex)
+    {
         var roots = snapshot.Resources
             .Select(resource => new ResourceView(
                 ResourceType(resource.GamePath),
@@ -555,15 +619,26 @@ public sealed class MainWindow : IDisposable
                 new List<ResourceView>()))
             .ToList();
 
-        var importObjectIndex = _onScreen.Items.FirstOrDefault()?.ObjectIndex ?? 0;
-        _loadedModView = new ActorView(
+        return new ActorView(
             null,
             "Mod",
             snapshot.Name,
             roots,
             importObjectIndex,
             false);
-        return _loadedModView;
+    }
+
+    private void CancelModLoad()
+    {
+        CancellationTokenSource? cts;
+        lock (_stateLock)
+        {
+            cts = _modLoadCts;
+            _modLoadCts = null;
+            _modLoading = false;
+        }
+        cts?.Cancel();
+        cts?.Dispose();
     }
 
     private static string ResourceType(string gamePath)
@@ -829,7 +904,15 @@ public sealed class MainWindow : IDisposable
         }
 
         var importOptions = CurrentImportOptions();
-        _ = Task.Run(() => EditModelAsync(actor, model, source, _config.BlenderPort, _config.ListenPort, importOptions));
+        var cancellationToken = _lifetimeCts.Token;
+        _ = Task.Run(() => EditModelAsync(
+            actor,
+            model,
+            source,
+            _config.BlenderPort,
+            _config.ListenPort,
+            importOptions,
+            cancellationToken));
     }
 
     private BlenderImportOptions CurrentImportOptions()
@@ -848,29 +931,33 @@ public sealed class MainWindow : IDisposable
         ResourceView source,
         int blenderPort,
         int listenPort,
-        BlenderImportOptions importOptions)
+        BlenderImportOptions importOptions,
+        CancellationToken cancellationToken)
     {
+        string? handoffDirectory = null;
+        var handoffCached = false;
         try
         {
-            if (!await CheckBlenderAsync(blenderPort).ConfigureAwait(false))
+            if (!await CheckBlenderAsync(blenderPort, cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException("Blender is offline. Start Blender and enable the XIV Instant Edit addon before editing.");
             if (importOptions.ArmatureMode == BlenderImportOptions.ExistingMode &&
-                !await _blender.SupportsImportOptionsAsync(blenderPort).ConfigureAwait(false))
+                !await _blender.SupportsImportOptionsAsync(blenderPort, cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException("The XIV Instant Edit addon is too old for custom import options. Update the add-on and restart Blender.");
             if (importOptions.ApplyTexturesAndMaterials &&
-                !await _blender.SupportsMaterialPreviewAsync(blenderPort).ConfigureAwait(false))
+                !await _blender.SupportsMaterialPreviewAsync(blenderPort, cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException("The XIV Instant Edit addon is too old for texture and material previews. Update the add-on and restart Blender.");
 
             var bytes = model.IsFilePath
-                ? await File.ReadAllBytesAsync(model.LocalPath).ConfigureAwait(false)
-                : (await _data.GetFileAsync<FileResource>(model.LocalPath, CancellationToken.None).ConfigureAwait(false))?.Data
+                ? await File.ReadAllBytesAsync(model.LocalPath, cancellationToken).ConfigureAwait(false)
+                : (await _data.GetFileAsync<FileResource>(model.LocalPath, cancellationToken).ConfigureAwait(false))?.Data
                     ?? throw new InvalidOperationException($"Game file not found: {model.LocalPath}");
-            var dir = Path.Combine(Path.GetTempPath(), "InstantEdit");
+            CleanupStaleHandoffs();
+            var handoffRoot = Path.Combine(Path.GetTempPath(), "InstantEdit", "handoff");
+            Directory.CreateDirectory(handoffRoot);
+            var dir = Path.Combine(handoffRoot, Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
+            handoffDirectory = dir;
             MaterialPreviewBundleResult? preview = null;
-            if (importOptions.ApplyTexturesAndMaterials)
-                dir = Path.Combine(dir, Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(dir);
             var file = Path.Combine(dir, $"{Sanitize(actor.Name)}-{actor.ImportObjectIndex}-{model.FileName}");
             await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
             if (importOptions.ApplyTexturesAndMaterials)
@@ -881,9 +968,10 @@ public sealed class MainWindow : IDisposable
                     model.GamePath,
                     resources,
                     Path.Combine(dir, "preview"),
-                    importOptions.ExcludeBodyAndGeneralMaterials).ConfigureAwait(false);
+                    importOptions.ExcludeBodyAndGeneralMaterials,
+                    cancellationToken).ConfigureAwait(false);
             }
-            await _blender.SendSourceImportAsync(
+            handoffCached = await _blender.SendSourceImportAsync(
                 blenderPort,
                 file,
                 model.GamePath,
@@ -896,10 +984,15 @@ public sealed class MainWindow : IDisposable
                 importOptions: importOptions,
                 previewManifestPath: preview?.ManifestPath,
                 sourceModRootPath: source.SourceModRootPath,
-                validateActorTarget: actor.ValidateActorTarget).ConfigureAwait(false);
+                validateActorTarget: actor.ValidateActorTarget,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
             SetStatus($"Sent {model.FileName} to Blender.{warning}", true);
             _chat.Print($"Instant Edit: {model.FileName} sent to Blender.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Plugin/window shutdown cancels outstanding handoffs without touching UI services.
         }
         catch (Exception e)
         {
@@ -909,7 +1002,52 @@ public sealed class MainWindow : IDisposable
         }
         finally
         {
+            if (handoffCached && handoffDirectory is not null)
+                TryDeleteOwnedHandoff(handoffDirectory);
             Volatile.Write(ref _editing, 0);
+        }
+    }
+
+    private static void CleanupStaleHandoffs()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "InstantEdit", "handoff"));
+        if (!Directory.Exists(root))
+            return;
+        var cutoff = DateTime.UtcNow - TimeSpan.FromHours(24);
+        foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly))
+        {
+            var name = Path.GetFileName(directory);
+            if (name.Length != 32 || !Guid.TryParseExact(name, "N", out _))
+                continue;
+            try
+            {
+                if (Directory.GetLastWriteTimeUtc(directory) < cutoff)
+                    TryDeleteOwnedHandoff(directory);
+            }
+            catch
+            {
+                // A locked or concurrently consumed handoff is retried later.
+            }
+        }
+    }
+
+    private static void TryDeleteOwnedHandoff(string directory)
+    {
+        try
+        {
+            var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "InstantEdit", "handoff"))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var full = Path.GetFullPath(directory);
+            var name = Path.GetFileName(full);
+            if (name.Length != 32 || !Guid.TryParseExact(name, "N", out _) ||
+                !full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                (File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0)
+                return;
+            Directory.Delete(full, true);
+        }
+        catch
+        {
+            // Cleanup is best-effort and never changes the import result.
         }
     }
 
@@ -933,9 +1071,10 @@ public sealed class MainWindow : IDisposable
             .ToArray();
     }
 
-    private async Task<bool> CheckBlenderAsync(int port)
+    private async Task<bool> CheckBlenderAsync(int port, CancellationToken cancellationToken = default)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(1));
         return await _blender.IsReachableAsync(port, timeout.Token).ConfigureAwait(false);
     }
 

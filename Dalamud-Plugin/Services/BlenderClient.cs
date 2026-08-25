@@ -11,6 +11,7 @@ public sealed class BlenderClient : IDisposable
 {
     public const string ImportOptionsCapability = "instant-edit.import-options.v1";
     public const string MaterialPreviewCapability = "instant-edit.material-preview.v1";
+    public const string CacheHandoffCapability = "instant-edit.cache-handoff.v1";
 
     private readonly HttpClient _http;
     private readonly IPluginLog _log;
@@ -33,7 +34,10 @@ public sealed class BlenderClient : IDisposable
         _actorIdentityProvider = actorIdentityProvider;
         _http        = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(5),
+            // Import handoff can include a bounded material-preview bundle. The
+            // caller supplies short cancellation tokens for status probes, while
+            // an actual local handoff is allowed enough time to copy large files.
+            Timeout = TimeSpan.FromMinutes(2),
         };
     }
 
@@ -80,6 +84,9 @@ public sealed class BlenderClient : IDisposable
     /// <summary>Returns whether the connected add-on can consume material preview bundles.</summary>
     public async Task<bool> SupportsMaterialPreviewAsync(int port, CancellationToken cancellationToken = default)
         => await SupportsCapabilityAsync(port, MaterialPreviewCapability, cancellationToken).ConfigureAwait(false);
+
+    public async Task<bool> SupportsCacheHandoffAsync(int port, CancellationToken cancellationToken = default)
+        => await SupportsCapabilityAsync(port, CacheHandoffCapability, cancellationToken).ConfigureAwait(false);
 
     private async Task<bool> SupportsCapabilityAsync(
         int port,
@@ -224,7 +231,7 @@ public sealed class BlenderClient : IDisposable
     /// the original Penumbra mod. The physical path is retained in the shared
     /// registry, so Blender can display it but cannot substitute another target.
     /// </summary>
-    public async Task SendSourceImportAsync(
+    public async Task<bool> SendSourceImportAsync(
         int port,
         string importFilePath,
         string gamePath,
@@ -293,6 +300,11 @@ public sealed class BlenderClient : IDisposable
                 content,
                 cancellationToken).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
+            var responseBody = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var response = JsonDocument.Parse(responseBody);
+            return response.RootElement.ValueKind == JsonValueKind.Object &&
+                   response.RootElement.TryGetProperty("cached", out var cached) &&
+                   cached.ValueKind == JsonValueKind.True;
         }
         catch
         {
