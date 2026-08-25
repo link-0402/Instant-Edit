@@ -1,10 +1,8 @@
 # Instant Edit
 
-Instant Edit lets you edit visible FINAL FANTASY XIV models in Blender and
-send the finished model back to its original Penumbra mod.
-
-It supports model editing plus an optional, display-only material preview. Texture
-and material editing or export are not supported.
+Instant Edit lets you instantly send Final Fantasy XIV Penumbra models back and forth between
+the game and Blender with just a single click. Models can be selected either from on-screen
+resources belonging to your character or through a a simplified resource browser for your Penumbra mods.
 
 ## Requirements
 
@@ -68,29 +66,24 @@ inactive owned jobs on demand.
 Saved Instant Edit scenes reconnect their export context automatically when the
 add-on and Dalamud plugin are running.
 
-The Blender add-on also includes **Simple Import/Export** tabs for importing MDL
-or FBX files and exporting visible mesh objects as MDL, FBX, or glTF files, even
-if they haven't been imported through the IE plugin before.
+The Blender add-on also includes **Simple Import/Export** tabs for importing and exporting
+MDL and FBX files through a traditional file selection without the game plugin.
 In this case you may be required to configure the material names for mesh groups manually via the addon UI.
 
-You may also save a model imported through IE as a variant, giving it a new file name. The addon will then
-automatically setup the required Penumbra paths for this new model if the option is enabled.
+You may also save a model imported through IE as a variant by giving it a new file name. The addon will then
+automatically setup the required Penumbra paths for this new model if the option is enabled, letting you switch back and forth
+between the original and this new version right away.
 
-### Material preview limits
+### Material preview
 
-The optional preview uses the effective MTRL and TEX files resolved for the
+The optional texture import uses the effective MTRL and TEX files resolved for the
 selected model and packs the generated images into the Blender file. It is a
 practical Principled BSDF approximation, not an exact reproduction of FFXIV's
 shader pipeline. Character gear without a diffuse map is composed from its
-colorset, index, normal, and mask textures. Actor-specific skin, hair, eye, and
-dye customization is not baked into the preview. Missing or unsupported
+colorset, index, normal, and mask textures. Missing or unsupported
 resources keep the existing colored placeholder and produce a warning without
-blocking model import.
-
-Preview materials never change Quick Export: the add-on continues to export
-only MDL geometry using the mesh object's original `xiv_material` metadata.
-Standalone Simple Import is unchanged. Material/texture nodes are not editable
-game resources and are not exported back to FFXIV.
+blocking model import. Note that the texture import is for preview purposes only.
+Making changes to them in Blender will not affect the exported model.
 
 ## Notes
 
