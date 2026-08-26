@@ -91,7 +91,6 @@ public sealed class Plugin : IDalamudPlugin
         _windowSystem.AddWindow(_window);
 
         _pi.UiBuilder.Draw += _windowSystem.Draw;
-        _pi.UiBuilder.Draw += _window.DrawWindowOptionsExtension;
         _pi.UiBuilder.Draw += _settingsWindow.Draw;
         _pi.UiBuilder.OpenMainUi += _window.Open;
         _pi.UiBuilder.OpenConfigUi += _settingsWindow.Open;
@@ -135,7 +134,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         _commands.RemoveHandler("/ie");
         _pi.UiBuilder.Draw -= _windowSystem.Draw;
-        _pi.UiBuilder.Draw -= _window.DrawWindowOptionsExtension;
         _pi.UiBuilder.Draw -= _settingsWindow.Draw;
         _pi.UiBuilder.OpenMainUi -= _window.Open;
         _pi.UiBuilder.OpenConfigUi -= _settingsWindow.Open;

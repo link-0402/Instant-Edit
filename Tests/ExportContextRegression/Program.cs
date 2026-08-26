@@ -70,7 +70,7 @@ try
         out var pending, out var pendingCode) && pending is { IsCompleted: false } && pendingCode == "export_pending",
         "status lookup reports an in-flight export without repeating it");
 
-    var receipt = new ExportReceipt(true, "export_applied_with_warnings", "written", ["redraw skipped"], originalTarget);
+    var receipt = new ExportReceipt(true, "export_applied_with_warnings", "written", ["Player-owned redraw warning"], originalTarget);
     registry.CompleteExport(saved.ContextId, "same-export", receipt);
     Require(registry.TryGetExportStatus(
         "current-plugin", saved.ContextId, "same-export", capability,

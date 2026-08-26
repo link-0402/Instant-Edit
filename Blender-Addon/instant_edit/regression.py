@@ -131,6 +131,7 @@ def run_staging_isolation_regression() -> None:
         addon, package_name = _load_addon(addon_root)
         _register_for_test(addon, package_name)
         ops = importlib.import_module(f"{package_name}.instant_edit.ops")
+        props = importlib.import_module(f"{package_name}.instant_edit.props")
         server = importlib.import_module(f"{package_name}.instant_edit.server")
         material_preview = importlib.import_module(
             f"{package_name}.instant_edit.material_preview"
@@ -552,16 +553,6 @@ def run_staging_isolation_regression() -> None:
             bpy.ops.xiv_ie.copy_status() == {"FINISHED"},
             "the complete import-status clipboard action executes",
         )
-        _require(
-            instant_props.redraw_mode == "SELF",
-            "Self redraw is the default redraw mode",
-        )
-        for redraw_mode in ("SELF", "ALL", "GLAM"):
-            instant_props.redraw_mode = redraw_mode
-            _require(
-                instant_props.redraw_mode == redraw_mode,
-                f"{redraw_mode} redraw mode can be selected",
-            )
         redraw_payload = ops.build_export_payload(
             SimpleNamespace(
                 plugin_instance_id="plugin-instance",
@@ -576,8 +567,8 @@ def run_staging_isolation_regression() -> None:
             None,
         )
         _require(
-            redraw_payload["redrawMode"] == "GLAM",
-            "selected redraw mode is included in the secure export envelope",
+            "redrawMode" not in redraw_payload,
+            "export envelope leaves redraw targeting to the Dalamud plugin",
         )
 
         class ReceiptResponse:
@@ -610,7 +601,7 @@ def run_staging_isolation_regression() -> None:
                     "ok": True,
                     "code": "export_applied_with_warnings",
                     "message": "written",
-                    "warnings": ["Self redraw was skipped"],
+                    "warnings": ["Player-owned redraw warning"],
                     "targetFilePath": r"D:\MovedMod\Files\models\original.mdl",
                 })
             raise AssertionError(f"unexpected request: {request.full_url}")
@@ -629,7 +620,7 @@ def run_staging_isolation_regression() -> None:
         finally:
             ops.urllib.request.urlopen = original_urlopen
         _require(
-            receipt["warnings"] == ["Self redraw was skipped"] and
+            receipt["warnings"] == ["Player-owned redraw warning"] and
             receipt["targetFilePath"].endswith("original.mdl"),
             "warning receipts preserve the committed target and follow-up warnings",
         )
@@ -674,6 +665,57 @@ def run_staging_isolation_regression() -> None:
         else:
             raise AssertionError("variant name accepted a path traversal")
         print("[PASS] variant names cannot select another directory")
+
+        instant_props.variant_targets.clear()
+        variant_group = instant_props.variant_targets.add()
+        variant_group.selection_id = "group:11111111-1111-1111-1111-111111111111"
+        variant_group.kind = "GROUP"
+        variant_group.group_name = "Group A"
+        variant_group.expanded = True
+        variant_option = instant_props.variant_targets.add()
+        variant_option.selection_id = "option:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222"
+        variant_option.kind = "OPTION"
+        variant_option.group_name = "Group A"
+        variant_option.option_name = "Option a"
+        variant_option.model_path = "Files/chara/equipment/e0001/model/alternate.mdl"
+        instant_props.save_as_variant = True
+        instant_props.auto_setup_penumbra = True
+        instant_props.variant_target = variant_group.selection_id
+        _require(
+            ops.selected_variant_target(instant_props).group_name == "Group A",
+            "a compatible Penumbra group can be selected from the cached tree",
+        )
+        _require(
+            bpy.ops.xiv_ie.toggle_variant_target_group(selection_id=variant_group.selection_id) == {"FINISHED"} and
+            not variant_group.expanded,
+            "Penumbra target groups can be collapsed independently",
+        )
+        variant_group.expanded = True
+        group_payload = ops.build_export_payload(
+            SimpleNamespace(plugin_instance_id="plugin-instance", context_id="context-id", capability="capability"),
+            "export-id", Path(tempfile.gettempdir()) / "variant-tree-test.mdl", 1, "0" * 64,
+            instant_props, "new-option", "Group A", variant_group,
+        )
+        _require(
+            group_payload["variantTarget"] == "group" and group_payload["variantTargetId"] == variant_group.selection_id,
+            "group selection is sent as an authenticated Penumbra export target",
+        )
+        instant_props.variant_target = variant_option.selection_id
+        option_payload = ops.build_export_payload(
+            SimpleNamespace(plugin_instance_id="plugin-instance", context_id="context-id", capability="capability"),
+            "export-id", Path(tempfile.gettempdir()) / "variant-tree-test.mdl", 1, "0" * 64,
+            instant_props, None, None, variant_option,
+        )
+        _require(
+            option_payload["variantTarget"] == "option" and "variantName" not in option_payload,
+            "option selection overwrites its mapped model without creating a sibling name",
+        )
+        props._export_destination_changed(instant_props, None)
+        _require(
+            instant_props.variant_target == "NEW_GROUP" and not instant_props.variant_targets and
+            not instant_props.variant_targets_context_id,
+            "changing Export Destination clears the previous context's Penumbra target tree",
+        )
 
         class FakeModel:
             bones = ("root",)

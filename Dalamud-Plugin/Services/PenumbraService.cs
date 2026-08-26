@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using InstantEdit.Models;
@@ -25,6 +27,10 @@ public sealed record ExportResult(
 
     public IReadOnlyList<string> WarningList => Warnings ?? Array.Empty<string>();
 }
+
+public sealed record VariantOptionTarget(string Id, string Name, string ModelPath);
+public sealed record VariantGroupTarget(string Id, string Name, IReadOnlyList<VariantOptionTarget> Options);
+public sealed record VariantTargetsResult(bool Success, string Code, string Message, IReadOnlyList<VariantGroupTarget> Groups);
 
 /// <summary>
 /// Wraps all Penumbra IPC used by Instant Edit:
@@ -53,7 +59,6 @@ public sealed class PenumbraService
     private readonly TrySetMod                   _trySetMod;
     private readonly TrySetModPriority            _trySetModPriority;
     private readonly RedrawObject               _redrawObject;
-    private readonly RedrawAll                  _redrawAll;
     private readonly IFramework                  _framework;
     private readonly IPluginLog                 _log;
     private readonly IObjectTable?              _objects;
@@ -80,7 +85,6 @@ public sealed class PenumbraService
         _trySetMod       = new TrySetMod(pi);
         _trySetModPriority = new TrySetModPriority(pi);
         _redrawObject    = new RedrawObject(pi);
-        _redrawAll       = new RedrawAll(pi);
     }
 
     /// <summary> Whether Penumbra is loaded and the resource tree IPC is available. </summary>
@@ -215,7 +219,7 @@ public sealed class PenumbraService
         string gamePath,
         string exportedFile,
         int objectIndex)
-        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, null);
+        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, gamePath);
 
     public Task<ExportResult> ApplyExportAsync(
         string modName,
@@ -223,19 +227,18 @@ public sealed class PenumbraService
         string exportedFile,
         int objectIndex,
         ActorIdentity? actorIdentity)
-        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, actorIdentity, gamePath);
+        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, gamePath);
 
     /// <summary>
-    /// Writes to <paramref name="gamePath"/> after revalidating the actor against
-    /// <paramref name="sourceGamePath"/>. This permits a server-derived sibling
-    /// variant without allowing the client to choose an arbitrary validation path.
+    /// Writes to <paramref name="gamePath"/> after revalidating the resolved source
+    /// path against <paramref name="sourceGamePath"/>. This permits a server-derived
+    /// sibling variant without allowing the client to choose an arbitrary validation path.
     /// </summary>
     public async Task<ExportResult> ApplyExportAsync(
         string modName,
         string gamePath,
         string exportedFile,
         int objectIndex,
-        ActorIdentity? actorIdentity,
         string sourceGamePath,
         string? penumbraVariantName = null,
         string? penumbraVariantGroupName = null)
@@ -260,7 +263,7 @@ public sealed class PenumbraService
             // Even read-only Penumbra IPC is kept on the framework thread. This
             // also makes a disconnected/reloading Penumbra a normal failed result.
             var targetError = await _framework.RunOnFrameworkThread(
-                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity)).ConfigureAwait(false);
+                () => ValidateTargetPathOnFramework(sourceGamePath, objectIndex)).ConfigureAwait(false);
             if (targetError is not null)
                 return new ExportResult(false, targetError);
 
@@ -336,16 +339,13 @@ public sealed class PenumbraService
         string? targetRelativePath,
         string sourceGamePath,
         string exportedFile,
-        int objectIndex,
-        ActorIdentity? actorIdentity,
         string? variantName,
         string? variantGroupName,
+        string? variantTarget,
+        string? variantTargetId,
         bool setupVariantInPenumbra,
-        ExportRedrawMode redrawMode = ExportRedrawMode.Self,
         bool backupExisting = false)
     {
-        if (objectIndex is < 0 or > ushort.MaxValue)
-            return new ExportResult(false, "invalid_request", "Invalid object index.");
         if (!IsSafeModName(sourceModDirectory) || !IsSafeGamePath(sourceGamePath) ||
             !IsSafeLocalModelPath(sourceFilePath))
             return new ExportResult(false, "destination_unsafe", "The original Penumbra model destination is invalid.");
@@ -359,9 +359,10 @@ public sealed class PenumbraService
                 Path.GetFileNameWithoutExtension(sourceGamePath),
                 StringComparison.OrdinalIgnoreCase))
             return new ExportResult(false, "invalid_variant_name", "Variant name must differ from the originally imported model name.");
-        if (setupVariantInPenumbra && variantName is null)
+        if (setupVariantInPenumbra && variantName is null && !string.Equals(variantTarget, "option", StringComparison.Ordinal))
             return new ExportResult(false, "invalid_variant", "Penumbra variant setup requires Save as Variant.");
-        if (setupVariantInPenumbra && !IsSafeVariantGroupName(variantGroupName))
+        if (setupVariantInPenumbra && !string.Equals(variantTarget, "option", StringComparison.Ordinal) &&
+            !IsSafeVariantGroupName(variantGroupName))
             return new ExportResult(false, "invalid_variant_group", "Penumbra variant setup requires an option group name.");
 
         await _exportGate.WaitAsync().ConfigureAwait(false);
@@ -383,6 +384,20 @@ public sealed class PenumbraService
             var targetFile = variantName is null
                 ? resolved.Target.FilePath
                 : Path.Combine(Path.GetDirectoryName(resolved.Target.FilePath)!, variantName + ".mdl");
+            if (setupVariantInPenumbra && string.Equals(variantTarget, "option", StringComparison.Ordinal))
+            {
+                var optionTarget = ResolveVariantOptionTarget(
+                    resolved.Target.Folder, sourceGamePath, variantTargetId);
+                if (optionTarget.Error is not null)
+                    return new ExportResult(false, optionTarget.Code, optionTarget.Error);
+                targetFile = optionTarget.FilePath!;
+            }
+            if (setupVariantInPenumbra && string.Equals(variantTarget, "group", StringComparison.Ordinal))
+            {
+                var groupError = ValidateVariantGroupTarget(resolved.Target.Folder, sourceGamePath, variantTargetId);
+                if (groupError is not null)
+                    return new ExportResult(false, "stale_variant_target", groupError);
+            }
             var writeError = WriteModelToOriginalLocation(
                 resolved.Target.Folder,
                 targetFile,
@@ -394,7 +409,7 @@ public sealed class PenumbraService
 
             var warnings = new List<string>();
 
-            if (setupVariantInPenumbra)
+            if (setupVariantInPenumbra && !string.Equals(variantTarget, "option", StringComparison.Ordinal))
             {
                 var relativeVariantPath = Path.GetRelativePath(resolved.Target.Folder, targetFile).Replace('\\', '/');
                 var groupError = WriteVariantGroup(
@@ -414,7 +429,7 @@ public sealed class PenumbraService
             else
             {
                 var redrawWarning = await _framework.RunOnFrameworkThread(
-                    () => RedrawAfterCommitOnFramework(redrawMode, objectIndex, actorIdentity)).ConfigureAwait(false);
+                    RedrawPlayerOwnedEntitiesOnFramework).ConfigureAwait(false);
                 if (redrawWarning is not null)
                     warnings.Add(redrawWarning);
             }
@@ -436,6 +451,40 @@ public sealed class PenumbraService
                     [$"Follow-up processing failed: {e.Message}"],
                     committedTarget);
             return new ExportResult(false, "write_failed", $"Failed before the model write could be committed: {e.Message}");
+        }
+        finally
+        {
+            _exportGate.Release();
+        }
+    }
+
+    /// <summary>Read Single groups whose options replace this context's model path.</summary>
+    public async Task<VariantTargetsResult> GetVariantTargetsAsync(
+        string sourceModDirectory,
+        string sourceFilePath,
+        string? sourceModRootPath,
+        string? targetRelativePath,
+        string sourceGamePath)
+    {
+        if (!IsSafeModName(sourceModDirectory) || !IsSafeLocalModelPath(sourceFilePath) || !IsSafeGamePath(sourceGamePath))
+            return new VariantTargetsResult(false, "destination_unsafe", "The original Penumbra model destination is invalid.", []);
+
+        await _exportGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var resolved = await _framework.RunOnFrameworkThread(
+                () => ResolveSourceModTargetOnFramework(
+                    sourceModDirectory, sourceFilePath, sourceModRootPath, targetRelativePath)).ConfigureAwait(false);
+            if (resolved.Target is null)
+                return new VariantTargetsResult(false, resolved.Code,
+                    resolved.Error ?? "The original Penumbra mod is no longer available.", []);
+            return new VariantTargetsResult(true, "variant_targets_loaded", "Compatible Penumbra targets loaded.",
+                ReadVariantTargets(resolved.Target.Folder, sourceGamePath));
+        }
+        catch (Exception e)
+        {
+            _log.Error(e, "Failed to read Penumbra variant targets.");
+            return new VariantTargetsResult(false, "variant_targets_unavailable", "Could not read Penumbra option groups.", []);
         }
         finally
         {
@@ -681,38 +730,59 @@ public sealed class PenumbraService
         return IsSafeRelativeModelPath(normalized) ? normalized : null;
     }
 
-    private string? RedrawAfterCommitOnFramework(
-        ExportRedrawMode redrawMode,
-        int objectIndex,
-        ActorIdentity? expectedActor)
+    /// <summary>Redraw the local player and the currently spawned entities they own.</summary>
+    private string? RedrawPlayerOwnedEntitiesOnFramework()
     {
+        if (_objects is null || _objects.LocalPlayer is not { Address: not 0 } localPlayer)
+            return "The local player could not be found; player-owned redraw was skipped.";
+
+        var targets = new HashSet<ushort> { localPlayer.ObjectIndex };
+        var warnings = new List<string>();
         try
         {
-            switch (redrawMode)
+            if (localPlayer.GameObjectId <= uint.MaxValue)
             {
-                case ExportRedrawMode.All:
-                    _redrawAll.Invoke();
-                    return null;
-                case ExportRedrawMode.Glamourer:
-                    return null;
-                default:
-                    if (_objects is null || expectedActor is null)
-                        return "The source actor could not be verified after reconnect; self redraw was skipped.";
-                    if (expectedActor.ObjectIndex != objectIndex)
-                        return "The source actor changed; self redraw was skipped.";
-                    var current = _objects[(ushort)objectIndex];
-                    if (current is null || current.Address == nint.Zero ||
-                        current.Address.ToInt64() != expectedActor.Address)
-                        return "The source actor changed; self redraw was skipped.";
-                    _redrawObject.Invoke(objectIndex);
-                    return null;
+                var localOwnerId = (uint)localPlayer.GameObjectId;
+                foreach (var candidate in _objects)
+                {
+                    if (candidate is null || candidate.Address == nint.Zero ||
+                        candidate.ObjectIndex == localPlayer.ObjectIndex ||
+                        candidate.OwnerId != localOwnerId)
+                        continue;
+
+                    if (candidate.ObjectKind is ObjectKind.Companion or ObjectKind.Mount ||
+                        candidate is IBattleNpc { BattleNpcKind: BattleNpcSubKind.Pet })
+                        targets.Add(candidate.ObjectIndex);
+                }
+            }
+            else
+            {
+                warnings.Add("The local player owner ID could not be represented; only the player was redrawn.");
             }
         }
         catch (Exception e)
         {
-            _log.Error(e, "Penumbra redraw failed after committing the model file.");
-            return $"Penumbra redraw failed: {e.Message}";
+            _log.Error(e, "Could not enumerate player-owned entities for redraw.");
+            warnings.Add("Could not enumerate all player-owned entities; continuing with the targets found.");
         }
+
+        var failed = 0;
+        foreach (var objectIndex in targets)
+        {
+            try
+            {
+                _redrawObject.Invoke(objectIndex);
+            }
+            catch (Exception e)
+            {
+                failed++;
+                _log.Error(e, "Penumbra redraw failed for player-owned object {ObjectIndex}.", objectIndex);
+            }
+        }
+
+        if (failed > 0)
+            warnings.Add($"Penumbra redraw failed for {failed} player-owned object(s).");
+        return warnings.Count == 0 ? null : string.Join(" ", warnings);
     }
 
     private static string? WriteModelToOriginalLocation(
@@ -914,13 +984,9 @@ public sealed class PenumbraService
         string? sourceModRootPath,
         string? targetRelativePath,
         string sourceGamePath,
-        string backupName,
-        int objectIndex,
-        ActorIdentity? actorIdentity,
-        ExportRedrawMode redrawMode = ExportRedrawMode.Self)
+        string backupName)
     {
-        if (objectIndex is < 0 or > ushort.MaxValue ||
-            !IsSafeModName(sourceModDirectory) || !IsSafeGamePath(sourceGamePath) ||
+        if (!IsSafeModName(sourceModDirectory) || !IsSafeGamePath(sourceGamePath) ||
             !IsSafeLocalModelPath(sourceFilePath) || !TryGetBackupOriginal(backupName, out var originalName))
             return new ExportResult(false, "invalid_restore", "The backup restore request is invalid.");
 
@@ -969,7 +1035,7 @@ public sealed class PenumbraService
             else
             {
                 var redrawWarning = await _framework.RunOnFrameworkThread(
-                    () => RedrawAfterCommitOnFramework(redrawMode, objectIndex, actorIdentity)).ConfigureAwait(false);
+                    RedrawPlayerOwnedEntitiesOnFramework).ConfigureAwait(false);
                 if (redrawWarning is not null)
                     warnings.Add(redrawWarning);
             }
@@ -1208,8 +1274,14 @@ public sealed class PenumbraService
 
         try
         {
-            _redrawObject.Invoke(objectIndex);
-            return new ExportResult(true, $"Applied {modName} to {collection.EffectiveCollection.Name} ({objectIndex}).");
+            var redrawWarning = RedrawPlayerOwnedEntitiesOnFramework();
+            return redrawWarning is null
+                ? new ExportResult(true, $"Applied {modName} to {collection.EffectiveCollection.Name} ({objectIndex}).")
+                : new ExportResult(
+                    true,
+                    "export_applied_with_warnings",
+                    $"Applied {modName} to {collection.EffectiveCollection.Name} ({objectIndex}).",
+                    [redrawWarning]);
         }
         catch (Exception e)
         {
@@ -1234,24 +1306,16 @@ public sealed class PenumbraService
     }
 
 
-    private string? ValidateTargetOnFramework(
+    private string? ValidateTargetPathOnFramework(
         string gamePath,
         int objectIndex,
-        ActorIdentity? expectedActor,
         string? expectedResolvedPath = null)
     {
-        if (_objects is null || expectedActor is null)
+        if (_objects is null)
             return null;
 
         try
         {
-            if (expectedActor.ObjectIndex != objectIndex)
-                return "target_actor_changed";
-
-            var current = _objects[(ushort)objectIndex];
-            if (current is null || current.Address == nint.Zero || current.Address.ToInt64() != expectedActor.Address)
-                return "target_actor_changed";
-
             var paths = _getPaths.Invoke((ushort)objectIndex);
             if (paths is null || paths.Length == 0 ||
                 !paths.Any(dictionary => dictionary is not null && dictionary.Any(resource =>
@@ -1411,6 +1475,185 @@ public sealed class PenumbraService
             defaultMod["Manipulations"] = new JsonArray();
         WriteJsonAtomic(defaultPath, defaultMod);
         return null;
+    }
+
+    private sealed record VariantOptionResolution(string? FilePath, string Code, string? Error);
+
+    private static IReadOnlyList<VariantGroupTarget> ReadVariantTargets(string modFolder, string sourceGamePath)
+    {
+        var groups = new List<(JsonObject Group, string? LegacyFileName)>();
+        var meta = LoadJsonObjectStrict(Path.Combine(modFolder, "meta.json"));
+        var fileVersion = meta["FileVersion"] is JsonValue versionValue && versionValue.TryGetValue<int>(out var version)
+            ? version : 3;
+        if (fileVersion >= 4)
+            groups.AddRange((meta["Groups"] as JsonArray ?? []).OfType<JsonObject>().Select(group => (group, (string?)null)));
+        else
+            groups.AddRange(Directory.EnumerateFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .Select(path => (Group: LoadJsonObjectStrict(path), LegacyFileName: (string?)Path.GetFileName(path))));
+
+        var result = new List<VariantGroupTarget>();
+        foreach (var (group, legacyFileName) in groups)
+        {
+            if (!string.Equals(JsonString(group["Type"]), "Single", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(JsonString(group["Name"])) ||
+                group["Options"] is not JsonArray options)
+                continue;
+            var groupId = ReadGuid(group["Id"]);
+            if (groupId is null && legacyFileName is null)
+                continue;
+            var targets = new List<VariantOptionTarget>();
+            for (var optionIndex = 0; optionIndex < options.Count; ++optionIndex)
+            {
+                if (options[optionIndex] is not JsonObject option || option["Files"] is not JsonObject files)
+                    continue;
+                var mapping = files.FirstOrDefault(pair => SameGamePath(pair.Key, sourceGamePath));
+                if (!TryNormalizeRelativeModPath(JsonString(mapping.Value), out var modelPath))
+                    continue;
+                var optionId = ReadGuid(option["Id"]);
+                var selector = groupId is Guid groupGuid && optionId is Guid optionGuid
+                    ? $"option:{groupGuid:D}:{optionGuid:D}"
+                    : $"legacy-option:{legacyFileName}:{optionIndex}";
+                targets.Add(new VariantOptionTarget(selector,
+                    JsonString(option["Name"]) ?? "Unnamed Option", modelPath));
+            }
+            if (targets.Count > 0)
+            {
+                var selector = groupId is Guid groupGuid
+                    ? $"group:{groupGuid:D}"
+                    : $"legacy-group:{legacyFileName}";
+                result.Add(new VariantGroupTarget(selector, JsonString(group["Name"])!, targets));
+            }
+        }
+        return result;
+    }
+
+    private static VariantOptionResolution ResolveVariantOptionTarget(
+        string modFolder, string sourceGamePath, string? targetId)
+    {
+        try
+        {
+            JsonObject? group;
+            JsonObject? option;
+            if (TryParseOptionTargetId(targetId, out var groupId, out var optionId))
+            {
+                group = ReadAllVariantGroups(modFolder).FirstOrDefault(candidate => ReadGuid(candidate["Id"]) == groupId);
+                option = group?["Options"] is JsonArray options
+                    ? options.OfType<JsonObject>().FirstOrDefault(candidate => ReadGuid(candidate["Id"]) == optionId)
+                    : null;
+            }
+            else if (TryParseLegacyOptionTargetId(targetId, out var fileName, out var optionIndex) &&
+                     TryLoadLegacyGroup(modFolder, fileName, out group) &&
+                     group["Options"] is JsonArray options && optionIndex < options.Count)
+            {
+                option = options[optionIndex] as JsonObject;
+            }
+            else
+            {
+                return new VariantOptionResolution(null, "invalid_variant_target", "The selected Penumbra option is invalid.");
+            }
+            if (option?["Files"] is not JsonObject files)
+                return new VariantOptionResolution(null, "stale_variant_target", "The selected Penumbra option no longer exists.");
+            var mapping = files.FirstOrDefault(pair => SameGamePath(pair.Key, sourceGamePath));
+            if (!TryNormalizeRelativeModPath(JsonString(mapping.Value), out var relative))
+                return new VariantOptionResolution(null, "stale_variant_target", "The selected option no longer replaces this model.");
+            var path = Path.GetFullPath(Path.Combine(modFolder, relative.Replace('/', Path.DirectorySeparatorChar)));
+            if (!IsPathWithin(path, modFolder))
+                return new VariantOptionResolution(null, "destination_unsafe", "The selected option has an unsafe model path.");
+            return new VariantOptionResolution(path, "accepted", null);
+        }
+        catch (Exception e)
+        {
+            return new VariantOptionResolution(null, "variant_target_unavailable", $"Could not read the selected Penumbra option: {e.Message}");
+        }
+    }
+
+    private static string? ValidateVariantGroupTarget(string modFolder, string sourceGamePath, string? targetId)
+    {
+        JsonObject? group;
+        if (TryParseGroupTargetId(targetId, out var groupId))
+            group = ReadAllVariantGroups(modFolder).FirstOrDefault(candidate => ReadGuid(candidate["Id"]) == groupId);
+        else if (TryParseLegacyGroupTargetId(targetId, out var fileName) && TryLoadLegacyGroup(modFolder, fileName, out group))
+        {
+            // Resolved from the legacy file selected by the Blender tree.
+        }
+        else
+            return "The selected Penumbra group is invalid.";
+        if (group is null || !string.Equals(JsonString(group["Type"]), "Single", StringComparison.OrdinalIgnoreCase) ||
+            !GroupHasGamePath(group, sourceGamePath))
+            return "The selected Penumbra group no longer contains a replacement for this model.";
+        return null;
+    }
+
+    private static IReadOnlyList<JsonObject> ReadAllVariantGroups(string modFolder)
+    {
+        var meta = LoadJsonObjectStrict(Path.Combine(modFolder, "meta.json"));
+        var version = meta["FileVersion"] is JsonValue value && value.TryGetValue<int>(out var parsed) ? parsed : 3;
+        return version >= 4
+            ? (meta["Groups"] as JsonArray ?? []).OfType<JsonObject>().ToArray()
+            : Directory.EnumerateFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly)
+                .Select(LoadJsonObjectStrict).ToArray();
+    }
+
+    private static bool TryParseOptionTargetId(string? value, out Guid groupId, out Guid optionId)
+    {
+        groupId = Guid.Empty;
+        optionId = Guid.Empty;
+        var parts = value?.Split(':');
+        return parts is ["option", var group, var option] &&
+               Guid.TryParse(group, out groupId) && Guid.TryParse(option, out optionId);
+    }
+
+    private static bool TryParseGroupTargetId(string? value, out Guid groupId)
+    {
+        groupId = Guid.Empty;
+        var parts = value?.Split(':');
+        return parts is ["group", var group] && Guid.TryParse(group, out groupId);
+    }
+
+    private static bool TryParseLegacyGroupTargetId(string? value, out string fileName)
+    {
+        fileName = "";
+        var parts = value?.Split(':');
+        return parts is ["legacy-group", var file] && IsSafeLegacyGroupFileName(file, out fileName);
+    }
+
+    private static bool TryParseLegacyOptionTargetId(string? value, out string fileName, out int optionIndex)
+    {
+        fileName = "";
+        optionIndex = -1;
+        var parts = value?.Split(':');
+        return parts is ["legacy-option", var file, var index] &&
+               IsSafeLegacyGroupFileName(file, out fileName) && int.TryParse(index, out optionIndex) && optionIndex >= 0;
+    }
+
+    private static bool TryLoadLegacyGroup(string modFolder, string fileName, out JsonObject group)
+    {
+        group = null!;
+        if (!IsSafeLegacyGroupFileName(fileName, out var safeFileName))
+            return false;
+        var path = Path.Combine(modFolder, safeFileName);
+        if (!File.Exists(path))
+            return false;
+        group = LoadJsonObjectStrict(path);
+        return true;
+    }
+
+    private static bool IsSafeLegacyGroupFileName(string? value, out string fileName)
+    {
+        fileName = "";
+        if (string.IsNullOrWhiteSpace(value) || !string.Equals(Path.GetFileName(value), value, StringComparison.Ordinal) ||
+            !value.StartsWith("group_", StringComparison.OrdinalIgnoreCase) ||
+            !value.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            return false;
+        fileName = value;
+        return true;
+    }
+
+    private static bool TryNormalizeRelativeModPath(string? value, out string path)
+    {
+        path = (value ?? "").Replace('\\', '/');
+        return IsSafeRelativeModPath(path);
     }
 
     /// <summary>
@@ -1590,10 +1833,9 @@ public sealed class PenumbraService
         }
         else
         {
-            variantOption["Files"] = new JsonObject
-            {
-                [sourceGamePath] = relativeVariantPath,
-            };
+            var files = variantOption["Files"]?.DeepClone() as JsonObject ?? new JsonObject();
+            files[sourceGamePath] = relativeVariantPath;
+            variantOption["Files"] = files;
         }
         var selectedIndex = options.IndexOf(variantOption);
         if (selectedIndex < 0)
@@ -1614,9 +1856,9 @@ public sealed class PenumbraService
 
     private static bool IsReusableVariantGroup(JsonObject group, string sourceGamePath)
         => string.Equals(JsonString(group["Type"]), "Single", StringComparison.OrdinalIgnoreCase) &&
-           GroupTargetsGamePath(group, sourceGamePath);
+           GroupHasGamePath(group, sourceGamePath);
 
-    private static bool GroupTargetsGamePath(JsonObject group, string sourceGamePath)
+    private static bool GroupHasGamePath(JsonObject group, string sourceGamePath)
     {
         if (group["Options"] is not JsonArray options)
             return false;
@@ -1626,14 +1868,11 @@ public sealed class PenumbraService
             if (option["Files"] is not JsonObject files)
                 continue;
 
-            foreach (var file in files)
-            {
-                if (!SameGamePath(file.Key, sourceGamePath))
-                    return false;
-            }
+            if (files.Any(file => SameGamePath(file.Key, sourceGamePath)))
+                return true;
         }
 
-        return true;
+        return false;
     }
 
     private static bool SameGamePath(string left, string right)

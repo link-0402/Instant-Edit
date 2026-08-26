@@ -2,7 +2,7 @@
 import bpy
 
 from bpy.types import PropertyGroup
-from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty
+from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty, CollectionProperty
 
 
 _EXPORT_DESTINATION_ITEMS = []
@@ -46,10 +46,28 @@ def _export_destination_items(_self, context):
     return _EXPORT_DESTINATION_ITEMS
 
 
+def _export_destination_changed(self, _context) -> None:
+    """Never show targets cached for a different Quick Export context."""
+    self.variant_target = "NEW_GROUP"
+    self.variant_targets.clear()
+    self.variant_targets_context_id = ""
+
+
 def _save_as_variant_changed(self, _context) -> None:
     """A Penumbra option can only be generated for an actual variant."""
     if not self.save_as_variant:
         self.auto_setup_penumbra = False
+
+
+class XIVIEVariantTarget(PropertyGroup):
+    """One selectable Penumbra group or option returned by the plugin."""
+
+    selection_id: StringProperty(default="", maxlen=256)  # type: ignore
+    kind: StringProperty(default="", maxlen=16)  # type: ignore
+    group_name: StringProperty(default="", maxlen=120)  # type: ignore
+    option_name: StringProperty(default="", maxlen=120)  # type: ignore
+    model_path: StringProperty(default="", maxlen=4096)  # type: ignore
+    expanded: BoolProperty(default=True)  # type: ignore
 
 
 class XIVIEInstantEditProps(PropertyGroup):
@@ -64,6 +82,7 @@ class XIVIEInstantEditProps(PropertyGroup):
         name="Export Destination",
         description="Choose which imported model destination Quick Export uses",
         items=_export_destination_items,
+        update=_export_destination_changed,
     )  # type: ignore
 
     export_scope: EnumProperty(
@@ -166,21 +185,15 @@ class XIVIEInstantEditProps(PropertyGroup):
         maxlen=120,
     )  # type: ignore
 
-    redraw_mode: EnumProperty(
-        name="Redraw",
-        description="How characters should update after Quick Export",
-        default="SELF",
-        items=[
-            ("SELF", "SELF", "Redraw the character this model came from"),
-            ("ALL", "ALL", "Redraw all currently available characters"),
-            (
-                "GLAM",
-                "GLAM",
-                "Let Glamourer update the character without a full redraw; not suitable for face models",
-            ),
-        ],
+    variant_target: StringProperty(
+        name="Penumbra Target",
+        description="The Penumbra group or option to receive this variant",
+        default="NEW_GROUP",
+        maxlen=256,
     )  # type: ignore
 
+    variant_targets_context_id: StringProperty(default="", maxlen=256)  # type: ignore
+    variant_targets: CollectionProperty(type=XIVIEVariantTarget)  # type: ignore
 
 def get_instant_edit_props() -> XIVIEInstantEditProps:
     return bpy.context.scene.xiv_ie_instant_edit_props
@@ -196,5 +209,6 @@ def remove_addon_properties() -> None:
 
 
 CLASSES = [
+    XIVIEVariantTarget,
     XIVIEInstantEditProps,
 ]

@@ -53,8 +53,11 @@ public sealed class ExportServer : IDisposable
         [JsonPropertyName("variantGroupName")]
         public string? VariantGroupName { get; set; }
 
-        [JsonPropertyName("redrawMode")]
-        public string? RedrawMode { get; set; }
+        [JsonPropertyName("variantTarget")]
+        public string? VariantTarget { get; set; }
+
+        [JsonPropertyName("variantTargetId")]
+        public string? VariantTargetId { get; set; }
 
         [JsonPropertyName("backupExisting")]
         public bool BackupExisting { get; set; }
@@ -117,6 +120,24 @@ public sealed class ExportServer : IDisposable
         public string? Capability { get; set; }
     }
 
+    private sealed class VariantTargetsRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+
+        [JsonPropertyName("pluginInstanceId")]
+        public string? PluginInstanceId { get; set; }
+
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+    }
+
     private sealed class BackupRestoreRequest
     {
         [JsonPropertyName("schema")]
@@ -137,8 +158,6 @@ public sealed class ExportServer : IDisposable
         [JsonPropertyName("backupName")]
         public string? BackupName { get; set; }
 
-        [JsonPropertyName("redrawMode")]
-        public string? RedrawMode { get; set; }
     }
 
     private sealed record HttpRequest(string Method, string Path, byte[] Body);
@@ -354,6 +373,7 @@ public sealed class ExportServer : IDisposable
                     "instant-edit.context-reattach.v1",
                     "instant-edit.context-revoke.v1",
                     "instant-edit.export-status.v1",
+                    "instant-edit.variant-targets.v1",
                     "instant-edit.backup-restore.v1",
                 },
             }));
@@ -439,6 +459,43 @@ public sealed class ExportServer : IDisposable
             return ResultResponse(await completion.ConfigureAwait(false));
         }
 
+        if (method == "POST" && path.TrimEnd('/') == "/variant-targets")
+        {
+            var parsed = DeserializeRequest<VariantTargetsRequest>(request.Body, "variant targets", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var targetsRequest = parsed!;
+            if (!string.Equals(targetsRequest.Schema, "instant-edit.variant-targets", StringComparison.Ordinal) ||
+                targetsRequest.Version != 1 || string.IsNullOrWhiteSpace(targetsRequest.PluginInstanceId) ||
+                !IsSafeId(targetsRequest.ContextId) || string.IsNullOrWhiteSpace(targetsRequest.Capability))
+                return Error(400, "malformed_request", "unsupported or malformed variant-targets envelope");
+            if (!_contexts.TryAuthorizeOperation(
+                    targetsRequest.PluginInstanceId!, targetsRequest.ContextId!, targetsRequest.Capability!,
+                    out var target, out var registryCode) || target is null)
+                return Error(StatusForCode(registryCode), registryCode, "export context was rejected");
+
+            var result = await _penumbra.GetVariantTargetsAsync(
+                target.SourceModDirectory, target.TargetFilePath, target.SourceModRootPath,
+                target.TargetRelativePath, target.GamePath).ConfigureAwait(false);
+            if (!result.Success)
+                return Error(400, result.Code, result.Message);
+            return (200, Json(new
+            {
+                ok = true,
+                groups = result.Groups.Select(group => new
+                {
+                    id = group.Id,
+                    name = group.Name,
+                    options = group.Options.Select(option => new
+                    {
+                        id = option.Id,
+                        name = option.Name,
+                        modelPath = option.ModelPath,
+                    }),
+                }),
+            }));
+        }
+
         if (method == "POST" && path.TrimEnd('/') == "/backup/restore")
         {
             string body;
@@ -477,10 +534,7 @@ public sealed class ExportServer : IDisposable
                 target.SourceModRootPath,
                 target.TargetRelativePath,
                 target.GamePath,
-                restore.BackupName!,
-                target.ObjectIndex,
-                target.ActorIdentity,
-                ParseRedrawMode(restore.RedrawMode)).ConfigureAwait(false);
+                restore.BackupName!).ConfigureAwait(false);
             return ResultResponse(new ExportReceipt(
                 result.Success,
                 result.Code,
@@ -564,8 +618,9 @@ public sealed class ExportServer : IDisposable
                         staged!.FilePath,
                         export.VariantName,
                         export.VariantGroupName,
+                        export.VariantTarget,
+                        export.VariantTargetId,
                         export.SetupInPenumbra,
-                        ParseRedrawMode(export.RedrawMode),
                         export.BackupExisting).ConfigureAwait(false);
                 }
             }
@@ -591,8 +646,9 @@ public sealed class ExportServer : IDisposable
             string filePath,
             string? variantName,
             string? variantGroupName,
+            string? variantTarget,
+            string? variantTargetId,
             bool setupVariantInPenumbra,
-            ExportRedrawMode redrawMode,
             bool backupExisting)
         {
             if (string.IsNullOrWhiteSpace(target.TargetFilePath) ||
@@ -606,12 +662,11 @@ public sealed class ExportServer : IDisposable
                 target.TargetRelativePath,
                 target.GamePath,
                 filePath,
-                target.ObjectIndex,
-                target.ActorIdentity,
                 variantName,
                 variantGroupName,
+                variantTarget,
+                variantTargetId,
                 setupVariantInPenumbra,
-                redrawMode,
                 backupExisting).ConfigureAwait(false);
             return new ExportReceipt(
                 result.Success,
@@ -675,11 +730,16 @@ public sealed class ExportServer : IDisposable
         if (request.VariantName is not null && !IsSafeVariantName(request.VariantName))
             return "invalid_variant_name";
         if (request.SetupInPenumbra && request.VariantName is null)
-            return "penumbra_setup_requires_variant";
-        if (request.SetupInPenumbra && !PenumbraService.IsSafeVariantGroupName(request.VariantGroupName))
+            if (!string.Equals(request.VariantTarget, "option", StringComparison.Ordinal))
+                return "penumbra_setup_requires_variant";
+        if (request.SetupInPenumbra && !string.Equals(request.VariantTarget, "option", StringComparison.Ordinal) &&
+            !PenumbraService.IsSafeVariantGroupName(request.VariantGroupName))
             return "penumbra_setup_requires_group_name";
-        if (!TryParseRedrawMode(request.RedrawMode, out _))
-            return "invalid_redraw_mode";
+        if (request.SetupInPenumbra && request.VariantTarget is not ("new_group" or "group" or "option"))
+            return "invalid_variant_target";
+        if (request.SetupInPenumbra && request.VariantTarget is not "new_group" &&
+            string.IsNullOrWhiteSpace(request.VariantTargetId))
+            return "missing_variant_target";
         return null;
     }
 
@@ -698,8 +758,6 @@ public sealed class ExportServer : IDisposable
             request.BackupName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
             request.BackupName.Contains('/') || request.BackupName.Contains('\\'))
             return "invalid_backup_name";
-        if (!TryParseRedrawMode(request.RedrawMode, out _))
-            return "invalid_redraw_mode";
         return null;
     }
 
@@ -713,31 +771,6 @@ public sealed class ExportServer : IDisposable
             string.IsNullOrWhiteSpace(request.Capability))
             return "missing_field";
         return null;
-    }
-
-    private static ExportRedrawMode ParseRedrawMode(string? value)
-        => TryParseRedrawMode(value, out var mode) ? mode : ExportRedrawMode.Self;
-
-    private static bool TryParseRedrawMode(string? value, out ExportRedrawMode mode)
-    {
-        // Requests from add-on versions predating redraw settings keep the
-        // historical Instant Edit behavior of redrawing the source actor.
-        switch (value)
-        {
-            case null or "":
-            case "SELF":
-                mode = ExportRedrawMode.Self;
-                return true;
-            case "ALL":
-                mode = ExportRedrawMode.All;
-                return true;
-            case "GLAM":
-                mode = ExportRedrawMode.Glamourer;
-                return true;
-            default:
-                mode = default;
-                return false;
-        }
     }
 
     private static bool IsSafeVariantName(string value)

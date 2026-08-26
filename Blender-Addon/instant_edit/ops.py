@@ -1,5 +1,6 @@
 # Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
 import bpy
+from bpy.props import StringProperty
 import json
 import hashlib
 import uuid
@@ -75,6 +76,87 @@ def normalise_variant_group_name(value: str) -> str:
     if any(ord(char) < 32 for char in name):
         raise ValueError("Penumbra option group name contains a control character.")
     return name
+
+
+def selected_variant_target(props):
+    """Return the cached Penumbra target selected in the sidebar, if any."""
+    selection = getattr(props, "variant_target", "NEW_GROUP")
+    if selection == "NEW_GROUP":
+        return None
+    return next((item for item in props.variant_targets if item.selection_id == selection), None)
+
+
+def _request_variant_targets(ref) -> list[dict]:
+    """Fetch the plugin-owned list of compatible Penumbra option targets."""
+    payload = {
+        "schema": "instant-edit.variant-targets",
+        "version": VERSION,
+        "pluginInstanceId": ref.plugin_instance_id,
+        "contextId": ref.context_id,
+        "capability": ref.capability,
+    }
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{ref.callback_port}/variant-targets",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+    except HTTPError as error:
+        raise _plugin_error_from_body(error.read(MAX_PLUGIN_RESPONSE_SIZE + 1), error.code) from error
+    except (URLError, TimeoutError, OSError) as error:
+        raise ValueError(f"Could not fetch Penumbra variant targets: {error}") from error
+    if not 200 <= status < 300:
+        raise ValueError(f"plugin returned HTTP {status} while fetching Penumbra variant targets")
+    result = _decode_plugin_response(body, status)
+    groups = result.get("groups", [])
+    if not isinstance(groups, list):
+        raise ValueError("plugin returned invalid Penumbra variant targets")
+    return groups
+
+
+def refresh_variant_targets(context: Context) -> int:
+    """Replace the cached tree with targets for the selected export context."""
+    ref = export_destination_context(context)
+    groups = _request_variant_targets(ref)
+    props = get_instant_edit_props()
+    props.variant_targets.clear()
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        group_id = group.get("id")
+        group_name = group.get("name")
+        options = group.get("options")
+        if not isinstance(group_id, str) or not isinstance(group_name, str) or not isinstance(options, list):
+            continue
+        group_item = props.variant_targets.add()
+        group_item.selection_id = group_id
+        group_item.kind = "GROUP"
+        group_item.group_name = group_name
+        group_item.expanded = True
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            option_id = option.get("id")
+            option_name = option.get("name")
+            model_path = option.get("modelPath", "")
+            if not isinstance(option_id, str) or not isinstance(option_name, str) or not isinstance(model_path, str):
+                continue
+            option_item = props.variant_targets.add()
+            option_item.selection_id = option_id
+            option_item.kind = "OPTION"
+            option_item.group_name = group_name
+            option_item.option_name = option_name
+            option_item.model_path = model_path
+    props.variant_targets_context_id = ref.context_id
+    if props.variant_target != "NEW_GROUP" and not any(
+        item.selection_id == props.variant_target for item in props.variant_targets
+    ):
+        props.variant_target = "NEW_GROUP"
+    return len(props.variant_targets)
 
 
 def variant_game_path(source_game_path: str, variant_name: str) -> str:
@@ -435,6 +517,56 @@ def _quick_export_target_items(_self, context):
     return _QUICK_EXPORT_TARGET_ITEMS
 
 
+class RefreshVariantTargets(Operator):
+    bl_idname = "xiv_ie.refresh_variant_targets"
+    bl_label = "Refresh Penumbra Targets"
+    bl_description = "Load compatible option groups from the selected Export Destination mod"
+
+    def execute(self, context: Context):
+        try:
+            count = refresh_variant_targets(context)
+        except Exception as error:
+            get_instant_edit_props().last_status = f"Could not load Penumbra targets: {error}"
+            self.report({"ERROR"}, f"Could not load Penumbra targets: {error}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Loaded {count} compatible Penumbra target(s).")
+        return {"FINISHED"}
+
+
+class SelectVariantTarget(Operator):
+    bl_idname = "xiv_ie.select_variant_target"
+    bl_label = "Select Penumbra Target"
+    bl_description = "Use this Penumbra group or option for the next Quick Export"
+    bl_options = {"INTERNAL"}
+
+    selection_id: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+
+    def execute(self, _context):
+        get_instant_edit_props().variant_target = self.selection_id
+        return {"FINISHED"}
+
+
+class ToggleVariantTargetGroup(Operator):
+    bl_idname = "xiv_ie.toggle_variant_target_group"
+    bl_label = "Expand or Collapse Penumbra Group"
+    bl_description = "Show or hide the compatible options in this Penumbra group"
+    bl_options = {"INTERNAL"}
+
+    selection_id: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+
+    def execute(self, _context):
+        item = next(
+            (target for target in get_instant_edit_props().variant_targets
+             if target.kind == "GROUP" and target.selection_id == self.selection_id),
+            None,
+        )
+        if item is None:
+            self.report({"WARNING"}, "The Penumbra group is no longer available.")
+            return {"CANCELLED"}
+        item.expanded = not item.expanded
+        return {"FINISHED"}
+
+
 class QuickExport(Operator):
     bl_idname      = "xiv_ie.instant_export"
     bl_label       = "Quick Export"
@@ -460,12 +592,12 @@ class QuickExport(Operator):
         props = get_instant_edit_props()
         if props.export_destination != "ACTIVE":
             self.target_context_id = props.export_destination
-            return self.execute(context)
+            return self._invoke_export_dialog(context)
 
         refs = _valid_export_contexts(context)
         if len(refs) <= 1:
             self.target_context_id = refs[0].context_id if refs else ""
-            return self.execute(context)
+            return self._invoke_export_dialog(context)
 
         try:
             preferred = active_context(context).context_id
@@ -474,10 +606,24 @@ class QuickExport(Operator):
         self.target_context_id = preferred
         return context.window_manager.invoke_props_dialog(self, width=640)
 
+    @staticmethod
+    def _requires_new_group_name() -> bool:
+        props = get_instant_edit_props()
+        return props.save_as_variant and props.auto_setup_penumbra and props.variant_target == "NEW_GROUP"
+
+    def _invoke_export_dialog(self, context: Context):
+        if self._requires_new_group_name():
+            return context.window_manager.invoke_props_dialog(self, width=480)
+        return self.execute(context)
+
     def draw(self, context: Context):
-        self.layout.label(text="Multiple Instant Edit destinations are available.", icon="QUESTION")
-        self.layout.label(text="Choose where all geometry in the selected export scope should be written.")
-        self.layout.prop(self, "target_context_id")
+        multiple_destinations = (
+            get_instant_edit_props().export_destination == "ACTIVE" and len(_valid_export_contexts(context)) > 1
+        )
+        if multiple_destinations:
+            self.layout.label(text="Multiple Instant Edit destinations are available.", icon="QUESTION")
+            self.layout.label(text="Choose where all geometry in the selected export scope should be written.")
+            self.layout.prop(self, "target_context_id")
         if self.target_context_id:
             try:
                 ref = validate_context(self.target_context_id, context.scene)
@@ -485,6 +631,10 @@ class QuickExport(Operator):
                 self.layout.label(text=f"Target: {ref.target_file_path}")
             except ContextValidationError:
                 self.layout.label(text="The selected destination is no longer valid.", icon="ERROR")
+        if self._requires_new_group_name():
+            self.layout.separator()
+            self.layout.label(text="Name the new Penumbra option group.", icon="OUTLINER_COLLECTION")
+            self.layout.prop(get_instant_edit_props(), "variant_group_name", text="Group Name")
 
     def execute(self, context: Context):
         try:
@@ -563,7 +713,7 @@ class CopyInstantEditStatus(Operator):
 
 def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
                          sha256: str, props, variant_name: str | None,
-                         variant_group_name: str | None = None,
+                         variant_group_name: str | None = None, variant_target=None,
                          backup_existing: bool | None = None) -> dict:
     """Build the versioned Dalamud export envelope."""
     payload = {
@@ -576,7 +726,6 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
         "filePath": str(mdl_path),
         "size": byte_size,
         "sha256": sha256,
-        "redrawMode": props.redraw_mode,
         "backupExisting": bool(
             getattr(get_settings(), "backup_models_on_export", False)
             if backup_existing is None else backup_existing
@@ -584,9 +733,14 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
     }
     if variant_name is not None:
         payload["variantName"] = variant_name
-        if props.auto_setup_penumbra:
-            payload["setupInPenumbra"] = True
-            payload["variantGroupName"] = variant_group_name
+    if props.auto_setup_penumbra:
+        payload["setupInPenumbra"] = True
+        payload["variantGroupName"] = variant_group_name
+        payload["variantTarget"] = "option" if variant_target and variant_target.kind == "OPTION" else (
+            "group" if variant_target and variant_target.kind == "GROUP" else "new_group"
+        )
+        if variant_target:
+            payload["variantTargetId"] = variant_target.selection_id
     return payload
 
 
@@ -709,7 +863,7 @@ def _send_plugin_export(ref, payload: dict) -> dict:
         ) from error
 
 
-def _send_plugin_restore(ref, backup_name: str, redraw_mode: str) -> dict:
+def _send_plugin_restore(ref, backup_name: str) -> dict:
     payload = {
         "schema": "instant-edit.backup-restore",
         "version": 1,
@@ -717,7 +871,6 @@ def _send_plugin_restore(ref, backup_name: str, redraw_mode: str) -> dict:
         "contextId": ref.context_id,
         "capability": ref.capability,
         "backupName": backup_name,
-        "redrawMode": redraw_mode,
     }
     request = urllib.request.Request(
         f"http://127.0.0.1:{ref.callback_port}/backup/restore",
@@ -746,7 +899,7 @@ def restore_quick_backup(context: Context, backup_name: str) -> dict:
     ref = export_destination_context(context)
     props = get_instant_edit_props()
     try:
-        result = _send_plugin_restore(ref, backup_name, props.redraw_mode)
+        result = _send_plugin_restore(ref, backup_name)
     except PluginResponseError as error:
         if error.status != 410 and not (error.status == 401 and error.code == "plugin_instance_mismatch"):
             raise
@@ -755,7 +908,7 @@ def restore_quick_backup(context: Context, backup_name: str) -> dict:
         if not reattach_collection(ref.collection, context.scene):
             raise ValueError(f"plugin returned HTTP {error.status} ({error.code}); context recovery failed") from error
         ref = export_destination_context(context)
-        result = _send_plugin_restore(ref, backup_name, props.redraw_mode)
+        result = _send_plugin_restore(ref, backup_name)
     warnings = result.get("warnings", [])
     target = result.get("targetFilePath") or ref.target_file_path
     props.last_status = (
@@ -787,10 +940,19 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
     """Export one validated context and send only the v1 secure envelope."""
     ref = export_destination_context(context, destination)
     props = get_instant_edit_props()
-    variant_name = validate_variant_name(ref.source_game_path, props.variant_name) if props.save_as_variant else None
+    variant_target = selected_variant_target(props) if props.save_as_variant and props.auto_setup_penumbra else None
+    if variant_target is not None and props.variant_targets_context_id != ref.context_id:
+        raise ValueError("Refresh Penumbra targets after changing the export destination.")
+    overwrite_existing_option = variant_target is not None and variant_target.kind == "OPTION"
+    variant_name = (
+        validate_variant_name(ref.source_game_path, props.variant_name)
+        if props.save_as_variant and not overwrite_existing_option else None
+    )
     variant_group_name = (
-        normalise_variant_group_name(props.variant_group_name)
-        if variant_name is not None and props.auto_setup_penumbra
+        normalise_variant_group_name(
+            variant_target.group_name if variant_target is not None and variant_target.kind == "GROUP"
+            else props.variant_group_name)
+        if props.save_as_variant and props.auto_setup_penumbra and not overwrite_existing_option
         else None
     )
     export_objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
@@ -834,6 +996,7 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
             props,
             variant_name,
             variant_group_name,
+            variant_target,
         )
         try:
             result = _send_plugin_export(ref, payload)
@@ -862,6 +1025,7 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
                 props,
                 variant_name,
                 variant_group_name,
+                variant_target,
             )
             result = _send_plugin_export(ref, payload)
 
@@ -912,6 +1076,9 @@ class ApplyInstantEdit(Operator):
 
 CLASSES = [
     InstantImport,
+    RefreshVariantTargets,
+    SelectVariantTarget,
+    ToggleVariantTargetGroup,
     QuickExport,
     ClearInstantEditContexts,
     CopyInstantEditStatus,

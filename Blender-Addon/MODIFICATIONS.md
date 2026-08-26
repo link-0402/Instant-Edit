@@ -16,7 +16,8 @@ Modifications made in 2026 include:
   handles;
 - allowing Quick Export to include all visible, name-defined mesh parts and groups;
 - allowing duplicated Instant Edit meshes to be moved outside their source collection;
-- adding SELF, ALL, and Glamourer-assisted redraw modes for Quick Export;
+- making Quick Export redraw the local player and their currently spawned
+  summons, minions, and mounts;
 - allowing export through an Armature modifier without requiring object
   parenting;
 - adding UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup;

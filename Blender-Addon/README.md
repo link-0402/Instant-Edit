@@ -21,8 +21,8 @@ plus a standalone Simple Import/Export panel.
   contexts after Blender or plugin restarts.
 - Recovers export receipts after network timeouts without submitting a second
   write, and durably queues context revocations while the plugin is offline.
-- Penumbra-compatible SELF, ALL, and Glamourer-assisted redraw modes after
-  Quick Export.
+- Redraws the local player and their currently spawned summons, minions, and
+  mounts after Quick Export.
 - Simple Export to MDL, FBX, or glTF for visible mesh objects.
 - Simple Import from MDL or FBX files.
 - Export-time UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup.

@@ -46,7 +46,6 @@ class XIVIE_PT_main(Panel):
     def _draw_instant_edit(layout, context: Context) -> None:
         props = get_instant_edit_props()
         box = layout.box()
-        box.label(text="Instant Edit", icon="EXPERIMENTAL")
         try:
             ref = export_destination_context(context)
         except ContextValidationError:
@@ -70,20 +69,62 @@ class XIVIE_PT_main(Panel):
 
         row = box.row(align=True)
         row.prop(props, "save_as_variant")
-        name = row.row(align=True)
-        name.enabled = props.save_as_variant
-        name.prop(props, "variant_name", text="")
         setup = box.row()
         setup.enabled = props.save_as_variant
         setup.prop(props, "auto_setup_penumbra")
-        group_name = setup.row(align=True)
-        group_name.enabled = props.auto_setup_penumbra
-        group_name.prop(props, "variant_group_name", text="")
-        redraw = box.row(align=True)
-        redraw.label(text="Redraw:")
-        redraw.prop(props, "redraw_mode", expand=True)
-        if props.redraw_mode == "GLAM":
-            box.label(text="Glamourer refresh does not support face models.", icon="INFO")
+        selected_target = next(
+            (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
+        name = box.row(align=True)
+        name.enabled = props.save_as_variant and not (
+            props.auto_setup_penumbra and selected_target is not None and selected_target.kind == "OPTION"
+        )
+        name.prop(props, "variant_name", text="New Option Name")
+        if props.save_as_variant and props.auto_setup_penumbra:
+            targets = box.box()
+            header = targets.row(align=True)
+            header.label(text="Penumbra Variant Target", icon="OUTLINER_COLLECTION")
+            header.operator("xiv_ie.refresh_variant_targets", text="", icon="FILE_REFRESH")
+            if props.variant_targets_context_id and props.variant_targets_context_id != getattr(ref, "context_id", ""):
+                targets.label(text="Refresh targets for this export context.", icon="INFO")
+            new_group = targets.row(align=True)
+            new_group.operator(
+                "xiv_ie.select_variant_target",
+                text="New Group",
+                depress=props.variant_target == "NEW_GROUP",
+                icon="ADD",
+            ).selection_id = "NEW_GROUP"
+            if not props.variant_targets:
+                targets.label(text="Refresh to load compatible groups and options.", icon="INFO")
+            group_expanded = True
+            for item in props.variant_targets:
+                if item.kind == "GROUP":
+                    group_expanded = item.expanded
+                    group_row = targets.row(align=True)
+                    toggle = group_row.operator(
+                        "xiv_ie.toggle_variant_target_group",
+                        text="",
+                        icon="TRIA_DOWN" if item.expanded else "TRIA_RIGHT",
+                        emboss=False,
+                    )
+                    toggle.selection_id = item.selection_id
+                    group_row.operator(
+                        "xiv_ie.select_variant_target",
+                        text=item.group_name,
+                        depress=props.variant_target == item.selection_id,
+                        icon="OUTLINER_COLLECTION",
+                    ).selection_id = item.selection_id
+                elif item.kind == "OPTION" and group_expanded:
+                    option_row = targets.row(align=True)
+                    option_row.label(text="", icon="BLANK1")
+                    option_row.operator(
+                        "xiv_ie.select_variant_target",
+                        text=item.option_name,
+                        depress=props.variant_target == item.selection_id,
+                        icon="FILE",
+                    ).selection_id = item.selection_id
+            if selected_target is not None and selected_target.kind == "OPTION":
+                targets.label(text=f"Quick Export will overwrite: {selected_target.model_path}", icon="INFO")
+        box.label(text="Quick Export redraws your player and owned entities.", icon="INFO")
         status_row = box.row(align=True)
         status_row.label(text="Status:", icon="INFO")
         status_row.prop(props, "last_status", text="")

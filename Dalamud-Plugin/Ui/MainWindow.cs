@@ -96,6 +96,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.EndTabBar();
         }
         DrawFeedback();
+        DrawWindowOptionsExtension();
     }
 
     /// <summary>
@@ -111,13 +112,8 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PushStyleVar(ImGuiStyleVar.Alpha, 1f);
         if (ImGui.BeginPopup(WindowOptionsPopupName, ImGuiWindowFlags.NoMove))
         {
-            // Re-enter the same popup after WindowHost has drawn its standard options and
-            // continue at the end of that content. This keeps the setting in the same menu.
-            ImGui.SetCursorPosY(Math.Max(ImGui.GetCursorPosY(), ImGui.GetWindowHeight() - ImGui.GetStyle().WindowPadding.Y));
-            ImGui.Separator();
-
             var keepVisible = _config.KeepVisibleWhenUiHidden;
-            if (ImGui.Checkbox("Keep window visible when game UI is hidden", ref keepVisible))
+            if (ImGui.Checkbox("Don't hide the plugin window when hiding UI", ref keepVisible))
             {
                 _config.KeepVisibleWhenUiHidden = keepVisible;
                 _uiBuilder.DisableUserUiHide = keepVisible;
