@@ -93,9 +93,12 @@ public sealed class ResourceSourceAttributor
                 }
 
                 // A mod stored outside Penumbra's global root is only discoverable via
-                // its Penumbra IPC entry. The fast path above handles every standard
-                // layout, so this branch fires only for genuinely relocated mods.
-                if (path is null)
+                // its Penumbra IPC entry. Also retry when the conventional directory
+                // is absent: GetModDirectory is only the default root, while Penumbra
+                // permits an individual mod to have a manually configured location.
+                // This keeps the common path cheap without attributing relocated mods
+                // to a non-existent default directory.
+                if (path is null || !Directory.Exists(path))
                 {
                     var registeredPath = _penumbra.GetRegisteredModPath(directory);
                     path = NormalizePhysicalPath(registeredPath);

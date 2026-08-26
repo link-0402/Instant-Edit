@@ -87,7 +87,7 @@ class XIVIEExportSettings(PropertyGroup):
         description="Existing Blender armature to use for Simple Import",
         poll=lambda _self, obj: obj.type == "ARMATURE",
     )  # type: ignore
-    keep_shapekeys: BoolProperty(name="Keep Shape Keys", default=True)  # type: ignore
+    keep_shapekeys: BoolProperty(name="Keep Shape Keys", default=False)  # type: ignore
     check_tris: BoolProperty(name="Check Triangulation", default=True)  # type: ignore
     create_backfaces: BoolProperty(name="Create Backfaces", default=False)  # type: ignore
     remove_yas: EnumProperty(

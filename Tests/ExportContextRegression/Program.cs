@@ -107,6 +107,12 @@ try
     Require(!File.Exists(moved.Target!.FilePath),
         "a missing model file is accepted when its authorized parent still exists");
 
+    var staleRegisteredRoot = Path.Combine(testRoot, "StaleRegisteredRoot");
+    var recovered = PenumbraService.ResolveSourceModTargetFromRoots(
+        "registered-mod", originalTarget, originalRoot, relative, staleRegisteredRoot, null);
+    Require(recovered.Target?.FilePath == originalTarget && recovered.Code == "accepted",
+        "a disappeared registered root can recover through the captured authorized root");
+
     var missingRoot = Path.Combine(testRoot, "MissingParentRoot");
     Directory.CreateDirectory(missingRoot);
     var missing = PenumbraService.ResolveSourceModTargetFromRoots(

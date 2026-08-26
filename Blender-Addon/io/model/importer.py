@@ -243,6 +243,7 @@ class ModelImport:
                 submesh_pos = pos[vert_start: vert_start + vert_count].flatten()
                 shape_key   = new_obj.shape_key_add(name=shape_name)
                 shape_key.data.foreach_set("co", submesh_pos)
+                shape_key.value = 0.0
 
         def set_attributes(attribute_mask: int) -> None:
             while attribute_mask:

@@ -524,10 +524,13 @@ public sealed class PenumbraService
             var valid = new List<(SourceModTarget Target, bool Preferred)>();
             var sawMissingFolder = false;
             var sawUnsafe = false;
-            // Once Penumbra resolves the registered directory key, that root
-            // is authoritative. Older/configured roots may help derive the
-            // relative path, but must never receive a write as a fallback.
-            var resolutionRoots = roots.Any(candidate => candidate.Preferred)
+            // Once Penumbra resolves the registered directory key to an existing
+            // root, that root is authoritative. If the reported root itself has
+            // disappeared, retain the configured/captured roots as recovery
+            // candidates; otherwise a stale IPC path makes every unchanged import
+            // fail with destination_missing. A preferred root that still exists
+            // but lacks the destination remains authoritative and cannot fall back.
+            var resolutionRoots = roots.Any(candidate => candidate.Preferred && Directory.Exists(candidate.Root))
                 ? roots.Where(candidate => candidate.Preferred)
                 : roots;
             foreach (var candidate in resolutionRoots)

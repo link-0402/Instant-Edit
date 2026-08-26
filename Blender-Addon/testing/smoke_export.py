@@ -106,6 +106,9 @@ def run() -> None:
             raise AssertionError("Create Backfaces should default to disabled")
         if bpy.context.scene.xiv_ie_settings.backup_models_on_export:
             raise AssertionError("Backup models on Export should default to disabled")
+        if bpy.context.scene.xiv_ie_settings.keep_shapekeys:
+            raise AssertionError("Keep Shape Keys should default to disabled")
+        bpy.context.scene.xiv_ie_settings.keep_shapekeys = True
         if bpy.context.scene.xiv_ie_instant_edit_props.show_utilities:
             raise AssertionError("Utilities should be collapsed by default")
 
@@ -267,8 +270,13 @@ def run() -> None:
         }
         if obj.data.shape_keys is None:
             obj.shape_key_add(name="Basis")
-        smoke_shape = obj.shape_key_add(name="Smoke Shape")
+        smoke_shape = obj.shape_key_add(name="shp_smoke")
+        smoke_shape.data[0].co.z += 0.25
         smoke_shape.value = 0.65
+        expected_shape_delta = tuple(
+            smoke_shape.data[0].co[index] - obj.data.shape_keys.key_blocks[0].data[0].co[index]
+            for index in range(3)
+        )
         if export_module._armature_for_object(obj) is not armature:
             raise AssertionError("Smoke mesh is not associated with the expected armature")
         with export_module._clean_export_state([obj, second, added_group]):
@@ -310,6 +318,38 @@ def run() -> None:
 
         model_module = importlib.import_module(f"{addon.__name__}.xivpy.model")
         quick_model = model_module.XIVModel.from_file(quick_target)
+        exported_shapes = {shape.name for shape in quick_model.shapes}
+        if "shp_smoke" not in exported_shapes or quick_model.mesh_header.shape_value_count == 0:
+            raise AssertionError("Quick Export did not serialize the shape key")
+        importer_module = importlib.import_module(f"{addon.__name__}.io.model.importer")
+        roundtrip_objects = []
+        importer_module.ModelImport.from_file(
+            str(quick_target),
+            "shape-roundtrip",
+            select_objects=False,
+            created_objects=roundtrip_objects,
+        )
+        roundtrip_shape = next(
+            (
+                obj.data.shape_keys.key_blocks.get("shp_smoke")
+                for obj in roundtrip_objects
+                if obj.data.shape_keys and obj.data.shape_keys.key_blocks.get("shp_smoke")
+            ),
+            None,
+        )
+        if roundtrip_shape is None:
+            raise AssertionError("Quick Export shape key was not reconstructed on import")
+        if abs(roundtrip_shape.value) > 1e-6:
+            raise AssertionError(f"Reimported shape key was not initialized to zero: {roundtrip_shape.value}")
+        roundtrip_basis = roundtrip_shape.relative_key.data[0].co
+        roundtrip_delta = tuple(roundtrip_shape.data[0].co[index] - roundtrip_basis[index] for index in range(3))
+        if any(abs(actual - expected) > 1e-5 for actual, expected in zip(roundtrip_delta, expected_shape_delta)):
+            raise AssertionError(
+                f"Shape-key delta changed during export/import: actual={roundtrip_delta} expected={expected_shape_delta}"
+            )
+        for roundtrip_obj in roundtrip_objects:
+            bpy.data.objects.remove(roundtrip_obj, do_unlink=True)
+        print("[PASS] Quick Export round-trips shape-key geometry")
         if quick_model.lods[0].mesh_count != 2:
             raise AssertionError("Quick Export did not include the added mesh group")
         if [mesh.submesh_count for mesh in quick_model.meshes[:2]] != [2, 1]:
