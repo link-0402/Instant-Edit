@@ -41,16 +41,11 @@ Note that you will not be getting automatic feature and compatibility updates th
 1. Start Blender and make sure the XIV Instant Edit add-on is enabled.
 2. Start FFXIV and run `/ie` to open the plugin window.
 3. Click **Refresh character list** at the top and browse to the model you are looking for, then click Edit.
-   Enable **Apply textures and materials** first if you want Instant Edit to
-   resolve the model's current game/Penumbra textures into a practical Blender
-   viewport preview. The option is off by default. Enable **Exclude body and
-   general materials** underneath it to leave body skin, body-piercing, and
-   pube materials as placeholders while still previewing equipment materials.
 4. Edit the model in Blender. Instant Edit tools are available in the
    **XIV Instant Edit** tab of the 3D Viewport sidebar.
-5. Click **Quick Export** to send the edited model back to its Penumbra mod.
+5. Click **Quick Export** to send the edited model back to it's Penumbra mod.
    If the scene contains multiple Instant Edit contexts and the destination is
-   otherwise ambiguous, Quick Export asks you to choose the target first.
+   otherwise ambiguous, Quick Export asks you to choose an explicit target first.
 
 
 ## Additional notes
