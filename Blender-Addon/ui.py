@@ -1,9 +1,12 @@
+from pathlib import Path
+import textwrap
+
 import bpy
 
 from bpy.types import Context, Panel
 
-from .instant_edit.context import ContextValidationError, _value, mesh_ids_from_name
-from .instant_edit.ops import export_destination_context
+from .instant_edit.context import ContextValidationError, mesh_ids_from_name
+from .instant_edit.ops import export_destination_context, normalise_variant_name
 from .instant_edit.props import get_instant_edit_props
 from .materials import (
     attribute_display_name,
@@ -24,6 +27,86 @@ def draw_status_context_menu(menu, context) -> None:
         return
     menu.layout.separator()
     menu.layout.operator("xiv_ie.copy_status", text="Copy Full Import Status", icon="COPYDOWN")
+
+
+def _relative_physical_path(file_path: str, root_path: str) -> str:
+    """Return a physical file path relative to its source mod root."""
+    if not file_path or not root_path:
+        return ""
+    try:
+        return Path(file_path).resolve(strict=False).relative_to(
+            Path(root_path).resolve(strict=False)
+        ).as_posix()
+    except (OSError, ValueError):
+        return ""
+
+
+def _import_file_display(ref) -> str:
+    """Prefer the plugin-validated path, with a legacy physical-path fallback."""
+    relative = str(getattr(ref, "target_relative_path", "") or "").strip()
+    if relative:
+        return relative.replace("\\", "/")
+    return _relative_physical_path(
+        str(getattr(ref, "target_file_path", "") or ""),
+        str(getattr(ref, "source_mod_root_path", "") or ""),
+    ) or "Unavailable"
+
+
+def _export_destination_display(ref, props=None) -> str:
+    """Return the effective mod-relative Quick Export target and model file."""
+    relative = str(getattr(ref, "target_relative_path", "") or "").strip()
+    if relative:
+        destination = relative.replace("\\", "/")
+    else:
+        target_file_path = str(getattr(ref, "target_file_path", "") or "").strip()
+        destination = _relative_physical_path(
+            target_file_path,
+            str(getattr(ref, "source_mod_root_path", "") or ""),
+        )
+        if not destination:
+            destination = Path(target_file_path).name if target_file_path else "Unavailable"
+
+    if props is None or not getattr(props, "save_as_variant", False):
+        return destination
+
+    selected_target = next(
+        (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
+    if (
+        getattr(props, "auto_setup_penumbra", False)
+        and selected_target is not None
+        and selected_target.kind == "OPTION"
+        and selected_target.model_path
+    ):
+        return selected_target.model_path.replace("\\", "/")
+
+    try:
+        variant_name = normalise_variant_name(getattr(props, "variant_name", ""))
+    except ValueError:
+        return destination
+    directory, separator, _ = destination.rpartition("/")
+    return f"{directory}/{variant_name}.mdl" if separator else f"{variant_name}.mdl"
+
+
+def _display_wrap_width(context: Context) -> int:
+    """Estimate the sidebar's available text width in characters."""
+    region_width = int(getattr(getattr(context, "region", None), "width", 0) or 0)
+    if region_width:
+        return max(28, min(72, region_width // 8))
+    return 42
+
+
+def _draw_wrapped_display(layout, context: Context, label: str, value: str) -> None:
+    """Draw a simple multi-line display for a potentially long filesystem path."""
+    column = layout.column(align=True)
+    column.label(text=f"{label}:")
+    wrapped = textwrap.wrap(
+        value or "Unavailable",
+        width=_display_wrap_width(context),
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    for line in wrapped or ("Unavailable",):
+        column.label(text=line)
 
 
 class XIVIE_PT_main(Panel):
@@ -55,13 +138,10 @@ class XIVIE_PT_main(Panel):
         if ref is None:
             box.label(text="Pick a model through the Dalamud plugin.", icon="INFO")
         else:
-            model_path = (ref.source_game_path or "").replace("\\", "/")
-            model_name = str(_value(ref.collection, "import_file_name", "") or props.display_name).strip()
-            if not model_name:
-                model_name = model_path.rsplit("/", 1)[-1]
-            model_directory = model_path.rsplit("/", 1)[0] if "/" in model_path else ""
-            box.label(text=f"Model Name: {model_name}")
-            box.label(text=f"Model Path: {model_directory}")
+            _draw_wrapped_display(box, context, "Import File", _import_file_display(ref))
+            _draw_wrapped_display(
+                box, context, "Current Export Destination", _export_destination_display(ref, props)
+            )
             source_mod = ref.source_mod_root_path or ref.source_mod_name or ref.source_mod_directory
             box.label(text=f"Source Mod: {source_mod}")
             box.prop(props, "export_scope")

@@ -133,6 +133,7 @@ def run_staging_isolation_regression() -> None:
         ops = importlib.import_module(f"{package_name}.instant_edit.ops")
         props = importlib.import_module(f"{package_name}.instant_edit.props")
         server = importlib.import_module(f"{package_name}.instant_edit.server")
+        ui = importlib.import_module(f"{package_name}.ui")
         material_preview = importlib.import_module(
             f"{package_name}.instant_edit.material_preview"
         )
@@ -213,11 +214,29 @@ def run_staging_isolation_regression() -> None:
         )
         _require(
             validated["managedDestination"] == r"D:\Penumbra\SourceMod\models",
-            "the original target folder is preserved for Blender's UI",
+            "the original target folder is preserved as a legacy fallback",
         )
         _require(
             validated["targetRelativePath"] == "Files/models/original.mdl",
             "the durable target-relative path survives the import envelope",
+        )
+        display_ref = SimpleNamespace(
+            target_relative_path=validated["targetRelativePath"],
+            target_file_path=validated["targetFilePath"],
+            source_mod_root_path=r"D:\Penumbra\SourceMod",
+        )
+        _require(
+            ui._export_destination_display(display_ref) == "Files/models/original.mdl",
+            "the export display omits the mod root and includes the model filename",
+        )
+        legacy_display_ref = SimpleNamespace(
+            target_relative_path="",
+            target_file_path=validated["targetFilePath"],
+            source_mod_root_path=r"D:\Penumbra\SourceMod",
+        )
+        _require(
+            ui._export_destination_display(legacy_display_ref) == "models/original.mdl",
+            "the export display derives a mod-relative legacy model path",
         )
 
         validated_options = server._ImportHandler._validate_import({
@@ -700,7 +719,17 @@ def run_staging_isolation_regression() -> None:
             group_payload["variantTarget"] == "group" and group_payload["variantTargetId"] == variant_group.selection_id,
             "group selection is sent as an authenticated Penumbra export target",
         )
+        instant_props.variant_targets_context_id = "context-id"
+        instant_props.variant_name = "new-option"
+        _require(
+            ui._export_destination_display(display_ref, instant_props) == "Files/models/new-option.mdl",
+            "the export display updates to a new variant sibling for a group target",
+        )
         instant_props.variant_target = variant_option.selection_id
+        _require(
+            ui._export_destination_display(display_ref, instant_props) == variant_option.model_path,
+            "the export display updates to the selected option model target",
+        )
         option_payload = ops.build_export_payload(
             SimpleNamespace(plugin_instance_id="plugin-instance", context_id="context-id", capability="capability"),
             "export-id", Path(tempfile.gettempdir()) / "variant-tree-test.mdl", 1, "0" * 64,
