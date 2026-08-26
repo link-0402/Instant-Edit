@@ -3,8 +3,10 @@ using System.Reflection;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
+using Dalamud.Interface.Components;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Textures.TextureWraps;
+using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility;
 using InstantEdit.Models;
@@ -14,18 +16,20 @@ using Lumina.Data;
 namespace InstantEdit.Ui;
 
 /// <summary>Compact resource browser for the authoritative Penumbra resource snapshot.</summary>
-public sealed class MainWindow : IDisposable
+public sealed class MainWindow : Window, IDisposable
 {
+    private const string WindowOptionsPopupName = "WindowSystemContextActions";
     private readonly Configuration _config; private readonly PenumbraService _penumbra; private readonly OnScreenService _onScreen;
     private readonly BlenderClient _blender; private readonly IDataManager _data; private readonly IChatGui _chat; private readonly IPluginLog _log;
     private readonly MaterialPreviewBundleBuilder _materialPreviews;
     private readonly Action _saveConfig;
+    private readonly IUiBuilder _uiBuilder;
     private readonly object _stateLock = new();
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
     private readonly HashSet<string> _collapsedFiltered = new(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, IDalamudTextureWrap> _slotIcons = new Dictionary<string, IDalamudTextureWrap>();
-    private bool _open, _blenderOk, _blenderChecking; private int _editing;
+    private bool _blenderOk, _blenderChecking; private int _editing;
     private DateTime _lastBlenderCheck = DateTime.MinValue;
     private DateTime _lastModListRefresh = DateTime.MinValue;
     private string _filter = string.Empty, _modFilter = string.Empty, _resourceTypeFilter = string.Empty, _status = string.Empty;
@@ -39,10 +43,15 @@ public sealed class MainWindow : IDisposable
     public MainWindow(Configuration config, PenumbraService penumbra, OnScreenService onScreen, BlenderClient blender,
         IDataManager data, IChatGui chat, IPluginLog log, Action saveConfig, Action restartExportListener, IUiBuilder uiBuilder,
         ITextureProvider textureProvider)
+        : base("Instant Edit##Main")
     {
         _config = config; _penumbra = penumbra; _onScreen = onScreen; _blender = blender; _data = data; _chat = chat; _log = log;
         _materialPreviews = new MaterialPreviewBundleBuilder(data, log);
         _saveConfig = saveConfig;
+        _uiBuilder = uiBuilder;
+        AllowPinning = true;
+        AllowClickthrough = true;
+        AllowBackgroundBlur = true;
         _ = uiBuilder.RunWhenUiPrepared(() => LoadSlotIcons(uiBuilder, textureProvider), true);
     }
 
@@ -64,13 +73,11 @@ public sealed class MainWindow : IDisposable
         _lifetimeCts.Dispose();
     }
 
-    public bool IsOpen { get => _open; set => _open = value; }
-    public void Open() => _open = true; public void Close() => _open = false; public void Toggle() => _open = !_open;
+    public void Open() => IsOpen = true;
+    public void Close() => IsOpen = false;
 
-    public void Draw()
+    public override void Draw()
     {
-        if (!_open) return;
-        if (!ImGui.Begin("Instant Edit##Main", ref _open)) { ImGui.End(); return; }
         DrawHeader();
         if (ImGui.BeginTabBar("##instant-edit-tabs"))
         {
@@ -88,7 +95,38 @@ public sealed class MainWindow : IDisposable
 
             ImGui.EndTabBar();
         }
-        DrawFeedback(); ImGui.End();
+        DrawFeedback();
+    }
+
+    /// <summary>
+    /// Adds the plugin-specific visibility option to Dalamud's standard window options popup.
+    /// The built-in popup is drawn by <see cref="WindowSystem"/> after the window content, so
+    /// this callback is registered immediately after the window system draw callback.
+    /// </summary>
+    public void DrawWindowOptionsExtension()
+    {
+        if (!ImGui.IsPopupOpen(WindowOptionsPopupName))
+            return;
+
+        ImGui.PushStyleVar(ImGuiStyleVar.Alpha, 1f);
+        if (ImGui.BeginPopup(WindowOptionsPopupName, ImGuiWindowFlags.NoMove))
+        {
+            // Re-enter the same popup after WindowHost has drawn its standard options and
+            // continue at the end of that content. This keeps the setting in the same menu.
+            ImGui.SetCursorPosY(Math.Max(ImGui.GetCursorPosY(), ImGui.GetWindowHeight() - ImGui.GetStyle().WindowPadding.Y));
+            ImGui.Separator();
+
+            var keepVisible = _config.KeepVisibleWhenUiHidden;
+            if (ImGui.Checkbox("Keep window visible when game UI is hidden", ref keepVisible))
+            {
+                _config.KeepVisibleWhenUiHidden = keepVisible;
+                _uiBuilder.DisableUserUiHide = keepVisible;
+                _saveConfig();
+            }
+            ImGuiComponents.HelpMarker("Keep Instant Edit visible when the game UI is hidden with Scroll Lock.");
+            ImGui.EndPopup();
+        }
+        ImGui.PopStyleVar();
     }
 
     private void DrawOnScreenTab()
@@ -624,8 +662,7 @@ public sealed class MainWindow : IDisposable
             "Mod",
             snapshot.Name,
             roots,
-            importObjectIndex,
-            false);
+            importObjectIndex);
     }
 
     private void CancelModLoad()
@@ -662,7 +699,7 @@ public sealed class MainWindow : IDisposable
             if (prop?.GetValue(entity) is not IEnumerable roots) continue;
             var parsed = new List<ResourceView>(); var index = 0;
             foreach (var raw in roots) if (raw is not null) parsed.Add(ReadNode(raw, $"entity:{entity.Address:X}:{entity.ObjectIndex}:{index++}"));
-            result.Add(new ActorView(entity, ActorCategory(entity), Safe(entity.Name), parsed, entity.ObjectIndex, true));
+            result.Add(new ActorView(entity, ActorCategory(entity), Safe(entity.Name), parsed, entity.ObjectIndex));
         }
         return result;
     }
@@ -984,7 +1021,8 @@ public sealed class MainWindow : IDisposable
                 importOptions: importOptions,
                 previewManifestPath: preview?.ManifestPath,
                 sourceModRootPath: source.SourceModRootPath,
-                validateActorTarget: actor.ValidateActorTarget,
+                targetRelativePath: source.SourceRelativePath,
+                redrawActorIdentity: actor.Entity?.ActorIdentity,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
             SetStatus($"Sent {model.FileName} to Blender.{warning}", true);
@@ -1162,8 +1200,7 @@ public sealed class MainWindow : IDisposable
         string Category,
         string Name,
         List<ResourceView> Roots,
-        int ImportObjectIndex,
-        bool ValidateActorTarget);
+        int ImportObjectIndex);
     private sealed record ResourceView(
         string Type,
         string Icon,

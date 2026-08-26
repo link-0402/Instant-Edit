@@ -319,7 +319,9 @@ class XIVIE_OT_restore_backup(Operator):
             quick = False
             try:
                 from .instant_edit.context import ContextValidationError
-                from .instant_edit.ops import export_destination_context, restore_quick_backup
+                from .instant_edit.ops import (export_destination_context,
+                                               plugin_warning_summary,
+                                               restore_quick_backup)
 
                 ref = export_destination_context(context)
                 quick = (
@@ -327,7 +329,7 @@ class XIVIE_OT_restore_backup(Operator):
                     and entry.original_name.lower().endswith(".mdl")
                 )
                 if quick:
-                    restore_quick_backup(context, entry.path.name)
+                    result = restore_quick_backup(context, entry.path.name)
             except (ContextValidationError, ImportError):
                 pass
             if not quick:
@@ -335,7 +337,12 @@ class XIVIE_OT_restore_backup(Operator):
         except Exception as error:
             self.report({"ERROR"}, f"Restore failed: {error}")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Restored {entry.original_name}")
+        warnings = result.get("warnings", []) if quick else []
+        message = (
+            f"Restored {entry.original_name} with warnings: {plugin_warning_summary(warnings)}"
+            if warnings else f"Restored {entry.original_name}"
+        )
+        self.report({"WARNING"} if warnings else {"INFO"}, message)
         return {"FINISHED"}
 
 

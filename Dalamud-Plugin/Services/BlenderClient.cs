@@ -245,7 +245,8 @@ public sealed class BlenderClient : IDisposable
         BlenderImportOptions? importOptions = null,
         string? previewManifestPath = null,
         string? sourceModRootPath = null,
-        bool validateActorTarget = true)
+        string? targetRelativePath = null,
+        ActorIdentity? redrawActorIdentity = null)
     {
         if (port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -259,7 +260,6 @@ public sealed class BlenderClient : IDisposable
         InstantEditImportContext? context = null;
         if (_contexts is not null)
         {
-            var actorIdentity = validateActorTarget ? _actorIdentityProvider?.Invoke(objectIndex) : null;
             context = _contexts.CreateContext(
                 gamePath,
                 objectIndex,
@@ -267,8 +267,9 @@ public sealed class BlenderClient : IDisposable
                 targetFilePath,
                 sourceModName,
                 callbackPort,
-                actorIdentity,
-                sourceModRootPath);
+                redrawActorIdentity,
+                sourceModRootPath,
+                targetRelativePath);
         }
 
         try
@@ -290,6 +291,7 @@ public sealed class BlenderClient : IDisposable
                 sourceModDirectory,
                 sourceModName,
                 sourceModRootPath,
+                targetRelativePath,
                 previewManifestPath,
                 importOptions = importOptions ?? BlenderImportOptions.Generated,
             });

@@ -23,6 +23,7 @@ CONTEXT_METADATA_FIELDS = (
     "context_id", "schema", "version", "plugin_instance_id", "capability",
     "source_game_path", "managed_destination", "target_file_path",
     "source_mod_directory", "source_mod_name", "source_mod_root_path",
+    "target_relative_path",
     "import_id", "callback_port", "import_file_name", "collection_kind",
 )
 
@@ -57,6 +58,7 @@ class ContextRef:
     source_mod_directory: str
     source_mod_name: str
     source_mod_root_path: str
+    target_relative_path: str
     callback_port: int
 
 
@@ -174,6 +176,7 @@ def apply_authoritative_context(collection, payload: dict) -> None:
         "source_mod_directory": payload.get("sourceModDirectory"),
         "source_mod_name": payload.get("sourceModName"),
         "source_mod_root_path": payload.get("sourceModRootPath") or "",
+        "target_relative_path": payload.get("targetRelativePath") or "",
         "import_id": payload.get("importId"),
         "callback_port": payload.get("callbackPort"),
     }
@@ -241,6 +244,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         "context_id", "schema", "version", "plugin_instance_id", "capability",
         "source_game_path", "managed_destination", "target_file_path",
         "source_mod_directory", "source_mod_name", "source_mod_root_path", "callback_port",
+        "target_relative_path",
     ))
 
     if _value(collection, "schema") != SCHEMA or _value(collection, "version") != VERSION:
@@ -254,6 +258,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
     source_mod_directory = _value(collection, "source_mod_directory", "")
     source_mod_name = _value(collection, "source_mod_name", "")
     source_mod_root_path = _value(collection, "source_mod_root_path", "")
+    target_relative_path = _value(collection, "target_relative_path", "")
     import_id = _value(collection, "import_id", "")
     callback_port = _value(collection, "callback_port", 0)
     if not all(isinstance(value, str) and value for value in (
@@ -321,6 +326,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         source_mod_directory=source_mod_directory,
         source_mod_name=source_mod_name,
         source_mod_root_path=source_mod_root_path if isinstance(source_mod_root_path, str) else "",
+        target_relative_path=target_relative_path if isinstance(target_relative_path, str) else "",
         callback_port=callback_port,
     )
 

@@ -70,13 +70,7 @@ public sealed class ResourceSourceAttributor
     {
         try
         {
-            var modDirectory = _penumbra.GetModDirectory();
-            if (string.IsNullOrWhiteSpace(modDirectory))
-                return Array.Empty<ModRoot>();
-
-            var modRoot = NormalizePhysicalPath(modDirectory);
-            if (modRoot is null)
-                return Array.Empty<ModRoot>();
+            var modRoot = NormalizePhysicalPath(_penumbra.GetModDirectory());
 
             var roots = new List<ModRoot>();
             foreach (var (directory, modName) in _penumbra.GetModList())
@@ -84,8 +78,15 @@ public sealed class ResourceSourceAttributor
                 if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(modName))
                     continue;
 
-                var path = NormalizePhysicalPath(Path.Combine(modRoot, directory));
-                if (path is not null && IsPathWithin(path, modRoot))
+                // The registered path is authoritative and supports mods kept
+                // outside Penumbra's global root. Only use the standard layout
+                // when this Penumbra version cannot resolve the directory key.
+                var registeredPath = _penumbra.GetRegisteredModPath(directory);
+                var path = NormalizePhysicalPath(registeredPath);
+                if (path is null && modRoot is not null)
+                    path = NormalizePhysicalPath(Path.Combine(modRoot, directory));
+                if (path is not null && (modRoot is null ||
+                    registeredPath is not null || IsPathWithin(path, modRoot)))
                     roots.Add(new ModRoot(path, directory, modName));
             }
 
@@ -98,8 +99,10 @@ public sealed class ResourceSourceAttributor
         }
     }
 
-    private static string? NormalizePhysicalPath(string path)
+    private static string? NormalizePhysicalPath(string? path)
     {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
         try
         {
             var fullPath = Path.GetFullPath(path);

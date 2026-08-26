@@ -68,6 +68,16 @@ inactive owned jobs on demand.
 Saved Instant Edit scenes reconnect their export context automatically when the
 add-on and Dalamud plugin are running.
 
+Quick Export authorization is tied to the imported Penumbra directory key and
+the model's path inside that mod, not to the character's later appearance or
+currently resolved resources. Moving a registered mod is supported when that
+directory key and relative model path remain unchanged. A missing model file is
+recreated only when its authorized parent folder still exists. Reload, variant
+setup, or redraw failures after the model is written are reported as warnings;
+the committed export remains successful. **Clear Contexts** revokes the
+plugin-owned authorization, queuing the revocation locally if the plugin is
+offline.
+
 The Blender add-on also includes **Simple Import/Export** tabs for importing MDL
 or FBX files and exporting visible mesh objects as MDL, FBX, or glTF files, even
 if they haven't been imported through the IE plugin before.

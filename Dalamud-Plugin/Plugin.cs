@@ -1,5 +1,6 @@
 using Dalamud.Game.Command;
 using Dalamud.Game.ClientState.Objects.Types;
+using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using InstantEdit.Services;
@@ -19,6 +20,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ExportContextRegistry   _contexts;
     private readonly BlenderClient           _blender;
     private readonly ExportServer            _exportServer;
+    private readonly WindowSystem            _windowSystem;
     private readonly MainWindow              _window;
     private readonly SettingsWindow          _settingsWindow;
 
@@ -40,11 +42,12 @@ public sealed class Plugin : IDalamudPlugin
         _log      = log;
 
         _config    = pi.GetPluginConfig() as Configuration ?? new Configuration();
-        if (_config.Version < 7)
+        if (_config.Version < 8)
         {
-            _config.Version = 7;
+            _config.Version = 8;
             pi.SavePluginConfig(_config);
         }
+        pi.UiBuilder.DisableUserUiHide = _config.KeepVisibleWhenUiHidden;
         _penumbra  = new PenumbraService(pi, framework, log, objects);
         _onScreen  = new OnScreenService(objects, clientState, framework, _penumbra, log);
         _contexts  = new ExportContextRegistry(
@@ -84,7 +87,11 @@ public sealed class Plugin : IDalamudPlugin
             () => _exportServer.Restart(),
             _log);
 
-        _pi.UiBuilder.Draw += _window.Draw;
+        _windowSystem = new WindowSystem();
+        _windowSystem.AddWindow(_window);
+
+        _pi.UiBuilder.Draw += _windowSystem.Draw;
+        _pi.UiBuilder.Draw += _window.DrawWindowOptionsExtension;
         _pi.UiBuilder.Draw += _settingsWindow.Draw;
         _pi.UiBuilder.OpenMainUi += _window.Open;
         _pi.UiBuilder.OpenConfigUi += _settingsWindow.Open;
@@ -127,10 +134,12 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         _commands.RemoveHandler("/ie");
-        _pi.UiBuilder.Draw -= _window.Draw;
+        _pi.UiBuilder.Draw -= _windowSystem.Draw;
+        _pi.UiBuilder.Draw -= _window.DrawWindowOptionsExtension;
         _pi.UiBuilder.Draw -= _settingsWindow.Draw;
         _pi.UiBuilder.OpenMainUi -= _window.Open;
         _pi.UiBuilder.OpenConfigUi -= _settingsWindow.Open;
+        _windowSystem.RemoveWindow(_window);
         _window.Dispose();
         _exportServer.Dispose();
         _contexts.Dispose();

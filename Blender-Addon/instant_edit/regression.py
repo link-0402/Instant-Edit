@@ -201,6 +201,8 @@ def run_staging_isolation_regression() -> None:
                 "managedDestination": r"D:\Penumbra\SourceMod\models",
                 "sourceModDirectory": "SourceModDirectory",
                 "sourceModName": "Source Mod",
+                "sourceModRootPath": r"D:\Penumbra\SourceMod",
+                "targetRelativePath": "Files/models/original.mdl",
                 "callbackPort": 42428,
             },
         })
@@ -211,6 +213,10 @@ def run_staging_isolation_regression() -> None:
         _require(
             validated["managedDestination"] == r"D:\Penumbra\SourceMod\models",
             "the original target folder is preserved for Blender's UI",
+        )
+        _require(
+            validated["targetRelativePath"] == "Files/models/original.mdl",
+            "the durable target-relative path survives the import envelope",
         )
 
         validated_options = server._ImportHandler._validate_import({
@@ -573,6 +579,65 @@ def run_staging_isolation_regression() -> None:
             redraw_payload["redrawMode"] == "GLAM",
             "selected redraw mode is included in the secure export envelope",
         )
+
+        class ReceiptResponse:
+            def __init__(self, status, payload):
+                self.status = status
+                self.payload = json.dumps(payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def getcode(self):
+                return self.status
+
+            def read(self, _size=-1):
+                return self.payload
+
+        request_counts = {"export": 0, "status": 0}
+        original_urlopen = ops.urllib.request.urlopen
+
+        def timed_out_then_receipt(request, timeout=0):
+            if request.full_url.endswith("/export"):
+                request_counts["export"] += 1
+                raise TimeoutError("response was lost")
+            if request.full_url.endswith("/export/status"):
+                request_counts["status"] += 1
+                return ReceiptResponse(200, {
+                    "ok": True,
+                    "code": "export_applied_with_warnings",
+                    "message": "written",
+                    "warnings": ["Self redraw was skipped"],
+                    "targetFilePath": r"D:\MovedMod\Files\models\original.mdl",
+                })
+            raise AssertionError(f"unexpected request: {request.full_url}")
+
+        ops.urllib.request.urlopen = timed_out_then_receipt
+        try:
+            receipt = ops._send_plugin_export(
+                SimpleNamespace(
+                    plugin_instance_id="plugin-instance",
+                    context_id="context-id",
+                    capability="capability",
+                    callback_port=42428,
+                ),
+                redraw_payload,
+            )
+        finally:
+            ops.urllib.request.urlopen = original_urlopen
+        _require(
+            receipt["warnings"] == ["Self redraw was skipped"] and
+            receipt["targetFilePath"].endswith("original.mdl"),
+            "warning receipts preserve the committed target and follow-up warnings",
+        )
+        _require(
+            request_counts == {"export": 1, "status": 1},
+            "a lost export response is recovered by status lookup without a second write",
+        )
+
         instant_props.save_as_variant = True
         instant_props.auto_setup_penumbra = True
         instant_props.save_as_variant = False
@@ -728,6 +793,27 @@ def run_staging_isolation_regression() -> None:
             not skeleton.get("instant_edit_context_id"),
             "existing scene armature is not tagged as an Instant Edit object",
         )
+
+        revocation = importlib.import_module(f"{package_name}.instant_edit.revocation")
+        cache = importlib.import_module(f"{package_name}.instant_edit.cache")
+        with tempfile.TemporaryDirectory() as revocation_temp:
+            cache.configure_cache(revocation_temp, False)
+            tombstone_context = {
+                "context_id": "revocation-context",
+                "import_id": "revocation-import",
+                "capability": "revocation-capability",
+                "callback_port": 42428,
+            }
+            _require(
+                revocation.queue_context_revocations([tombstone_context]) == 1,
+                "Clear Contexts can durably queue an authenticated revocation before metadata removal",
+            )
+            queued = revocation._load_locked()
+            _require(
+                queued and queued[0]["contextId"] == "revocation-context" and
+                queued[0]["capability"] == "revocation-capability",
+                "offline context revocations retain the authority needed for a later retry",
+            )
 
         print("[RESULT] staging-isolation regression PASSED")
     finally:

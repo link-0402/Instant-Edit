@@ -5,11 +5,13 @@ from bpy.app.handlers import persistent
 from .props  import set_addon_properties, remove_addon_properties, get_instant_edit_props
 from .server import get_server_error, set_callback_port, start_server, stop_server, poll_import_queue
 from .recovery import cancel_recovery, schedule_recovery
+from .revocation import cancel_revocations, schedule_revocations
 from .cache import STALE_SECONDS, clean_cache, configure_cache
 
 
 @persistent
 def _recover_after_scene_load(_dummy) -> None:
+    schedule_revocations()
     schedule_recovery()
 
 
@@ -40,12 +42,14 @@ def register() -> None:
     if _recover_after_scene_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_recover_after_scene_load)
     schedule_recovery()
+    schedule_revocations()
 
 
 def unregister() -> None:
     if _recover_after_scene_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_recover_after_scene_load)
     cancel_recovery()
+    cancel_revocations()
     stop_server()
     try:
         bpy.app.timers.unregister(poll_import_queue)

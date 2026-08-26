@@ -24,7 +24,6 @@ public sealed class ExportContextRegistry : IDisposable
     private sealed class ContextEntry
     {
         public required InstantEditImportContext Context { get; set; }
-        public required DateTimeOffset ExpiresAt { get; set; }
         public Dictionary<string, ExportEntry> Exports { get; } = new(StringComparer.Ordinal);
     }
 
@@ -45,9 +44,7 @@ public sealed class ExportContextRegistry : IDisposable
     private readonly object _lock = new();
     private readonly object _persistenceLock = new();
     private readonly Dictionary<string, ContextEntry> _contexts = new(StringComparer.Ordinal);
-    private readonly TimeSpan _lifetime;
     private readonly Action<IReadOnlyList<PersistedExportContext>>? _persist;
-    private readonly Func<int, ActorIdentity?>? _actorIdentityProvider;
     private static readonly TimeSpan ReceiptRetention = TimeSpan.FromDays(1);
     private const int MaxCompletedReceiptsPerContext = 128;
     private bool _disposed;
@@ -63,26 +60,30 @@ public sealed class ExportContextRegistry : IDisposable
             throw new ArgumentException("A plugin instance id is required.", nameof(pluginInstanceId));
 
         PluginInstanceId = pluginInstanceId;
-        _lifetime = lifetime ?? TimeSpan.FromDays(30);
         _persist = persist;
-        _actorIdentityProvider = actorIdentityProvider;
 
-        var now = DateTimeOffset.UtcNow;
+        var migrationRequired = false;
         if (persisted is not null)
         {
             foreach (var saved in persisted)
             {
-                if (saved is null || saved.ExpiresAt <= now || !IsSafePersistedContext(saved))
+                // ExpiresAt is retained only for configuration compatibility.
+                // Possession of the capability remains authorized until the
+                // context is explicitly revoked.
+                if (saved is null || !IsSafePersistedContext(saved))
                     continue;
 
-                var context = RuntimeContext(saved, _actorIdentityProvider?.Invoke(saved.ObjectIndex));
+                var context = RuntimeContext(saved, null);
+                migrationRequired |= saved.ExpiresAt != DateTimeOffset.MaxValue ||
+                                     !string.Equals(saved.TargetRelativePath, context.TargetRelativePath, StringComparison.Ordinal);
                 _contexts[context.ContextId] = new ContextEntry
                 {
                     Context = context,
-                    ExpiresAt = saved.ExpiresAt,
                 };
             }
         }
+        if (migrationRequired)
+            Persist();
     }
 
     public string PluginInstanceId { get; }
@@ -103,7 +104,8 @@ public sealed class ExportContextRegistry : IDisposable
         string sourceModName,
         int callbackPort,
         ActorIdentity? actorIdentity,
-        string? sourceModRootPath = null)
+        string? sourceModRootPath = null,
+        string? targetRelativePath = null)
     {
         if (!PenumbraService.IsSafeGamePath(gamePath) || objectIndex is < 0 or > ushort.MaxValue ||
             !PenumbraService.IsSafeModName(sourceModDirectory) || callbackPort is < 1 or > 65535)
@@ -123,6 +125,11 @@ public sealed class ExportContextRegistry : IDisposable
             targetFilePath = Path.GetFullPath(targetFilePath);
             targetFolder = Path.GetDirectoryName(targetFilePath)
                 ?? throw new ArgumentException("The original model has no parent directory.");
+            sourceModRootPath = NormalizeRoot(sourceModRootPath);
+            targetRelativePath = ResolveTargetRelativePath(
+                targetFilePath,
+                sourceModRootPath,
+                targetRelativePath);
         }
 
         if (actorIdentity is not null && actorIdentity.ObjectIndex != objectIndex)
@@ -143,17 +150,16 @@ public sealed class ExportContextRegistry : IDisposable
             SourceModDirectory = sourceModDirectory,
             SourceModName = string.IsNullOrWhiteSpace(sourceModName) ? sourceModDirectory : sourceModName,
             SourceModRootPath = sourceModRootPath,
+            TargetRelativePath = targetRelativePath,
             CallbackPort = callbackPort,
         };
 
         lock (_lock)
         {
             ThrowIfDisposed();
-            RemoveExpiredLocked(DateTimeOffset.UtcNow);
             _contexts[context.ContextId] = new ContextEntry
             {
                 Context = context,
-                ExpiresAt = DateTimeOffset.UtcNow + _lifetime,
             };
         }
 
@@ -187,8 +193,6 @@ public sealed class ExportContextRegistry : IDisposable
                 return false;
             }
 
-            var now = DateTimeOffset.UtcNow;
-            RemoveExpiredLocked(now);
             if (!IsSafeId(contextId) || !_contexts.TryGetValue(contextId, out var entry))
             {
                 code = "stale_context";
@@ -210,11 +214,13 @@ public sealed class ExportContextRegistry : IDisposable
             var refreshed = entry.Context with
             {
                 PluginInstanceId = PluginInstanceId,
-                ActorIdentity = _actorIdentityProvider?.Invoke(entry.Context.ObjectIndex),
+                // Native actor addresses are process-local redraw hints. Never
+                // attach a saved context to whichever actor now occupies the
+                // previous object-table index.
+                ActorIdentity = null,
                 CallbackPort = callbackPort,
             };
             entry.Context = refreshed;
-            entry.ExpiresAt = now + _lifetime;
             context = refreshed;
         }
 
@@ -246,7 +252,6 @@ public sealed class ExportContextRegistry : IDisposable
             }
 
             var now = DateTimeOffset.UtcNow;
-            RemoveExpiredLocked(now);
 
             if (!string.Equals(pluginInstanceId, PluginInstanceId, StringComparison.Ordinal))
             {
@@ -319,7 +324,6 @@ public sealed class ExportContextRegistry : IDisposable
                 code = "server_stopped";
                 return false;
             }
-            RemoveExpiredLocked(DateTimeOffset.UtcNow);
             if (!string.Equals(pluginInstanceId, PluginInstanceId, StringComparison.Ordinal))
             {
                 code = "plugin_instance_mismatch";
@@ -354,6 +358,80 @@ public sealed class ExportContextRegistry : IDisposable
         }
     }
 
+    public bool TryGetExportStatus(
+        string pluginInstanceId,
+        string contextId,
+        string exportId,
+        string capability,
+        out Task<ExportReceipt>? completion,
+        out string code)
+    {
+        completion = null;
+        if (!TryAuthorizeOperation(pluginInstanceId, contextId, capability, out _, out code))
+            return false;
+
+        lock (_lock)
+        {
+            if (!_contexts.TryGetValue(contextId, out var entry) || !IsSafeId(exportId))
+            {
+                code = "export_not_found";
+                return false;
+            }
+
+            PruneExportsLocked(entry, DateTimeOffset.UtcNow);
+            if (!entry.Exports.TryGetValue(exportId, out var export))
+            {
+                code = "export_not_found";
+                return false;
+            }
+
+            completion = export.Completion.Task;
+            code = completion.IsCompleted ? "export_complete" : "export_pending";
+            return true;
+        }
+    }
+
+    public bool TryRevoke(
+        string contextId,
+        string importId,
+        string capability,
+        out string code)
+    {
+        var removed = false;
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                code = "server_stopped";
+                return false;
+            }
+            if (!IsSafeId(contextId) || !_contexts.TryGetValue(contextId, out var entry))
+            {
+                code = "context_revoked";
+                return true;
+            }
+            if (!string.Equals(entry.Context.ImportId, importId, StringComparison.Ordinal))
+            {
+                code = "stale_context";
+                return false;
+            }
+            if (!CapabilityMatches(entry.Context.Capability, capability))
+            {
+                code = "invalid_capability";
+                return false;
+            }
+
+            _contexts.Remove(contextId);
+            CompletePendingLocked(entry, "context_removed");
+            removed = true;
+        }
+
+        if (removed)
+            Persist();
+        code = "context_revoked";
+        return true;
+    }
+
     public void RemoveContext(string contextId)
     {
         var removed = false;
@@ -367,15 +445,6 @@ public sealed class ExportContextRegistry : IDisposable
         }
         if (removed)
             Persist();
-    }
-
-    private void RemoveExpiredLocked(DateTimeOffset now)
-    {
-        foreach (var id in _contexts.Where(pair => pair.Value.ExpiresAt <= now).Select(pair => pair.Key).ToArray())
-        {
-            if (_contexts.Remove(id, out var context))
-                CompletePendingLocked(context, "context_expired");
-        }
     }
 
     private static void PruneExportsLocked(ContextEntry context, DateTimeOffset now)
@@ -402,6 +471,58 @@ public sealed class ExportContextRegistry : IDisposable
             export.Completion.TrySetResult(new ExportReceipt(false, code, "the export context is no longer available"));
     }
 
+    private static string? NormalizeRoot(string? root)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+            return null;
+        try
+        {
+            return Path.GetFullPath(root)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            throw new ArgumentException("The source mod root is invalid.", nameof(root));
+        }
+    }
+
+    private static string? ResolveTargetRelativePath(
+        string targetFilePath,
+        string? sourceModRootPath,
+        string? suppliedRelativePath)
+    {
+        var relative = suppliedRelativePath?.Replace('\\', '/').Trim();
+        if (string.IsNullOrWhiteSpace(relative) && sourceModRootPath is not null &&
+            IsPathWithin(targetFilePath, sourceModRootPath))
+            relative = Path.GetRelativePath(sourceModRootPath, targetFilePath).Replace('\\', '/');
+
+        if (string.IsNullOrWhiteSpace(relative))
+            return null;
+        if (!PenumbraService.IsSafeRelativeModelPath(relative))
+            throw new ArgumentException("The target-relative model path is invalid.", nameof(suppliedRelativePath));
+
+        if (sourceModRootPath is not null)
+        {
+            var combined = Path.GetFullPath(Path.Combine(
+                sourceModRootPath,
+                relative.Replace('/', Path.DirectorySeparatorChar)));
+            if (!IsPathWithin(combined, sourceModRootPath) ||
+                !string.Equals(combined, targetFilePath, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("The target-relative path does not match the original model.", nameof(suppliedRelativePath));
+        }
+
+        return relative;
+    }
+
+    private static bool IsPathWithin(string path, string root)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase) ||
+               fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+               fullPath.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsSafeId(string? value)
         => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&
            value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
@@ -422,7 +543,27 @@ public sealed class ExportContextRegistry : IDisposable
     }
 
     private InstantEditImportContext RuntimeContext(PersistedExportContext saved, ActorIdentity? actorIdentity)
-        => new()
+    {
+        var relative = saved.TargetRelativePath;
+        if (string.IsNullOrWhiteSpace(relative) && !string.IsNullOrWhiteSpace(saved.SourceModRootPath))
+        {
+            try
+            {
+                relative = ResolveTargetRelativePath(
+                    Path.GetFullPath(saved.TargetFilePath),
+                    NormalizeRoot(saved.SourceModRootPath),
+                    null);
+            }
+            catch (Exception)
+            {
+                // Legacy contexts without a provable relative destination may
+                // reconnect for display, but export authorization will reject
+                // them until the model is imported again.
+                relative = null;
+            }
+        }
+
+        return new InstantEditImportContext
         {
             PluginInstanceId = PluginInstanceId,
             ContextId = saved.ContextId,
@@ -437,8 +578,10 @@ public sealed class ExportContextRegistry : IDisposable
             SourceModDirectory = saved.SourceModDirectory,
             SourceModName = saved.SourceModName,
             SourceModRootPath = saved.SourceModRootPath,
+            TargetRelativePath = relative,
             CallbackPort = saved.CallbackPort,
         };
+    }
 
     private static bool IsSafePersistedContext(PersistedExportContext saved)
     {
@@ -447,6 +590,8 @@ public sealed class ExportContextRegistry : IDisposable
             !PenumbraService.IsSafeGamePath(saved.GamePath) ||
             !PenumbraService.IsSafeModName(saved.SourceModDirectory) ||
             !PenumbraService.IsSafeLocalModelPath(saved.TargetFilePath) ||
+            (saved.TargetRelativePath is not null &&
+             !PenumbraService.IsSafeRelativeModelPath(saved.TargetRelativePath)) ||
             saved.CallbackPort is < 1 or > 65535 ||
             string.IsNullOrWhiteSpace(saved.SourceModName) || string.IsNullOrWhiteSpace(saved.TargetFolder))
             return false;
@@ -468,7 +613,7 @@ public sealed class ExportContextRegistry : IDisposable
             lock (_lock)
             {
                 snapshot = _contexts.Values
-                    .Select(entry => PersistedExportContext.FromContext(entry.Context, entry.ExpiresAt))
+                    .Select(entry => PersistedExportContext.FromContext(entry.Context, DateTimeOffset.MaxValue))
                     .ToList();
             }
 

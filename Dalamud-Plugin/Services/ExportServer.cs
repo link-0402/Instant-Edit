@@ -78,6 +78,45 @@ public sealed class ExportServer : IDisposable
         public string? Capability { get; set; }
     }
 
+    private sealed class RevokeRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+
+        [JsonPropertyName("importId")]
+        public string? ImportId { get; set; }
+
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+    }
+
+    private sealed class ExportStatusRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+
+        [JsonPropertyName("pluginInstanceId")]
+        public string? PluginInstanceId { get; set; }
+
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+
+        [JsonPropertyName("exportId")]
+        public string? ExportId { get; set; }
+
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+    }
+
     private sealed class BackupRestoreRequest
     {
         [JsonPropertyName("schema")]
@@ -103,6 +142,7 @@ public sealed class ExportServer : IDisposable
     }
 
     private sealed record HttpRequest(string Method, string Path, byte[] Body);
+    internal sealed record StagedExport(string FilePath, string DirectoryPath);
 
     private readonly Configuration    _config;
     private readonly PenumbraService  _penumbra;
@@ -143,6 +183,7 @@ public sealed class ExportServer : IDisposable
 
     public void Start()
     {
+        CleanupStaleStagedExports();
         lock (_listenerLock)
         {
             if (_listener is not null || _cts.IsCancellationRequested)
@@ -308,7 +349,13 @@ public sealed class ExportServer : IDisposable
                 ok = true,
                 running = true,
                 target = "original_source_mod",
-                capabilities = new[] { "instant-edit.context-reattach.v1", "instant-edit.backup-restore.v1" },
+                capabilities = new[]
+                {
+                    "instant-edit.context-reattach.v1",
+                    "instant-edit.context-revoke.v1",
+                    "instant-edit.export-status.v1",
+                    "instant-edit.backup-restore.v1",
+                },
             }));
 
         if (method == "POST" && path.TrimEnd('/') == "/context/reattach")
@@ -353,6 +400,45 @@ public sealed class ExportServer : IDisposable
             return (200, Json(new { ok = true, code = registryCode, context }));
         }
 
+        if (method == "POST" && path.TrimEnd('/') == "/context/revoke")
+        {
+            var parsed = DeserializeRequest<RevokeRequest>(request.Body, "context revoke", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var revoke = parsed!;
+            if (!string.Equals(revoke.Schema, "instant-edit.context-revoke", StringComparison.Ordinal) ||
+                revoke.Version != 1 || !IsSafeId(revoke.ContextId) || !IsSafeId(revoke.ImportId) ||
+                string.IsNullOrWhiteSpace(revoke.Capability))
+                return Error(400, "malformed_request", "unsupported or malformed context revoke envelope");
+            if (!_contexts.TryRevoke(revoke.ContextId!, revoke.ImportId!, revoke.Capability!, out var registryCode))
+                return Error(StatusForCode(registryCode), registryCode, "export context revocation was rejected");
+            return (200, Json(new { ok = true, code = registryCode }));
+        }
+
+        if (method == "POST" && path.TrimEnd('/') == "/export/status")
+        {
+            var parsed = DeserializeRequest<ExportStatusRequest>(request.Body, "export status", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var status = parsed!;
+            if (!string.Equals(status.Schema, "instant-edit.export-status", StringComparison.Ordinal) ||
+                status.Version != 1 || string.IsNullOrWhiteSpace(status.PluginInstanceId) ||
+                !IsSafeId(status.ContextId) || !IsSafeId(status.ExportId) ||
+                string.IsNullOrWhiteSpace(status.Capability))
+                return Error(400, "malformed_request", "unsupported or malformed export status envelope");
+            if (!_contexts.TryGetExportStatus(
+                    status.PluginInstanceId!,
+                    status.ContextId!,
+                    status.ExportId!,
+                    status.Capability!,
+                    out var completion,
+                    out var registryCode) || completion is null)
+                return Error(StatusForCode(registryCode), registryCode, "export receipt was not found");
+            if (!completion.IsCompleted)
+                return (202, Json(new { ok = true, code = "export_pending", complete = false }));
+            return ResultResponse(await completion.ConfigureAwait(false));
+        }
+
         if (method == "POST" && path.TrimEnd('/') == "/backup/restore")
         {
             string body;
@@ -388,6 +474,8 @@ public sealed class ExportServer : IDisposable
             var result = await _penumbra.RestoreSourceBackupAsync(
                 target.SourceModDirectory,
                 target.TargetFilePath,
+                target.SourceModRootPath,
+                target.TargetRelativePath,
                 target.GamePath,
                 restore.BackupName!,
                 target.ObjectIndex,
@@ -395,8 +483,10 @@ public sealed class ExportServer : IDisposable
                 ParseRedrawMode(restore.RedrawMode)).ConfigureAwait(false);
             return ResultResponse(new ExportReceipt(
                 result.Success,
-                result.Success ? "backup_restored" : "restore_failed",
-                result.Message));
+                result.Code,
+                result.Message,
+                result.WarningList,
+                result.TargetFilePath));
         }
 
         if (method == "POST" && path.TrimEnd('/') == "/export")
@@ -451,19 +541,27 @@ public sealed class ExportServer : IDisposable
             }
 
             ExportReceipt receipt;
+            StagedExport? staged = null;
             try
             {
-                var fileError = await VerifyExportFileAsync(export.FilePath!, export.Size, export.Sha256!).ConfigureAwait(false);
-                if (fileError is not null)
+                var stageResult = await StageExportFileAsync(
+                    export.FilePath!,
+                    export.Size,
+                    export.Sha256!).ConfigureAwait(false);
+                staged = stageResult.Export;
+                if (stageResult.Error is not null)
                 {
-                    receipt = new ExportReceipt(false, fileError.Value.Code, fileError.Value.Message);
+                    receipt = new ExportReceipt(
+                        false,
+                        stageResult.Error.Value.Code,
+                        stageResult.Error.Value.Message);
                 }
                 else
                 {
                     var target = reservation.Context;
                     receipt = await ApplyExport(
                         target,
-                        export.FilePath!,
+                        staged!.FilePath,
                         export.VariantName,
                         export.VariantGroupName,
                         export.SetupInPenumbra,
@@ -475,6 +573,10 @@ public sealed class ExportServer : IDisposable
             {
                 _log.Error(e, "Export processing failed.");
                 receipt = new ExportReceipt(false, "internal_error", "export processing failed");
+            }
+            finally
+            {
+                CleanupStagedExport(staged);
             }
 
             _contexts.CompleteExport(export.ContextId!, export.ExportId!, receipt);
@@ -500,6 +602,8 @@ public sealed class ExportServer : IDisposable
             var result = await _penumbra.ApplySourceExportAsync(
                 target.SourceModDirectory,
                 target.TargetFilePath,
+                target.SourceModRootPath,
+                target.TargetRelativePath,
                 target.GamePath,
                 filePath,
                 target.ObjectIndex,
@@ -511,8 +615,43 @@ public sealed class ExportServer : IDisposable
                 backupExisting).ConfigureAwait(false);
             return new ExportReceipt(
                 result.Success,
-                result.Success ? "export_applied" : "apply_failed",
-                result.Message);
+                result.Code,
+                result.Message,
+                result.WarningList,
+                result.TargetFilePath);
+        }
+    }
+
+    private T? DeserializeRequest<T>(
+        byte[] bodyBytes,
+        string operation,
+        out (int Status, string Body)? error)
+        where T : class
+    {
+        error = null;
+        string body;
+        try
+        {
+            body = new UTF8Encoding(false, true).GetString(bodyBytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            error = Error(400, "invalid_utf8", "request body is not valid UTF-8");
+            return null;
+        }
+
+        try
+        {
+            var value = JsonSerializer.Deserialize<T>(body, JsonOpts);
+            if (value is null)
+                error = Error(400, "malformed_request", "request must be a JSON object");
+            return value;
+        }
+        catch (Exception e)
+        {
+            _log.Error(e, $"Failed to parse {operation} request.");
+            error = Error(400, "invalid_json", "request body is not valid JSON");
+            return null;
         }
     }
 
@@ -614,58 +753,145 @@ public sealed class ExportServer : IDisposable
         => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&
            value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
 
-    private static async Task<(string Code, string Message)?> VerifyExportFileAsync(
+    internal static async Task<(StagedExport? Export, (string Code, string Message)? Error)> StageExportFileAsync(
         string filePath,
         long expectedSize,
         string expectedSha256)
     {
         string fullPath;
+        StagedExport? staged = null;
+        var retainStaged = false;
         try
         {
             if (string.IsNullOrWhiteSpace(filePath) || filePath.Length > 4096 || filePath.Contains('\0') ||
                 !Path.IsPathRooted(filePath) || filePath.StartsWith("\\\\", StringComparison.Ordinal) ||
                 !string.Equals(Path.GetExtension(filePath), ".mdl", StringComparison.OrdinalIgnoreCase) ||
                 filePath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries).Any(segment => segment is "." or ".."))
-                return ("unsafe_file_path", "filePath must be a local absolute .mdl path");
+                return (null, ("unsafe_file_path", "filePath must be a local absolute .mdl path"));
 
             fullPath = Path.GetFullPath(filePath);
             var parent = Path.GetDirectoryName(fullPath);
+            if (!File.Exists(fullPath))
+                return (null, ("file_not_found", "export file was not found"));
             if ((File.GetAttributes(fullPath) & FileAttributes.ReparsePoint) != 0 ||
                 (parent is not null && HasReparsePointInPath(parent)))
-                return ("unsafe_file_path", "filePath must not be a reparse point");
+                return (null, ("unsafe_file_path", "filePath must not be a reparse point"));
 
             var info = new FileInfo(fullPath);
-            if (!info.Exists)
-                return ("file_not_found", "export file was not found");
             if (info.Length != expectedSize)
-                return ("size_mismatch", "export file size did not match the request");
+                return (null, ("size_mismatch", "export file size did not match the request"));
             if (info.Length > MaxExportBytes)
-                return ("invalid_size", "export file is too large");
+                return (null, ("invalid_size", "export file is too large"));
 
-            await using var stream = new FileStream(
+            var stagingRoot = Path.Combine(Path.GetTempPath(), "InstantEdit", "plugin-exports");
+            Directory.CreateDirectory(stagingRoot);
+            if ((File.GetAttributes(stagingRoot) & FileAttributes.ReparsePoint) != 0 ||
+                HasReparsePointInPath(Path.GetDirectoryName(stagingRoot)!))
+                return (null, ("internal_error", "plugin export staging directory is unsafe"));
+            var stagingDirectory = Path.Combine(stagingRoot, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stagingDirectory);
+            staged = new StagedExport(Path.Combine(stagingDirectory, "model.mdl"), stagingDirectory);
+
+            await using var source = new FileStream(
                 fullPath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.Read,
                 64 * 1024,
                 FileOptions.SequentialScan);
-            using var sha = SHA256.Create();
-            var actual = Convert.ToHexString(await sha.ComputeHashAsync(stream).ConfigureAwait(false));
-            return string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase)
-                ? null
-                : ("hash_mismatch", "export file hash did not match the request");
+            await using var destination = new FileStream(
+                staged.FilePath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                64 * 1024,
+                FileOptions.SequentialScan);
+            using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var buffer = new byte[64 * 1024];
+            long copied = 0;
+            while (true)
+            {
+                var read = await source.ReadAsync(buffer).ConfigureAwait(false);
+                if (read == 0)
+                    break;
+                copied += read;
+                if (copied > MaxExportBytes)
+                {
+                    return (null, ("invalid_size", "export file is too large"));
+                }
+                sha.AppendData(buffer, 0, read);
+                await destination.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
+            }
+            await destination.FlushAsync().ConfigureAwait(false);
+
+            if (copied != expectedSize)
+            {
+                return (null, ("size_mismatch", "export file size changed during staging"));
+            }
+            var actual = Convert.ToHexString(sha.GetHashAndReset());
+            if (!string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return (null, ("hash_mismatch", "export file hash did not match the request"));
+            }
+            retainStaged = true;
+            return (staged, null);
         }
         catch (UnauthorizedAccessException)
         {
-            return ("unsafe_file_path", "export file is not readable");
+            return (null, ("unsafe_file_path", "export file is not readable"));
         }
         catch (IOException)
         {
-            return ("file_not_readable", "export file could not be read");
+            return (null, ("file_not_readable", "export file could not be staged"));
         }
         catch (ArgumentException)
         {
-            return ("unsafe_file_path", "filePath is invalid");
+            return (null, ("unsafe_file_path", "filePath is invalid"));
+        }
+        finally
+        {
+            if (!retainStaged)
+                CleanupStagedExport(staged);
+        }
+    }
+
+    internal static void CleanupStagedExport(StagedExport? staged)
+    {
+        if (staged is null)
+            return;
+        try
+        {
+            if (Directory.Exists(staged.DirectoryPath))
+                Directory.Delete(staged.DirectoryPath, true);
+        }
+        catch
+        {
+            // Crash/stale staging cleanup is best-effort; it must never change
+            // an already recorded export result.
+        }
+    }
+
+    private static void CleanupStaleStagedExports()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "InstantEdit", "plugin-exports");
+        try
+        {
+            if (!Directory.Exists(root) || (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0 ||
+                HasReparsePointInPath(Path.GetDirectoryName(root)!))
+                return;
+            var cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
+            foreach (var directory in Directory.EnumerateDirectories(root))
+            {
+                var info = new DirectoryInfo(directory);
+                if (!Guid.TryParseExact(info.Name, "N", out _) ||
+                    (info.Attributes & FileAttributes.ReparsePoint) != 0 || info.LastWriteTimeUtc >= cutoff)
+                    continue;
+                info.Delete(true);
+            }
+        }
+        catch
+        {
+            // Cleanup is best-effort and never prevents the listener starting.
         }
     }
 
@@ -687,7 +913,14 @@ public sealed class ExportServer : IDisposable
 
     private static (int Status, string Body) ResultResponse(ExportReceipt receipt)
         => receipt.Success
-            ? (200, Json(new { ok = true, code = receipt.Code, message = receipt.Message }))
+            ? (200, Json(new
+            {
+                ok = true,
+                code = receipt.Code,
+                message = receipt.Message,
+                warnings = receipt.Warnings ?? Array.Empty<string>(),
+                targetFilePath = receipt.TargetFilePath,
+            }))
             : Error(StatusForCode(receipt.Code), receipt.Code, receipt.Message);
 
     private static int StatusForCode(string code)
@@ -696,6 +929,7 @@ public sealed class ExportServer : IDisposable
             "stale_context" => 410,
             "invalid_capability" or "plugin_instance_mismatch" => 401,
             "duplicate_export_id" => 409,
+            "export_not_found" => 404,
             "server_stopped" or "internal_error" => 500,
             _ => 400,
         };
@@ -776,7 +1010,11 @@ public sealed class ExportServer : IDisposable
         var reason = status switch
         {
             200 => "OK",
+            202 => "Accepted",
             400 => "Bad Request",
+            401 => "Unauthorized",
+            409 => "Conflict",
+            410 => "Gone",
             500 => "Internal Server Error",
             _   => "Not Found",
         };

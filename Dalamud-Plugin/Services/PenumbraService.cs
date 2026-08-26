@@ -11,7 +11,20 @@ using Penumbra.Api.IpcSubscribers;
 namespace InstantEdit.Services;
 
 /// <summary> Result of applying an export to Penumbra. </summary>
-public sealed record ExportResult(bool Success, string Message);
+public sealed record ExportResult(
+    bool Success,
+    string Code,
+    string Message,
+    IReadOnlyList<string>? Warnings = null,
+    string? TargetFilePath = null)
+{
+    public ExportResult(bool success, string message)
+        : this(success, success ? "export_applied" : "apply_failed", message)
+    {
+    }
+
+    public IReadOnlyList<string> WarningList => Warnings ?? Array.Empty<string>();
+}
 
 /// <summary>
 /// Wraps all Penumbra IPC used by Instant Edit:
@@ -20,7 +33,8 @@ public sealed record ExportResult(bool Success, string Message);
 /// </summary>
 public sealed class PenumbraService
 {
-    private sealed record SourceModTarget(string Directory, string Folder, string FilePath);
+    internal sealed record SourceModTarget(string Directory, string Folder, string FilePath, string RelativePath);
+    internal sealed record SourceTargetResolution(SourceModTarget? Target, string Code, string? Error);
 
     private const string OwnershipMarkerFile = ".instant-edit-owner.json";
     private const string OwnershipSchema = "instant-edit.owner";
@@ -318,6 +332,8 @@ public sealed class PenumbraService
     public async Task<ExportResult> ApplySourceExportAsync(
         string sourceModDirectory,
         string sourceFilePath,
+        string? sourceModRootPath,
+        string? targetRelativePath,
         string sourceGamePath,
         string exportedFile,
         int objectIndex,
@@ -329,38 +345,40 @@ public sealed class PenumbraService
         bool backupExisting = false)
     {
         if (objectIndex is < 0 or > ushort.MaxValue)
-            return new ExportResult(false, "Invalid object index.");
+            return new ExportResult(false, "invalid_request", "Invalid object index.");
         if (!IsSafeModName(sourceModDirectory) || !IsSafeGamePath(sourceGamePath) ||
             !IsSafeLocalModelPath(sourceFilePath))
-            return new ExportResult(false, "The original Penumbra model destination is invalid.");
+            return new ExportResult(false, "destination_unsafe", "The original Penumbra model destination is invalid.");
         var validationError = ValidateExportRequest(sourceModDirectory, sourceGamePath, exportedFile);
         if (validationError is not null)
-            return new ExportResult(false, validationError);
+            return new ExportResult(false, "invalid_export_file", validationError);
         if (variantName is not null && !IsSafeVariantName(variantName))
-            return new ExportResult(false, "Invalid variant name.");
+            return new ExportResult(false, "invalid_variant_name", "Invalid variant name.");
         if (variantName is not null && string.Equals(
                 variantName,
                 Path.GetFileNameWithoutExtension(sourceGamePath),
                 StringComparison.OrdinalIgnoreCase))
-            return new ExportResult(false, "Variant name must differ from the originally imported model name.");
+            return new ExportResult(false, "invalid_variant_name", "Variant name must differ from the originally imported model name.");
         if (setupVariantInPenumbra && variantName is null)
-            return new ExportResult(false, "Penumbra variant setup requires Save as Variant.");
+            return new ExportResult(false, "invalid_variant", "Penumbra variant setup requires Save as Variant.");
         if (setupVariantInPenumbra && !IsSafeVariantGroupName(variantGroupName))
-            return new ExportResult(false, "Penumbra variant setup requires an option group name.");
+            return new ExportResult(false, "invalid_variant_group", "Penumbra variant setup requires an option group name.");
 
         await _exportGate.WaitAsync().ConfigureAwait(false);
+        string? committedTarget = null;
         try
         {
             var resolved = await _framework.RunOnFrameworkThread(
-                () => ResolveSourceModTargetOnFramework(sourceModDirectory, sourceFilePath)).ConfigureAwait(false);
+                () => ResolveSourceModTargetOnFramework(
+                    sourceModDirectory,
+                    sourceFilePath,
+                    sourceModRootPath,
+                    targetRelativePath)).ConfigureAwait(false);
             if (resolved.Target is null)
-                return new ExportResult(false, resolved.Error ?? "The original Penumbra mod is no longer available.");
-
-            var targetError = await _framework.RunOnFrameworkThread(
-                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity, resolved.Target.FilePath))
-                .ConfigureAwait(false);
-            if (targetError is not null)
-                return new ExportResult(false, $"The source actor changed before export ({targetError}). Please import it again.");
+                return new ExportResult(
+                    false,
+                    resolved.Code,
+                    resolved.Error ?? "The original Penumbra mod is no longer available.");
 
             var targetFile = variantName is null
                 ? resolved.Target.FilePath
@@ -371,7 +389,10 @@ public sealed class PenumbraService
                 exportedFile,
                 backupExisting);
             if (writeError is not null)
-                return new ExportResult(false, writeError);
+                return new ExportResult(false, "write_failed", writeError);
+            committedTarget = targetFile;
+
+            var warnings = new List<string>();
 
             if (setupVariantInPenumbra)
             {
@@ -383,61 +404,38 @@ public sealed class PenumbraService
                     variantName!,
                     variantGroupName!);
                 if (groupError is not null)
-                    return new ExportResult(false, groupError);
+                    warnings.Add($"Penumbra variant setup failed: {groupError}");
             }
 
             var reloadError = await _framework.RunOnFrameworkThread(
                 () => ReloadModOnFramework(resolved.Target.Directory)).ConfigureAwait(false);
             if (reloadError is not null)
-                return reloadError;
-
-            return await _framework.RunOnFrameworkThread(() =>
+                warnings.Add(reloadError.Message);
+            else
             {
-                try
-                {
-                    if (redrawMode == ExportRedrawMode.Self)
-                    {
-                        var redrawError = ValidateTargetOnFramework(
-                            sourceGamePath,
-                            objectIndex,
-                            actorIdentity,
-                            resolved.Target.FilePath);
-                        if (redrawError is not null)
-                            return new ExportResult(
-                                true,
-                                $"Exported to {targetFile} and reloaded {resolved.Target.Directory}; the source actor changed, so redraw was skipped.");
-                    }
+                var redrawWarning = await _framework.RunOnFrameworkThread(
+                    () => RedrawAfterCommitOnFramework(redrawMode, objectIndex, actorIdentity)).ConfigureAwait(false);
+                if (redrawWarning is not null)
+                    warnings.Add(redrawWarning);
+            }
 
-                    switch (redrawMode)
-                    {
-                        case ExportRedrawMode.All:
-                            _redrawAll.Invoke();
-                            break;
-                        case ExportRedrawMode.Glamourer:
-                            return new ExportResult(
-                                true,
-                                $"Exported to {targetFile} and reloaded {resolved.Target.Directory}; redraw left to Glamourer.");
-                        default:
-                            _redrawObject.Invoke(objectIndex);
-                            break;
-                    }
-
-                    var redrawTarget = redrawMode == ExportRedrawMode.All ? "all actors" : "the source actor";
-                    return new ExportResult(
-                        true,
-                        $"Exported to {targetFile}, reloaded {resolved.Target.Directory}, and redrew {redrawTarget}.");
-                }
-                catch (Exception e)
-                {
-                    _log.Error(e, "Penumbra redraw failed after exporting to the source mod.");
-                    return new ExportResult(false, $"Export succeeded, but redraw failed: {e.Message}");
-                }
-            }).ConfigureAwait(false);
+            var code = warnings.Count == 0 ? "export_applied" : "export_applied_with_warnings";
+            var message = warnings.Count == 0
+                ? $"Exported to {targetFile} and reloaded {resolved.Target.Directory}."
+                : $"Exported to {targetFile}; {warnings.Count} follow-up warning(s).";
+            return new ExportResult(true, code, message, warnings, targetFile);
         }
         catch (Exception e)
         {
             _log.Error(e, "Failed to export to the original Penumbra mod.");
-            return new ExportResult(false, $"Failed to export to the original mod: {e.Message}");
+            if (committedTarget is not null)
+                return new ExportResult(
+                    true,
+                    "export_applied_with_warnings",
+                    $"Exported to {committedTarget}; follow-up processing failed.",
+                    [$"Follow-up processing failed: {e.Message}"],
+                    committedTarget);
+            return new ExportResult(false, "write_failed", $"Failed before the model write could be committed: {e.Message}");
         }
         finally
         {
@@ -445,40 +443,272 @@ public sealed class PenumbraService
         }
     }
 
-    private (SourceModTarget? Target, string? Error) ResolveSourceModTargetOnFramework(
+    private SourceTargetResolution ResolveSourceModTargetOnFramework(
         string sourceModDirectory,
-        string sourceFilePath)
+        string sourceFilePath,
+        string? sourceModRootPath,
+        string? targetRelativePath)
     {
-        var root = GetModDirectory();
-        if (string.IsNullOrWhiteSpace(root))
-            return (null, "Couldn't retrieve the Penumbra mod directory.");
         if (!TryGetModList(out var modList))
-            return (null, "Could not retrieve the Penumbra mod list.");
+            return new SourceTargetResolution(null, "penumbra_unavailable", "Could not retrieve the Penumbra mod list.");
 
         var registeredDirectory = modList.Keys.FirstOrDefault(directory =>
             string.Equals(directory, sourceModDirectory, StringComparison.OrdinalIgnoreCase));
         if (registeredDirectory is null)
-            return (null, "The source mod is no longer registered in Penumbra.");
+            return new SourceTargetResolution(null, "source_mod_missing", "The source mod is no longer registered in Penumbra.");
 
         try
         {
-            var modRoot = Path.GetFullPath(root);
-            var modFolder = Path.GetFullPath(Path.Combine(modRoot, registeredDirectory));
-            var modelFile = Path.GetFullPath(sourceFilePath);
-            var modelFolder = Path.GetDirectoryName(modelFile);
-            if (!IsPathWithin(modFolder, modRoot) || !IsPathWithin(modelFile, modFolder) ||
-                modelFolder is null || !Directory.Exists(modelFolder) ||
-                !IsSafeLocalModelPath(modelFile))
-                return (null, "The original Penumbra destination folder is no longer available.");
-            if (HasReparsePointInPath(modFolder, modelFolder) ||
-                (File.Exists(modelFile) && (File.GetAttributes(modelFile) & FileAttributes.ReparsePoint) != 0))
-                return (null, "The original model path contains an unsupported reparse point.");
-
-            return (new SourceModTarget(registeredDirectory, modFolder, modelFile), null);
+            var modPath = _getModPath.Invoke(registeredDirectory, string.Empty);
+            var configuredRoot = GetModDirectory();
+            return ResolveSourceModTargetFromRoots(
+                registeredDirectory,
+                sourceFilePath,
+                sourceModRootPath,
+                targetRelativePath,
+                modPath.Item1 is PenumbraApiEc.Success ? modPath.Item2 : null,
+                string.IsNullOrWhiteSpace(configuredRoot)
+                    ? null
+                    : Path.Combine(configuredRoot, registeredDirectory));
         }
         catch (Exception e)
         {
-            return (null, $"Could not validate the original model destination: {e.Message}");
+            return new SourceTargetResolution(
+                null,
+                "destination_unavailable",
+                $"Could not validate the original model destination: {e.Message}");
+        }
+    }
+
+    internal static SourceTargetResolution ResolveSourceModTargetFromRoots(
+        string registeredDirectory,
+        string sourceFilePath,
+        string? sourceModRootPath,
+        string? targetRelativePath,
+        string? currentRegisteredRoot,
+        string? configuredFallbackRoot)
+    {
+        try
+        {
+            var roots = new List<(string Root, bool Preferred)>();
+            AddExportRoot(roots, currentRegisteredRoot, true, targetRelativePath);
+            AddExportRoot(roots, configuredFallbackRoot, false, targetRelativePath);
+            AddExportRoot(roots, sourceModRootPath, false, targetRelativePath);
+
+            var relative = NormalizeRelativeModelPath(targetRelativePath);
+            if (!string.IsNullOrWhiteSpace(targetRelativePath) && relative is null)
+                return new SourceTargetResolution(
+                    null,
+                    "destination_unsafe",
+                    "The authorized target-relative model path is unsafe.");
+            if (relative is null && !string.IsNullOrWhiteSpace(sourceModRootPath) &&
+                TryRelativeModelPath(sourceFilePath, sourceModRootPath, out var storedRelative))
+                relative = storedRelative;
+            if (relative is null)
+            {
+                foreach (var root in roots)
+                {
+                    if (TryRelativeModelPath(sourceFilePath, root.Root, out var candidateRelative))
+                    {
+                        relative = candidateRelative;
+                        break;
+                    }
+                }
+            }
+            if (relative is null)
+                return new SourceTargetResolution(
+                    null,
+                    "destination_unresolvable",
+                    "The saved context has no safe model path relative to the registered mod.");
+
+            var valid = new List<(SourceModTarget Target, bool Preferred)>();
+            var sawMissingFolder = false;
+            var sawUnsafe = false;
+            // Once Penumbra resolves the registered directory key, that root
+            // is authoritative. Older/configured roots may help derive the
+            // relative path, but must never receive a write as a fallback.
+            var resolutionRoots = roots.Any(candidate => candidate.Preferred)
+                ? roots.Where(candidate => candidate.Preferred)
+                : roots;
+            foreach (var candidate in resolutionRoots)
+            {
+                if (!Directory.Exists(candidate.Root))
+                    continue;
+                var target = Path.GetFullPath(Path.Combine(
+                    candidate.Root,
+                    relative.Replace('/', Path.DirectorySeparatorChar)));
+                var parent = Path.GetDirectoryName(target);
+                if (parent is null || !IsPathWithin(target, candidate.Root))
+                {
+                    sawUnsafe = true;
+                    continue;
+                }
+                if (!Directory.Exists(parent))
+                {
+                    sawMissingFolder = true;
+                    continue;
+                }
+                if (HasReparsePointInPath(candidate.Root, parent) ||
+                    (File.Exists(target) && (File.GetAttributes(target) & FileAttributes.ReparsePoint) != 0))
+                {
+                    sawUnsafe = true;
+                    continue;
+                }
+                valid.Add((
+                    new SourceModTarget(registeredDirectory, candidate.Root, target, relative),
+                    candidate.Preferred));
+            }
+
+            var preferred = valid.Where(item => item.Preferred).Select(item => item.Target).FirstOrDefault();
+            if (preferred is not null)
+                return new SourceTargetResolution(preferred, "accepted", null);
+            var distinct = valid
+                .Select(item => item.Target)
+                .DistinctBy(item => item.FilePath, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (distinct.Length == 1)
+                return new SourceTargetResolution(distinct[0], "accepted", null);
+            if (distinct.Length > 1)
+                return new SourceTargetResolution(
+                    null,
+                    "destination_ambiguous",
+                    "Multiple registered mod roots contain the authorized destination.");
+            if (sawUnsafe)
+                return new SourceTargetResolution(
+                    null,
+                    "destination_unsafe",
+                    "The original model path contains an unsupported reparse point or escapes the mod root.");
+            return new SourceTargetResolution(
+                null,
+                "destination_missing",
+                sawMissingFolder
+                    ? "The original Penumbra destination folder is no longer available."
+                    : "The registered Penumbra mod root is no longer available.");
+        }
+        catch (Exception e)
+        {
+            return new SourceTargetResolution(
+                null,
+                "destination_unavailable",
+                $"Could not validate the original model destination: {e.Message}");
+        }
+    }
+
+    /// <summary>Resolve the root currently registered for a Penumbra directory key.</summary>
+    public string? GetRegisteredModPath(string modDirectory)
+    {
+        if (!IsSafeModName(modDirectory))
+            return null;
+        try
+        {
+            var result = _getModPath.Invoke(modDirectory, string.Empty);
+            if (result.Item1 is not PenumbraApiEc.Success)
+                return null;
+            var path = NormalizePhysicalPath(result.Item2);
+            if (path is null)
+                return null;
+            return string.Equals(Path.GetFileName(path), "Files", StringComparison.OrdinalIgnoreCase)
+                ? Directory.GetParent(path)?.FullName ?? path
+                : path;
+        }
+        catch (Exception e)
+        {
+            _log.Debug($"Could not retrieve the registered path for {modDirectory}: {e.Message}");
+            return null;
+        }
+    }
+
+    private static void AddExportRoot(
+        List<(string Root, bool Preferred)> roots,
+        string? value,
+        bool preferred,
+        string? targetRelativePath)
+    {
+        var normalized = NormalizePhysicalPath(value);
+        if (normalized is null)
+            return;
+
+        // Some Penumbra layouts expose the Files directory as the mod path.
+        // The durable relative path is rooted at the folder containing mod
+        // metadata, so normalize that representation back to the mod root.
+        if (string.Equals(Path.GetFileName(normalized), "Files", StringComparison.OrdinalIgnoreCase) &&
+            NormalizeRelativeModelPath(targetRelativePath)?.StartsWith("Files/", StringComparison.OrdinalIgnoreCase) == true)
+            normalized = Directory.GetParent(normalized)?.FullName ?? normalized;
+
+        var existing = roots.FindIndex(item => string.Equals(item.Root, normalized, StringComparison.OrdinalIgnoreCase));
+        if (existing >= 0)
+        {
+            if (preferred && !roots[existing].Preferred)
+                roots[existing] = (normalized, true);
+            return;
+        }
+        roots.Add((normalized, preferred));
+    }
+
+    private static bool TryRelativeModelPath(string filePath, string root, out string relative)
+    {
+        relative = string.Empty;
+        try
+        {
+            var fullFile = Path.GetFullPath(filePath);
+            var fullRoot = Path.GetFullPath(root);
+            if (!IsPathWithin(fullFile, fullRoot))
+                return false;
+            var candidate = Path.GetRelativePath(fullRoot, fullFile).Replace('\\', '/');
+            var normalized = NormalizeRelativeModelPath(candidate);
+            if (normalized is null)
+                return false;
+            relative = normalized;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? NormalizeRelativeModelPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        var normalized = value.Replace('\\', '/').Trim();
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+            normalized = normalized[2..];
+        normalized = normalized.TrimStart('/');
+        return IsSafeRelativeModelPath(normalized) ? normalized : null;
+    }
+
+    private string? RedrawAfterCommitOnFramework(
+        ExportRedrawMode redrawMode,
+        int objectIndex,
+        ActorIdentity? expectedActor)
+    {
+        try
+        {
+            switch (redrawMode)
+            {
+                case ExportRedrawMode.All:
+                    _redrawAll.Invoke();
+                    return null;
+                case ExportRedrawMode.Glamourer:
+                    return null;
+                default:
+                    if (_objects is null || expectedActor is null)
+                        return "The source actor could not be verified after reconnect; self redraw was skipped.";
+                    if (expectedActor.ObjectIndex != objectIndex)
+                        return "The source actor changed; self redraw was skipped.";
+                    var current = _objects[(ushort)objectIndex];
+                    if (current is null || current.Address == nint.Zero ||
+                        current.Address.ToInt64() != expectedActor.Address)
+                        return "The source actor changed; self redraw was skipped.";
+                    _redrawObject.Invoke(objectIndex);
+                    return null;
+            }
+        }
+        catch (Exception e)
+        {
+            _log.Error(e, "Penumbra redraw failed after committing the model file.");
+            return $"Penumbra redraw failed: {e.Message}";
         }
     }
 
@@ -660,6 +890,8 @@ public sealed class PenumbraService
     public async Task<ExportResult> RestoreSourceBackupAsync(
         string sourceModDirectory,
         string sourceFilePath,
+        string? sourceModRootPath,
+        string? targetRelativePath,
         string sourceGamePath,
         string backupName,
         int objectIndex,
@@ -669,86 +901,75 @@ public sealed class PenumbraService
         if (objectIndex is < 0 or > ushort.MaxValue ||
             !IsSafeModName(sourceModDirectory) || !IsSafeGamePath(sourceGamePath) ||
             !IsSafeLocalModelPath(sourceFilePath) || !TryGetBackupOriginal(backupName, out var originalName))
-            return new ExportResult(false, "The backup restore request is invalid.");
+            return new ExportResult(false, "invalid_restore", "The backup restore request is invalid.");
 
         await _exportGate.WaitAsync().ConfigureAwait(false);
+        string? committedTarget = null;
         try
         {
             var resolved = await _framework.RunOnFrameworkThread(
-                () => ResolveSourceModTargetOnFramework(sourceModDirectory, sourceFilePath)).ConfigureAwait(false);
+                () => ResolveSourceModTargetOnFramework(
+                    sourceModDirectory,
+                    sourceFilePath,
+                    sourceModRootPath,
+                    targetRelativePath)).ConfigureAwait(false);
             if (resolved.Target is null)
-                return new ExportResult(false, resolved.Error ?? "The original Penumbra mod is no longer available.");
-
-            var targetError = await _framework.RunOnFrameworkThread(
-                () => ValidateTargetOnFramework(sourceGamePath, objectIndex, actorIdentity, resolved.Target.FilePath))
-                .ConfigureAwait(false);
-            if (targetError is not null)
-                return new ExportResult(false, $"The source actor changed before restore ({targetError}). Please import it again.");
+                return new ExportResult(
+                    false,
+                    resolved.Code,
+                    resolved.Error ?? "The original Penumbra mod is no longer available.");
 
             var parent = Path.GetDirectoryName(resolved.Target.FilePath);
             if (parent is null || !string.Equals(Path.GetExtension(originalName), ".mdl", StringComparison.OrdinalIgnoreCase))
-                return new ExportResult(false, "The backup target is invalid.");
+                return new ExportResult(false, "invalid_restore", "The backup target is invalid.");
             var backupPath = Path.Combine(parent, backupName);
             var targetPath = Path.Combine(parent, originalName);
             if (!IsPathWithin(backupPath, resolved.Target.Folder) ||
                 !IsPathWithin(targetPath, resolved.Target.Folder) ||
                 !string.Equals(Path.GetDirectoryName(backupPath), parent, StringComparison.OrdinalIgnoreCase) ||
                 !File.Exists(backupPath) || new FileInfo(backupPath).Length == 0)
-                return new ExportResult(false, "The backup is not in the authorized model folder.");
+                return new ExportResult(false, "backup_missing", "The backup is not in the authorized model folder.");
             if (HasReparsePointInPath(resolved.Target.Folder, parent) ||
                 (File.Exists(backupPath) && (File.GetAttributes(backupPath) & FileAttributes.ReparsePoint) != 0) ||
                 (File.Exists(targetPath) && (File.GetAttributes(targetPath) & FileAttributes.ReparsePoint) != 0))
-                return new ExportResult(false, "The backup target contains an unsupported reparse point.");
+                return new ExportResult(false, "destination_unsafe", "The backup target contains an unsupported reparse point.");
 
             var writeError = RestoreModelBackup(targetPath, backupPath);
             if (writeError is not null)
-                return new ExportResult(false, writeError);
+                return new ExportResult(false, "restore_write_failed", writeError);
+            committedTarget = targetPath;
+
+            var warnings = new List<string>();
 
             var reloadError = await _framework.RunOnFrameworkThread(
                 () => ReloadModOnFramework(resolved.Target.Directory)).ConfigureAwait(false);
             if (reloadError is not null)
-                return reloadError;
-            return await _framework.RunOnFrameworkThread(() =>
+                warnings.Add(reloadError.Message);
+            else
             {
-                try
-                {
-                    if (redrawMode == ExportRedrawMode.Self)
-                    {
-                        var redrawError = ValidateTargetOnFramework(
-                            sourceGamePath,
-                            objectIndex,
-                            actorIdentity,
-                            resolved.Target.FilePath);
-                        if (redrawError is not null)
-                            return new ExportResult(
-                                true,
-                                $"Restored {originalName} and reloaded {resolved.Target.Directory}; the source actor changed, so redraw was skipped.");
-                    }
+                var redrawWarning = await _framework.RunOnFrameworkThread(
+                    () => RedrawAfterCommitOnFramework(redrawMode, objectIndex, actorIdentity)).ConfigureAwait(false);
+                if (redrawWarning is not null)
+                    warnings.Add(redrawWarning);
+            }
 
-                    switch (redrawMode)
-                    {
-                        case ExportRedrawMode.All:
-                            _redrawAll.Invoke();
-                            break;
-                        case ExportRedrawMode.Glamourer:
-                            return new ExportResult(true, $"Restored {originalName} and reloaded {resolved.Target.Directory}; redraw left to Glamourer.");
-                        default:
-                            _redrawObject.Invoke(objectIndex);
-                            break;
-                    }
-                    return new ExportResult(true, $"Restored {originalName}, reloaded {resolved.Target.Directory}, and redrew the source actor.");
-                }
-                catch (Exception e)
-                {
-                    _log.Error(e, "Penumbra redraw failed after restoring a backup.");
-                    return new ExportResult(false, $"Restore succeeded, but redraw failed: {e.Message}");
-                }
-            }).ConfigureAwait(false);
+            var code = warnings.Count == 0 ? "backup_restored" : "backup_restored_with_warnings";
+            var message = warnings.Count == 0
+                ? $"Restored {originalName} and reloaded {resolved.Target.Directory}."
+                : $"Restored {originalName}; {warnings.Count} follow-up warning(s).";
+            return new ExportResult(true, code, message, warnings, targetPath);
         }
         catch (Exception e)
         {
             _log.Error(e, "Failed to restore a model backup.");
-            return new ExportResult(false, $"Failed to restore the model backup: {e.Message}");
+            if (committedTarget is not null)
+                return new ExportResult(
+                    true,
+                    "backup_restored_with_warnings",
+                    $"Restored {originalName}; follow-up processing failed.",
+                    [$"Follow-up processing failed: {e.Message}"],
+                    committedTarget);
+            return new ExportResult(false, "restore_failed", $"Failed to restore the model backup: {e.Message}");
         }
         finally
         {
@@ -1726,6 +1947,9 @@ public sealed class PenumbraService
             return false;
         return path.Split('/').All(segment => segment.Length > 0 && segment is not ("." or ".."));
     }
+
+    internal static bool IsSafeRelativeModelPath(string? path)
+        => path is not null && IsSafeRelativeModPath(path);
 
     private static bool IsSafeModResourceFile(string root, string file)
     {

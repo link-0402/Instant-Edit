@@ -85,7 +85,7 @@
   <!-- Keep the published package outside build output so it can be served by the raw repository URL. -->
   <Target Name="CopyReleasePackageToDistribution"
           AfterTargets="DefaultDalamudPackagerRelease"
-          Condition="'$(Configuration)' == 'Release'">
+          Condition="'$(Configuration)' == 'Release' and '$(SkipDistributionPackage)' != 'true'">
     <PropertyGroup>
       <ReleasePackagePath>$(OutputPath)$(AssemblyName)\latest.zip</ReleasePackagePath>
       <DistributionPackagePath>$(MSBuildProjectDirectory)\InstantEdit\latest.zip</DistributionPackagePath>

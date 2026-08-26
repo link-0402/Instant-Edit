@@ -6,7 +6,7 @@ namespace InstantEdit;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 7;
+    public int Version { get; set; } = 8;
 
     /// <summary> Port the Blender addon listens on for import commands. </summary>
     public int BlenderPort { get; set; } = 42424;
@@ -28,6 +28,9 @@ public sealed class Configuration : IPluginConfiguration
 
     /// <summary>Skip body skin, body-piercing, and pube preview resources.</summary>
     public bool ExcludeBodyAndGeneralMaterials { get; set; }
+
+    /// <summary>Keep the main window visible when the user hides the game UI with Scroll Lock.</summary>
+    public bool KeepVisibleWhenUiHidden { get; set; }
 
     /// <summary>Import contexts retained so saved Blender scenes can reconnect after a restart.</summary>
     public List<PersistedExportContext> ExportContexts { get; set; } = [];

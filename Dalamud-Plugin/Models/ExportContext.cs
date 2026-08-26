@@ -65,6 +65,15 @@ public sealed record InstantEditImportContext
     [JsonPropertyName("sourceModRootPath")]
     public string? SourceModRootPath { get; init; }
 
+    /// <summary>
+    /// Stable model path relative to the registered Penumbra mod root. This,
+    /// together with <see cref="SourceModDirectory"/>, is the durable export
+    /// destination; <see cref="TargetFilePath"/> is only the import-time
+    /// absolute-path snapshot.
+    /// </summary>
+    [JsonPropertyName("targetRelativePath")]
+    public string? TargetRelativePath { get; init; }
+
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
 }
@@ -108,6 +117,9 @@ public sealed record PersistedExportContext
     [JsonPropertyName("sourceModRootPath")]
     public string? SourceModRootPath { get; init; }
 
+    [JsonPropertyName("targetRelativePath")]
+    public string? TargetRelativePath { get; init; }
+
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
 
@@ -128,10 +140,16 @@ public sealed record PersistedExportContext
             SourceModDirectory = context.SourceModDirectory,
             SourceModName = context.SourceModName,
             SourceModRootPath = context.SourceModRootPath,
+            TargetRelativePath = context.TargetRelativePath,
             CallbackPort = context.CallbackPort,
             ExpiresAt = expiresAt,
         };
 }
 
 /// <summary> A completed export operation retained for idempotent retries. </summary>
-public sealed record ExportReceipt(bool Success, string Code, string Message);
+public sealed record ExportReceipt(
+    bool Success,
+    string Code,
+    string Message,
+    IReadOnlyList<string>? Warnings = null,
+    string? TargetFilePath = null);

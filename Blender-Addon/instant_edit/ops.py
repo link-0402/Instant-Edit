@@ -4,6 +4,7 @@ import json
 import hashlib
 import uuid
 import urllib.request
+import time
 from urllib.error import HTTPError, URLError
 
 from pathlib   import Path
@@ -26,6 +27,7 @@ from .cache import create_job, finish_job
 
 
 MAX_PLUGIN_RESPONSE_SIZE = 64 * 1024
+EXPORT_STATUS_POLL_ATTEMPTS = 30
 INVALID_VARIANT_CHARS = frozenset('<>:"/\\|?*')
 _QUICK_EXPORT_TARGET_ITEMS = []
 
@@ -161,6 +163,7 @@ class InstantImport(Operator):
     source_mod_directory: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_name: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_root_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    target_relative_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     import_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     armature_mode: bpy.props.EnumProperty(
         items=[
@@ -210,6 +213,7 @@ class InstantImport(Operator):
                     "source_mod_directory": self.source_mod_directory,
                     "source_mod_name": self.source_mod_name,
                     "source_mod_root_path": self.source_mod_root_path,
+                    "target_relative_path": self.target_relative_path,
                     "import_id": self.import_id,
                     "callback_port": self.callback_port,
                     "import_file_name": file_path.name,
@@ -499,7 +503,8 @@ class QuickExport(Operator):
             props.last_status = f"Export failed: {e}"
             self.report({"ERROR"}, f"Export failed: {e}")
             return {"CANCELLED"}
-        self.report({"INFO"}, "Exported back to the game!")
+        status = get_instant_edit_props().last_status
+        self.report({"WARNING"} if " with warnings:" in status else {"INFO"}, status)
         get_export_stats(context)
         return {"FINISHED"}
 
@@ -514,6 +519,14 @@ class ClearInstantEditContexts(Operator):
         return context.mode == "OBJECT"
 
     def execute(self, context: Context):
+        collections = context_collections(context.scene)
+        from .revocation import queue_context_revocations, schedule_revocations
+
+        try:
+            queued = queue_context_revocations(collections)
+        except Exception as error:
+            self.report({"ERROR"}, f"Contexts were not cleared: could not save revocations: {error}")
+            return {"CANCELLED"}
         cleared = clear_context_metadata(context.scene)
         props = get_instant_edit_props()
         for field, value in {
@@ -528,11 +541,12 @@ class ClearInstantEditContexts(Operator):
             "managed_destination": "",
             "last_export_id": "",
             "variant_group_name": "New Group",
-            "last_status": "Instant Edit contexts cleared.",
+            "last_status": f"Instant Edit contexts cleared; {queued} revocation(s) queued.",
         }.items():
             setattr(props, field, value)
         props.export_destination = "ACTIVE"
-        self.report({"INFO"}, f"Cleared {cleared} Instant Edit context(s).")
+        schedule_revocations()
+        self.report({"INFO"}, f"Cleared {cleared} Instant Edit context(s); revocation queued.")
         return {"FINISHED"}
 
 
@@ -590,7 +604,85 @@ def _plugin_error_from_body(body: bytes, status: int) -> PluginResponseError:
     )
 
 
-def _send_plugin_export(ref, payload: dict) -> None:
+def _decode_plugin_response(body: bytes, status: int) -> dict:
+    if len(body) > MAX_PLUGIN_RESPONSE_SIZE:
+        raise ValueError("plugin response is too large")
+    try:
+        result = json.loads(body.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("plugin returned an invalid response") from error
+    if not isinstance(result, dict):
+        raise ValueError("plugin returned an invalid response")
+    if not result.get("ok"):
+        raise PluginResponseError(
+            status,
+            str(result.get("code", "plugin_error")),
+            str(result.get("error", result.get("message", "unknown plugin error"))),
+        )
+    warnings = result.get("warnings", [])
+    if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
+        raise ValueError("plugin returned invalid warnings")
+    result["warnings"] = [item[:2048] for item in warnings[:64] if item]
+    return result
+
+
+def plugin_warning_summary(warnings) -> str:
+    items = [item[:512] for item in warnings if isinstance(item, str) and item]
+    summary = "; ".join(items[:3])
+    if len(items) > 3:
+        summary += f" (+{len(items) - 3} more)"
+    return summary
+
+
+def _request_export_status(ref, export_id: str) -> tuple[dict | None, bool]:
+    """Return (receipt, pending); missing/unreachable receipts return (None, False)."""
+    payload = {
+        "schema": "instant-edit.export-status",
+        "version": VERSION,
+        "pluginInstanceId": ref.plugin_instance_id,
+        "contextId": ref.context_id,
+        "exportId": export_id,
+        "capability": ref.capability,
+    }
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{ref.callback_port}/export/status",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+        if status == 202:
+            result = _decode_plugin_response(body, status)
+            return None, result.get("code") == "export_pending"
+        if 200 <= status < 300:
+            return _decode_plugin_response(body, status), False
+    except HTTPError as error:
+        # 404 means the original request never registered. Other response
+        # errors are authoritative and should be surfaced when possible.
+        if error.code != 404:
+            body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+            raise _plugin_error_from_body(body, error.code) from error
+    except (URLError, TimeoutError, OSError, ValueError, UnicodeError):
+        pass
+    return None, False
+
+
+def _recover_export_receipt(ref, export_id: str) -> dict | None:
+    for attempt in range(EXPORT_STATUS_POLL_ATTEMPTS):
+        receipt, pending = _request_export_status(ref, export_id)
+        if receipt is not None:
+            return receipt
+        if not pending:
+            return None
+        if attempt + 1 < EXPORT_STATUS_POLL_ATTEMPTS:
+            time.sleep(0.5)
+    return None
+
+
+def _send_plugin_export(ref, payload: dict) -> dict:
     request = urllib.request.Request(
         f"http://127.0.0.1:{ref.callback_port}/export",
         data=json.dumps(payload).encode("utf-8"),
@@ -601,28 +693,23 @@ def _send_plugin_export(ref, payload: dict) -> None:
         with urllib.request.urlopen(request, timeout=15) as response:
             status = getattr(response, "status", None) or response.getcode()
             body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
-        if len(body) > MAX_PLUGIN_RESPONSE_SIZE:
-            raise ValueError("plugin response is too large")
         if not 200 <= status < 300:
             raise _plugin_error_from_body(body, status)
-        try:
-            result = json.loads(body.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as error:
-            raise ValueError("plugin returned an invalid response") from error
-        if not isinstance(result, dict) or not result.get("ok"):
-            raise PluginResponseError(
-                status,
-                str((result or {}).get("code", "plugin_error")),
-                str((result or {}).get("error", "unknown plugin error")),
-            )
+        return _decode_plugin_response(body, status)
     except HTTPError as error:
         body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
         raise _plugin_error_from_body(body, error.code) from error
     except (URLError, TimeoutError, OSError) as error:
-        raise ValueError(str(error) or "invalid plugin response") from error
+        receipt = _recover_export_receipt(ref, str(payload.get("exportId", "")))
+        if receipt is not None:
+            return receipt
+        raise ValueError(
+            f"plugin response was lost and no receipt was available for export "
+            f"{payload.get('exportId', '')}: {str(error) or 'connection failed'}"
+        ) from error
 
 
-def _send_plugin_restore(ref, backup_name: str, redraw_mode: str) -> None:
+def _send_plugin_restore(ref, backup_name: str, redraw_mode: str) -> dict:
     payload = {
         "schema": "instant-edit.backup-restore",
         "version": 1,
@@ -644,13 +731,9 @@ def _send_plugin_restore(ref, backup_name: str, redraw_mode: str) -> None:
             body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
         if len(body) > MAX_PLUGIN_RESPONSE_SIZE:
             raise ValueError("plugin response is too large")
-        result = json.loads(body.decode("utf-8"))
-        if not 200 <= status < 300 or not isinstance(result, dict) or not result.get("ok"):
-            raise PluginResponseError(
-                status,
-                str((result or {}).get("code", "plugin_error")),
-                str((result or {}).get("error", "plugin rejected the restore")),
-            )
+        if not 200 <= status < 300:
+            raise _plugin_error_from_body(body, status)
+        return _decode_plugin_response(body, status)
     except HTTPError as error:
         body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
         raise _plugin_error_from_body(body, error.code) from error
@@ -658,12 +741,12 @@ def _send_plugin_restore(ref, backup_name: str, redraw_mode: str) -> None:
         raise ValueError(str(error) or "invalid plugin response") from error
 
 
-def restore_quick_backup(context: Context, backup_name: str) -> None:
+def restore_quick_backup(context: Context, backup_name: str) -> dict:
     """Restore an authorized MDL backup through the plugin and reload Penumbra."""
     ref = export_destination_context(context)
     props = get_instant_edit_props()
     try:
-        _send_plugin_restore(ref, backup_name, props.redraw_mode)
+        result = _send_plugin_restore(ref, backup_name, props.redraw_mode)
     except PluginResponseError as error:
         if error.status != 410 and not (error.status == 401 and error.code == "plugin_instance_mismatch"):
             raise
@@ -672,7 +755,14 @@ def restore_quick_backup(context: Context, backup_name: str) -> None:
         if not reattach_collection(ref.collection, context.scene):
             raise ValueError(f"plugin returned HTTP {error.status} ({error.code}); context recovery failed") from error
         ref = export_destination_context(context)
-        _send_plugin_restore(ref, backup_name, props.redraw_mode)
+        result = _send_plugin_restore(ref, backup_name, props.redraw_mode)
+    warnings = result.get("warnings", [])
+    target = result.get("targetFilePath") or ref.target_file_path
+    props.last_status = (
+        f"Restored {target} with warnings: {plugin_warning_summary(warnings)}"
+        if warnings else f"Restored {target}"
+    )
+    return result
 
 
 def export_destination_context(context: Context, destination: str | None = None):
@@ -746,7 +836,7 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
             variant_group_name,
         )
         try:
-            _send_plugin_export(ref, payload)
+            result = _send_plugin_export(ref, payload)
         except PluginResponseError as error:
             if error.status != 410 and not (
                 error.status == 401 and error.code == "plugin_instance_mismatch"
@@ -773,18 +863,23 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
                 variant_name,
                 variant_group_name,
             )
-            _send_plugin_export(ref, payload)
+            result = _send_plugin_export(ref, payload)
 
         props.last_export_id = export_id
-        target_file_path = Path(ref.target_file_path)
-        if variant_name is not None:
+        target_file_path = Path(result.get("targetFilePath") or ref.target_file_path)
+        if variant_name is not None and not result.get("targetFilePath"):
             target_file_path = target_file_path.with_name(f"{variant_name}.mdl")
         setup_status = " and set up in Penumbra" if variant_name is not None and props.auto_setup_penumbra else ""
         group_status = "; ".join(
             f"{group.mesh_index}.({','.join(str(part) for part in group.parts)})"
             for group in export_groups
         )
-        props.last_status = f"Exported {group_status} to {target_file_path}{setup_status}"
+        warnings = result.get("warnings", [])
+        props.last_status = (
+            f"Exported {group_status} to {target_file_path}{setup_status} with warnings: "
+            f"{plugin_warning_summary(warnings)}"
+            if warnings else f"Exported {group_status} to {target_file_path}{setup_status}"
+        )
         return mdl_path
     finally:
         try:
@@ -809,7 +904,8 @@ class ApplyInstantEdit(Operator):
             get_instant_edit_props().last_status = f"Apply failed: {e}"
             self.report({"ERROR"}, f"Apply failed: {e}")
             return {"CANCELLED"}
-        self.report({"INFO"}, "Applied Instant Edit context")
+        status = get_instant_edit_props().last_status
+        self.report({"WARNING"} if " with warnings:" in status else {"INFO"}, status)
         get_export_stats(context)
         return {"FINISHED"}
 

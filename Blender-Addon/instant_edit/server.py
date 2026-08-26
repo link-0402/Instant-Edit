@@ -158,6 +158,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 "filePath": data.get("filePath", ""),
                 "displayName": data.get("name", ""),
                 "targetFilePath": nested.get("targetFilePath", ""),
+                "targetRelativePath": nested.get("targetRelativePath", ""),
                 "managedDestination": nested.get(
                     "managedDestination", nested.get("targetFolder", nested.get("modName", ""))
                 ),
@@ -199,6 +200,9 @@ class _ImportHandler(BaseHTTPRequestHandler):
             source_mod_root_path = _string(
                 data, "sourceModRootPath", max_length=4096
             )
+            target_relative_path = _string(
+                data, "targetRelativePath", max_length=4096
+            )
             preview_manifest_path = _string(
                 data, "previewManifestPath", max_length=4096
             )
@@ -223,6 +227,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 "sourceModDirectory": source_mod_directory,
                 "sourceModName": source_mod_name,
                 "sourceModRootPath": source_mod_root_path,
+                "targetRelativePath": target_relative_path,
                 "previewManifestPath": preview_manifest_path,
                 "callbackPort": callback_port,
                 "name": _string(data, "displayName", "name", max_length=255),
@@ -355,6 +360,7 @@ def poll_import_queue() -> float:
                     source_mod_directory=data.get("sourceModDirectory", ""),
                     source_mod_name=data.get("sourceModName", ""),
                     source_mod_root_path=data.get("sourceModRootPath", ""),
+                    target_relative_path=data.get("targetRelativePath", ""),
                     import_id=data.get("importId", ""),
                     armature_mode=data.get("importOptions", {}).get("armatureMode", "generated"),
                     armature_target=data.get("importOptions", {}).get("targetObject", "Skeleton"),

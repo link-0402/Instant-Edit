@@ -19,6 +19,8 @@ plus a standalone Simple Import/Export panel.
   Penumbra setup.
 - Persists import authorization in the Dalamud plugin and reconnects saved scene
   contexts after Blender or plugin restarts.
+- Recovers export receipts after network timeouts without submitting a second
+  write, and durably queues context revocations while the plugin is offline.
 - Penumbra-compatible SELF, ALL, and Glamourer-assisted redraw modes after
   Quick Export.
 - Simple Export to MDL, FBX, or glTF for visible mesh objects.
