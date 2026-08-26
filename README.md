@@ -52,6 +52,9 @@ Note that you will not be getting automatic feature and compatibility updates th
    If the scene contains multiple Instant Edit contexts and the destination is
    otherwise ambiguous, Quick Export asks you to choose the target first.
 
+
+## Additional notes
+
 Blender and FFXIV must be running at the same time. If the plugin reports that
 Blender is offline, restart Blender with the add-on enabled. In order for the communication
 between game plugin and blender addon to work, the port configurations in the settings need to match.
@@ -62,25 +65,6 @@ Imports and Quick Exports are staged inside an add-on-owned `XIV-Instant-Edit`
 subfolder of the selected cache directory. Automatic cleanup removes completed
 jobs immediately and crash leftovers after 24 hours; **Clean Cache Now** removes
 inactive owned jobs on demand.
-
-Saved Instant Edit scenes reconnect their export context automatically when the
-add-on and Dalamud plugin are running.
-
-Quick Export authorization is tied to the imported Penumbra directory key and
-the model's path inside that mod, not to the character's later appearance or
-currently resolved resources. Moving a registered mod is supported when that
-directory key and relative model path remain unchanged. A missing model file is
-recreated only when its authorized parent folder still exists. Reload, variant
-setup, or redraw failures after the model is written are reported as warnings;
-the committed export remains successful. **Clear Contexts** revokes the
-plugin-owned authorization, queuing the revocation locally if the plugin is
-offline.
-
-The Blender add-on also includes **Simple Import/Export** tabs for importing and exporting
-MDL and FBX files through a traditional file selection without the game plugin, as well as
-exporting visible mesh objects as MDL, FBX, or glTF files, even if they haven't been imported
-through the IE plugin before.
-In this case you may be required to configure the material names for mesh groups manually via the addon UI.
 
 You may also save a model imported through IE as a variant by giving it a new file name. The addon will then
 automatically setup the required Penumbra paths for this new model if the option is enabled, letting you switch back and forth
