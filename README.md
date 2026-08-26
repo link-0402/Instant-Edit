@@ -55,6 +55,8 @@ Note that you will not be getting automatic feature and compatibility updates th
 
 ## Additional notes
 
+### Settings
+
 Blender and FFXIV must be running at the same time. If the plugin reports that
 Blender is offline, restart Blender with the add-on enabled. In order for the communication
 between game plugin and blender addon to work, the port configurations in the settings need to match.
@@ -81,7 +83,7 @@ resources keep the existing colored placeholder and produce a warning without
 blocking model import. Note that the texture import is for preview purposes only.
 Making changes to them in Blender will not affect the exported model.
 
-## Notes
+### Affiliation
 
 This is an unofficial community tool and is not affiliated with or endorsed by
 Square Enix, Dalamud, Penumbra, or Blender. The project is licensed under the
