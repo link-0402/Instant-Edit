@@ -19,12 +19,12 @@ resources belonging to your character or through a a simplified resource browser
 3. Add this repository URL:
 
    `https://raw.githubusercontent.com/link-0402/Instant-Edit/main/Blender-Addon/blender_repo/index.json`
-
-4. Find **XIV Instant Edit** and install it if it hasn't already.
+4. *Recommended* to tick "Check for Updates on Startup" to receive automatic updates.
+5. Find **XIV Instant Edit** and install it if it hasn't already.
 
 You can also download [XIV-Instant-Edit.zip](https://github.com/link-0402/Instant-Edit/tree/main/Blender-Addon/blender_repo/XIV-Instant-Edit.zip)
 and use **Install from Disk** in the same Blender preferences window.
-Note that you will not be getting automatic feature and compatability updates this way and have to update the plugin manually.
+Note that you will not be getting automatic feature and compatibility updates this way and have to update the plugin manually.
 
 ### Install the Dalamud plugin
 
