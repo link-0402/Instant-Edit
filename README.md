@@ -83,7 +83,7 @@ resources keep the existing colored placeholder and produce a warning without
 blocking model import. Note that the texture import is for preview purposes only.
 Making changes to them in Blender will not affect the exported model.
 
-### Affiliation
+### License
 
 This is an unofficial community tool and is not affiliated with or endorsed by
 Square Enix, Dalamud, Penumbra, or Blender. The project is licensed under the
