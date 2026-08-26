@@ -821,14 +821,32 @@ public sealed class PenumbraService
                     continue;
 
                 var standardFilesRoot = Path.Combine(root, "Files");
-                var scanRoot = Directory.Exists(standardFilesRoot) ? standardFilesRoot : root;
-                var sourceRoot = root;
-                var relativePrefix = string.Empty;
+                string scanRoot;
+                string sourceRoot;
+                string relativePrefix;
                 if (string.Equals(Path.GetFileName(root), "Files", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Penumbra exposes the Files directory itself; treat its parent as the
+                    // durable mod root and prefix every relative path with "Files/".
                     sourceRoot = Directory.GetParent(root)?.FullName ?? root;
                     scanRoot = root;
                     relativePrefix = "Files/";
+                }
+                else if (Directory.Exists(standardFilesRoot))
+                {
+                    // Standard Penumbra layout: the mod root has a Files/ subdirectory that
+                    // contains every game resource. The relative path must mirror that
+                    // prefix so the registry can reproduce sourceModRootPath + relativePath
+                    // == targetFilePath when a Mod Browser import becomes a Quick Export.
+                    sourceRoot = root;
+                    scanRoot = standardFilesRoot;
+                    relativePrefix = "Files/";
+                }
+                else
+                {
+                    sourceRoot = root;
+                    scanRoot = root;
+                    relativePrefix = string.Empty;
                 }
 
                 if (!Directory.Exists(scanRoot) || HasReparsePointInPath(sourceRoot, scanRoot))

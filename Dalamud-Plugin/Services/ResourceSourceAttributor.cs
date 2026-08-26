@@ -78,15 +78,32 @@ public sealed class ResourceSourceAttributor
                 if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(modName))
                     continue;
 
-                // The registered path is authoritative and supports mods kept
-                // outside Penumbra's global root. Only use the standard layout
-                // when this Penumbra version cannot resolve the directory key.
-                var registeredPath = _penumbra.GetRegisteredModPath(directory);
-                var path = NormalizePhysicalPath(registeredPath);
-                if (path is null && modRoot is not null)
-                    path = NormalizePhysicalPath(Path.Combine(modRoot, directory));
+                // The standard Penumbra layout is just a string concatenation; it does
+                // not touch the filesystem or any IPC and stays cheap even when the
+                // Penumbra mod folder holds thousands of directories. Use it for every
+                // mod before consulting the per-mod registered path so the on-screen and
+                // search tabs still populate under that scale.
+                string? path = null;
+                bool fromRegistered = false;
+                if (modRoot is not null)
+                {
+                    var standardPath = NormalizePhysicalPath(Path.Combine(modRoot, directory));
+                    if (standardPath is not null && IsPathWithin(standardPath, modRoot))
+                        path = standardPath;
+                }
+
+                // A mod stored outside Penumbra's global root is only discoverable via
+                // its Penumbra IPC entry. The fast path above handles every standard
+                // layout, so this branch fires only for genuinely relocated mods.
+                if (path is null)
+                {
+                    var registeredPath = _penumbra.GetRegisteredModPath(directory);
+                    path = NormalizePhysicalPath(registeredPath);
+                    fromRegistered = registeredPath is not null;
+                }
+
                 if (path is not null && (modRoot is null ||
-                    registeredPath is not null || IsPathWithin(path, modRoot)))
+                    fromRegistered || IsPathWithin(path, modRoot)))
                     roots.Add(new ModRoot(path, directory, modName));
             }
 
