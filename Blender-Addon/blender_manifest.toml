@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "xiv_instant_edit"
-version = "1.0.5"
+version = "1.0.6"
 name = "XIV Instant Edit"
 tagline = "Instant FFXIV model editing and focused model export"
 maintainer = "Luci"
