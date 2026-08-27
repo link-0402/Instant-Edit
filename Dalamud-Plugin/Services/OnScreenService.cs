@@ -110,9 +110,12 @@ public sealed class OnScreenService
 
         var localOwnerId = (uint)localPlayer.GameObjectId;
         var trees = _penumbra.GetPlayerResourceTrees();
+        var treeEntries = trees.ToArray();
+        var resolvedPaths = _penumbra.GetResourcePaths(treeEntries.Select(entry => entry.Key).ToArray());
         var result = new List<OnScreenObject>(trees.Count);
-        foreach (var (index, tree) in trees)
+        for (var treeIndex = 0; treeIndex < treeEntries.Length; treeIndex++)
         {
+            var (index, tree) = treeEntries[treeIndex];
             try
             {
                 var candidate = _objects[index];
@@ -125,14 +128,21 @@ public sealed class OnScreenService
                 if (!TryClassifyCandidate(candidate, localPlayer, localOwnerId, out var category))
                     continue;
 
-                var roots = (tree.Nodes ?? [])
+                IReadOnlyList<ResourceNode> roots = (tree.Nodes ?? [])
                     .Select(CopyPrunedNode)
                     .Where(node => node is not null)
                     .Cast<ResourceNode>()
                     .OrderBy(node => SectionOrder(node.ResourceSection))
                     .ThenBy(node => node.SortOrder)
                     .ToArray();
-                if (roots.Length == 0)
+                var treeRootCount = roots.Count;
+                roots = AddMissingResolvedModels(
+                    roots,
+                    treeIndex < resolvedPaths.Length ? resolvedPaths[treeIndex] : null,
+                    _sourceAttributor.AttributionFor);
+                if (roots.Count > treeRootCount)
+                    _log.Debug($"Supplemented {roots.Count - treeRootCount} model resource(s) omitted from Penumbra's tree DTO for object {index}.");
+                if (roots.Count == 0)
                     continue;
 
                 result.Add(CreateSnapshot(index, candidate, category, roots));
@@ -195,13 +205,96 @@ public sealed class OnScreenService
             Kind = gameObject.ObjectKind.ToString(),
             PresentationCategory = category,
             ResourceRoots = roots,
-            // Compatibility edit targets are sourced from the same retained Penumbra
-            // nodes; no independent model scan, inference, or de-duplication occurs.
+            // Compatibility edit targets are sourced from the reconciled Penumbra
+            // snapshot; no filesystem model scan or path inference occurs.
             Models = Flatten(roots)
                 .Where(node => node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
                 .Select(node => new MdlFile { GamePath = node.GamePath, LocalPath = node.ActualPath })
                 .ToArray(),
         };
+
+    /// <summary>
+    /// Penumbra's tree DTO serializes its hierarchy and exposes a game path only when
+    /// a node has exactly one possible path. The resource-path IPC walks the flat node
+    /// set and retains every mapping, so use it to restore only missing, positively
+    /// attributed model edit targets.
+    /// </summary>
+    internal static IReadOnlyList<ResourceNode> AddMissingResolvedModels(
+        IReadOnlyList<ResourceNode> roots,
+        Dictionary<string, HashSet<string>>? resolvedPaths,
+        Func<string?, ResourceSource> attributeSource)
+    {
+        if (resolvedPaths is null || resolvedPaths.Count == 0)
+            return roots;
+
+        var represented = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var node in Flatten(roots))
+        {
+            if (IsModelPath(node.GamePath) && Path.IsPathRooted(node.ActualPath))
+                represented.Add(ModelKey(node.ActualPath, node.GamePath));
+        }
+
+        var supplemented = new List<ResourceNode>();
+        foreach (var (actualPath, gamePaths) in resolvedPaths)
+        {
+            if (!Path.IsPathRooted(actualPath) ||
+                !string.Equals(Path.GetExtension(actualPath), ".mdl", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var source = attributeSource(actualPath);
+            if (source.State != ResourceSourceState.LoadedMod)
+                continue;
+
+            foreach (var rawGamePath in gamePaths)
+            {
+                var gamePath = rawGamePath.Replace('\\', '/').TrimStart('/');
+                if (!IsModelPath(gamePath) || !represented.Add(ModelKey(actualPath, gamePath)))
+                    continue;
+
+                var presentation = ResourcePresentation.For("Mdl", string.Empty, string.Empty, gamePath);
+                supplemented.Add(new ResourceNode
+                {
+                    Type = "Mdl",
+                    Icon = string.Empty,
+                    Name = FileName(gamePath),
+                    GamePath = gamePath,
+                    ActualPath = actualPath,
+                    Children = Array.Empty<ResourceNode>(),
+                    SourceState = source.State,
+                    SourceLabel = source.Label,
+                    SourceModName = source.ModName,
+                    SourceModDirectory = source.ModDirectory,
+                    SourceModRootPath = source.ModRootPath,
+                    SourceRelativePath = source.RelativePath,
+                    SlotLabel = presentation.SlotLabel,
+                    ResourceSection = presentation.Section,
+                    SortOrder = presentation.SortOrder,
+                    IsModdedSubtree = true,
+                });
+            }
+        }
+
+        if (supplemented.Count == 0)
+            return roots;
+
+        return roots.Concat(supplemented)
+            .OrderBy(node => SectionOrder(node.ResourceSection))
+            .ThenBy(node => node.SortOrder)
+            .ThenBy(node => node.GamePath, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool IsModelPath(string path)
+        => path.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase);
+
+    private static string ModelKey(string actualPath, string gamePath)
+        => $"{actualPath.Replace('\\', '/')}\n{gamePath.Replace('\\', '/')}";
+
+    private static string FileName(string path)
+    {
+        var separator = path.LastIndexOf('/');
+        return separator < 0 ? path : path[(separator + 1)..];
+    }
 
     private ResourceNode? CopyPrunedNode(ResourceNodeDto node)
     {

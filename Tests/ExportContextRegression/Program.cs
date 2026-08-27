@@ -168,6 +168,47 @@ try
     Require(!Directory.Exists(stageResult.Export.DirectoryPath),
         "plugin-owned staging is removed after export completion");
 
+    const string galianModel = @"G:\Penumbra\Galian Hair\chara\human\c0801\obj\hair\h0154\model\c0801h0154_hir.mdl";
+    const string effectiveHairPath = "chara/human/c0801/obj/hair/h0154/model/c0801h0154_hir.mdl";
+    var galianResolvedPaths = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
+    {
+        [galianModel] = new(StringComparer.OrdinalIgnoreCase) { effectiveHairPath },
+    };
+    var galianSource = new ResourceSource(
+        ResourceSourceState.LoadedMod,
+        "Loaded from: Galian Hair",
+        "Galian Hair",
+        "Galian Hair",
+        @"G:\Penumbra\Galian Hair",
+        "chara/human/c0801/obj/hair/h0154/model/c0801h0154_hir.mdl");
+    var supplementedHair = OnScreenService.AddMissingResolvedModels(
+        Array.Empty<ResourceNode>(),
+        galianResolvedPaths,
+        _ => galianSource);
+    Require(supplementedHair is [
+        {
+            ResourceSection: ResourceSection.CharacterFeatures,
+            SlotLabel: "Hair",
+            GamePath: effectiveHairPath,
+            ActualPath: galianModel,
+            SourceModDirectory: "Galian Hair",
+        }
+    ], "EST-swapped Galian Hair is restored to the Character features model list");
+
+    var deduplicatedHair = OnScreenService.AddMissingResolvedModels(
+        supplementedHair,
+        galianResolvedPaths,
+        _ => galianSource);
+    Require(deduplicatedHair.Count == 1,
+        "resource-path reconciliation does not duplicate a model already present in the tree");
+
+    var unattributedHair = OnScreenService.AddMissingResolvedModels(
+        Array.Empty<ResourceNode>(),
+        galianResolvedPaths,
+        path => new ResourceSource(ResourceSourceState.ExternalResolvedFile, "External resolved file", null, null, null, path));
+    Require(unattributedHair.Count == 0,
+        "resource-path reconciliation does not admit models outside registered Penumbra mods");
+
     Console.WriteLine("All export-context regressions passed.");
 }
 finally
