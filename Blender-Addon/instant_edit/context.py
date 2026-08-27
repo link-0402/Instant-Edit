@@ -350,7 +350,7 @@ def active_context(context=None) -> ContextRef:
         scene_props = getattr(context.scene, "xiv_ie_instant_edit_props", None)
         context_id = getattr(scene_props, "context_id", "") if scene_props else ""
         if not context_id:
-        raise ContextValidationError("no active XIV Instant Edit context")
+            raise ContextValidationError("no active XIV Instant Edit context")
     else:
         context_id = next(iter(ids))
 
