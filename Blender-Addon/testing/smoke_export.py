@@ -108,6 +108,8 @@ def run() -> None:
             raise AssertionError("Backup models on Export should default to disabled")
         if bpy.context.scene.xiv_ie_settings.keep_shapekeys:
             raise AssertionError("Keep Shape Keys should default to disabled")
+        if not bpy.context.scene.xiv_ie_settings.simple_import_set_export_directory:
+            raise AssertionError("Set Simple Export Folder on Import should default to enabled")
         bpy.context.scene.xiv_ie_settings.keep_shapekeys = True
         if bpy.context.scene.xiv_ie_instant_edit_props.show_utilities:
             raise AssertionError("Utilities should be collapsed by default")
@@ -180,6 +182,29 @@ def run() -> None:
             "/mt_c0101e0001_top_added.mtrl",
         )
 
+        initial_instant_props = bpy.context.scene.xiv_ie_instant_edit_props
+        initial_settings = bpy.context.scene.xiv_ie_settings
+        initial_scope = initial_instant_props.export_scope
+        initial_export_directory = initial_settings.export_directory
+        initial_export_name = initial_settings.export_name
+        try:
+            with tempfile.TemporaryDirectory(prefix="xiv-instant-edit-no-context-") as no_context_dir:
+                initial_settings.export_directory = no_context_dir
+                initial_settings.export_name = "no-context"
+                initial_instant_props.export_scope = "CURRENT_COLLECTION"
+                try:
+                    bpy.ops.xiv_ie.simple_export()
+                except RuntimeError as error:
+                    if "Instant Edit Collection" not in str(error):
+                        raise
+                else:
+                    raise AssertionError("Simple Export accepted Instant Edit Collection without a Context")
+        finally:
+            initial_instant_props.export_scope = initial_scope
+            initial_settings.export_directory = initial_export_directory
+            initial_settings.export_name = initial_export_name
+        print("[PASS] Simple Export rejects Instant Edit Collection without a Context")
+
         context_module = importlib.import_module(f"{addon.__name__}.instant_edit.context")
         context_id = "smoke-context"
         context_collection = context_module.create_collection(bpy.context.scene, {
@@ -251,6 +276,108 @@ def run() -> None:
 
         original_urlopen = instant_ops.urllib.request.urlopen
         instant_ops.urllib.request.urlopen = lambda request, timeout=0: FakeResponse()
+        instant_props = bpy.context.scene.xiv_ie_instant_edit_props
+        instant_props.export_destination = context_id
+        instant_props.variant_target = "NEW_GROUP"
+        instant_props.variant_group_name = "Smoke Group"
+        instant_props.variant_name = "smoke-quick"
+
+        scope_capture = []
+        original_simple_export_result = operators.export_result
+        mannequin_mesh = bpy.data.meshes.new("SmokeMannequinData")
+        mannequin_mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        mannequin = bpy.data.objects.new("Mannequin", mannequin_mesh)
+        bpy.context.collection.objects.link(mannequin)
+
+        def capture_simple_export(_path, _format, export_objects=None):
+            scope_capture.append(tuple(export_objects or ()))
+
+        settings = bpy.context.scene.xiv_ie_settings
+        original_model_format = settings.model_format
+        original_export_scope = instant_props.export_scope
+        operators.export_result = capture_simple_export
+        try:
+            with tempfile.TemporaryDirectory(prefix="xiv-instant-edit-scope-") as scope_dir:
+                settings.export_directory = scope_dir
+                settings.export_name = "scope"
+                settings.model_format = "FBX"
+
+                instant_props.export_scope = "VISIBLE"
+                if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or set(scope_capture[-1]) != set(operators.visible_meshobj()):
+                    raise AssertionError("Simple Export All Visible did not use every visible mesh")
+
+                instant_props.export_scope = "VISIBLE_NO_MANNEQUIN"
+                if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or mannequin in scope_capture[-1]:
+                    raise AssertionError("Simple Export did not exclude Mannequin")
+
+                instant_props.export_scope = "CURRENT_COLLECTION"
+                if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or scope_capture[-1] != (obj,):
+                    raise AssertionError("Simple Export Instant Edit Collection ignored the selected Context")
+        finally:
+            operators.export_result = original_simple_export_result
+            settings.model_format = original_model_format
+            instant_props.export_scope = original_export_scope
+            bpy.data.objects.remove(mannequin, do_unlink=True)
+        print("[PASS] Simple Export honors every Export Parts mode and requires Context for its collection")
+
+        simple_import_module = importlib.import_module(f"{addon.__name__}.io.model")
+        original_simple_import = simple_import_module.ModelImport.from_file
+        original_simple_import_model = operators.XIVModel.from_file
+        before_simple_import = {item.as_pointer() for item in bpy.data.objects}
+
+        class FakeSimpleImportModel:
+            bones = ()
+
+        def fake_simple_import(_file_path, _import_name, **_kwargs):
+            mesh = bpy.data.meshes.new("SimpleImportFolderMeshData")
+            mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+            imported = bpy.data.objects.new("SimpleImportFolderMesh", mesh)
+            bpy.context.collection.objects.link(imported)
+            return (imported,)
+
+        simple_import_module.ModelImport.from_file = staticmethod(fake_simple_import)
+        operators.XIVModel.from_file = staticmethod(lambda _path: FakeSimpleImportModel())
+        try:
+            with tempfile.TemporaryDirectory(prefix="xiv-instant-edit-import-folder-") as import_root:
+                source_folder = Path(import_root) / "source"
+                source_folder.mkdir()
+                source_file = source_folder / "simple-import.mdl"
+                source_file.write_bytes(b"placeholder")
+                settings.simple_import_set_export_directory = True
+                settings.simple_import_use_existing_skeleton = False
+                settings.export_directory = str(Path(import_root) / "before-success")
+                if bpy.ops.xiv_ie.simple_import(
+                    "EXEC_DEFAULT", filepath=str(source_file), import_format="MDL"
+                ) != {"FINISHED"}:
+                    raise AssertionError("Simple Import folder-setting regression import failed")
+                if Path(settings.export_directory).resolve() != source_folder.resolve():
+                    raise AssertionError("Simple Import did not set the export folder to its source folder")
+
+                def fail_simple_import(*_args, **_kwargs):
+                    raise RuntimeError("forced import failure")
+
+                simple_import_module.ModelImport.from_file = staticmethod(fail_simple_import)
+                retained_directory = Path(import_root) / "unchanged-after-failure"
+                settings.export_directory = str(retained_directory)
+                try:
+                    bpy.ops.xiv_ie.simple_import(
+                        "EXEC_DEFAULT", filepath=str(source_file), import_format="MDL"
+                    )
+                except RuntimeError as error:
+                    if "forced import failure" not in str(error):
+                        raise
+                else:
+                    raise AssertionError("Forced Simple Import failure did not cancel")
+                if Path(settings.export_directory) != retained_directory:
+                    raise AssertionError("Failed Simple Import changed the export folder")
+        finally:
+            simple_import_module.ModelImport.from_file = original_simple_import
+            operators.XIVModel.from_file = original_simple_import_model
+            for item in tuple(bpy.data.objects):
+                if item.as_pointer() not in before_simple_import:
+                    bpy.data.objects.remove(item, do_unlink=True)
+        print("[PASS] Simple Import updates its export folder only after success")
+
         cache_module = importlib.import_module(f"{addon.__name__}.instant_edit.cache")
         original_auto_cleanup = cache_module.automatic_cleanup_enabled()
         cache_module.configure_cache(cache_module.cache_root().parent, False)

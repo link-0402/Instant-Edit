@@ -66,14 +66,13 @@ def _export_destination_display(ref, props=None) -> str:
         if not destination:
             destination = Path(target_file_path).name if target_file_path else "Unavailable"
 
-    if props is None or not getattr(props, "save_as_variant", False):
+    if props is None:
         return destination
 
     selected_target = next(
         (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
     if (
-        getattr(props, "auto_setup_penumbra", False)
-        and selected_target is not None
+        selected_target is not None
         and selected_target.kind == "OPTION"
         and selected_target.model_path
     ):
@@ -95,18 +94,65 @@ def _display_wrap_width(context: Context) -> int:
     return 42
 
 
-def _draw_wrapped_display(layout, context: Context, label: str, value: str) -> None:
+def _wrap_display_value(value: str, width: int) -> list[str]:
+    """Wrap paths at slash boundaries before splitting a long path segment."""
+    value = value or "Unavailable"
+    if "/" not in value:
+        return textwrap.wrap(
+            value,
+            width=width,
+            break_long_words=True,
+            break_on_hyphens=False,
+        )
+
+    segments = value.split("/")
+    tokens = [
+        f"{segment}/" if index < len(segments) - 1 else segment
+        for index, segment in enumerate(segments)
+    ]
+    lines = []
+    current = ""
+    for token in tokens:
+        if current and len(current) + len(token) > width:
+            lines.append(current)
+            current = ""
+        if len(token) > width:
+            chunks = textwrap.wrap(
+                token,
+                width=width,
+                break_long_words=True,
+                break_on_hyphens=False,
+            )
+            lines.extend(chunks[:-1])
+            current = chunks[-1] if chunks else ""
+        else:
+            current += token
+    if current or not lines:
+        lines.append(current)
+    return lines
+
+
+def _draw_wrapped_display(
+    layout,
+    context: Context,
+    label: str,
+    value: str,
+    icon: str = "NONE",
+) -> None:
     """Draw a simple multi-line display for a potentially long filesystem path."""
     column = layout.column(align=True)
-    column.label(text=f"{label}:")
-    wrapped = textwrap.wrap(
-        value or "Unavailable",
-        width=_display_wrap_width(context),
-        break_long_words=True,
-        break_on_hyphens=False,
-    )
+    column.label(text=f"{label}:", icon=icon)
+    wrapped = _wrap_display_value(value, _display_wrap_width(context))
     for line in wrapped or ("Unavailable",):
         column.label(text=line)
+
+
+def _draw_named_text_input(layout, props, property_name: str, label: str) -> None:
+    """Keep the label readable while reserving a compact field for the value."""
+    row = layout.row(align=True)
+    split = row.split(factor=0.42, align=True)
+    split.label(text=label)
+    split.prop(props, property_name, text="")
 
 
 class XIVIE_PT_main(Panel):
@@ -134,38 +180,34 @@ class XIVIE_PT_main(Panel):
         except ContextValidationError:
             ref = None
 
-        box.prop(props, "export_destination", text="Export Destination")
-        if ref is None:
-            box.label(text="Pick a model through the Dalamud plugin.", icon="INFO")
-        else:
-            _draw_wrapped_display(box, context, "Import File", _import_file_display(ref))
-            _draw_wrapped_display(
-                box, context, "Current Export Destination", _export_destination_display(ref, props)
-            )
+        if ref is not None:
             source_mod = ref.source_mod_root_path or ref.source_mod_name or ref.source_mod_directory
             box.label(text=f"Source Mod: {source_mod}")
-            box.prop(props, "export_scope")
-            box.operator("xiv_ie.instant_export", text="Quick Export", icon="EXPORT")
+            _draw_wrapped_display(box, context, "Imported File", _import_file_display(ref))
+            destination = box.box()
+            _draw_wrapped_display(
+                destination,
+                context,
+                "Current Export Destination",
+                _export_destination_display(ref, props),
+                icon="EXPORT",
+            )
+        else:
+            box.label(text="Pick a model through the Dalamud plugin.", icon="INFO")
 
-        row = box.row(align=True)
-        row.prop(props, "save_as_variant")
-        setup = box.row()
-        setup.enabled = props.save_as_variant
-        setup.prop(props, "auto_setup_penumbra")
-        selected_target = next(
-            (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
-        name = box.row(align=True)
-        name.enabled = props.save_as_variant and not (
-            props.auto_setup_penumbra and selected_target is not None and selected_target.kind == "OPTION"
-        )
-        name.prop(props, "variant_name", text="New Option Name")
-        if props.save_as_variant and props.auto_setup_penumbra:
+        box.prop(props, "export_destination", text="Context")
+        box.prop(props, "export_scope")
+        if ref is not None:
             targets = box.box()
             header = targets.row(align=True)
-            header.label(text="Penumbra Variant Target", icon="OUTLINER_COLLECTION")
+            header.label(text="Penumbra Group Target", icon="OUTLINER_COLLECTION")
             header.operator("xiv_ie.refresh_variant_targets", text="", icon="FILE_REFRESH")
+            targets.label(
+                text="Choose a group to create a new option, or an option to overwrite it.",
+                icon="INFO",
+            )
             if props.variant_targets_context_id and props.variant_targets_context_id != getattr(ref, "context_id", ""):
-                targets.label(text="Refresh targets for this export context.", icon="INFO")
+                targets.label(text="Refresh targets for this Context.", icon="INFO")
             new_group = targets.row(align=True)
             new_group.operator(
                 "xiv_ie.select_variant_target",
@@ -202,13 +244,19 @@ class XIVIE_PT_main(Panel):
                         depress=props.variant_target == item.selection_id,
                         icon="FILE",
                     ).selection_id = item.selection_id
-            if selected_target is not None and selected_target.kind == "OPTION":
-                targets.label(text=f"Quick Export will overwrite: {selected_target.model_path}", icon="INFO")
-        box.label(text="Quick Export redraws your player and owned entities.", icon="INFO")
+            selected_target = next(
+                (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
+            if props.variant_target == "NEW_GROUP":
+                _draw_named_text_input(box, props, "variant_group_name", "New Group Name")
+            if selected_target is None or selected_target.kind != "OPTION":
+                _draw_named_text_input(box, props, "variant_name", "New Option Name")
+            box.operator("xiv_ie.instant_export", text="Quick Export", icon="EXPORT")
         status_row = box.row(align=True)
-        status_row.label(text="Status:", icon="INFO")
-        status_row.prop(props, "last_status", text="")
-        status_row.operator("xiv_ie.copy_status", text="", icon="COPYDOWN")
+        status = status_row.split(factor=0.14, align=True)
+        status.label(text="Status:", icon="INFO")
+        status_value = status.row(align=True)
+        status_value.prop(props, "last_status", text="")
+        status_value.operator("xiv_ie.copy_status", text="", icon="COPYDOWN")
 
     @staticmethod
     def _draw_mesh_materials(layout, context: Context) -> None:
@@ -320,7 +368,7 @@ class XIVIE_PT_main(Panel):
                 attribute_row.alignment = "EXPAND"
                 attributes = mesh_part_attributes(display_objects)
                 if not attributes:
-                    attribute_row.label(text="", icon="BLANK1")
+                    attribute_row.label(text=" ", icon="BLANK1")
                 for attribute in attributes:
                     remove = attribute_row.operator(
                         "xiv_ie.mesh_attribute",
@@ -424,6 +472,7 @@ class XIVIE_PT_main(Panel):
         row.prop(settings, "create_backfaces")
         options.prop(settings, "remove_yas")
         options.prop(settings, "backup_models_on_export")
+        options.prop(settings, "simple_import_set_export_directory")
 
         cleanup = box.box()
         cleanup.label(text="Vertex Data Fixes")

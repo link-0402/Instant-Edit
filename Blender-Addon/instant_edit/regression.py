@@ -107,6 +107,8 @@ def run_staging_isolation_regression() -> None:
     created_objects = ()
     existing_collection = None
     existing_mesh = None
+    explicit_context_collection = None
+    explicit_context_mesh = None
     skeleton = None
     sentinel = None
 
@@ -132,10 +134,15 @@ def run_staging_isolation_regression() -> None:
         _register_for_test(addon, package_name)
         ops = importlib.import_module(f"{package_name}.instant_edit.ops")
         props = importlib.import_module(f"{package_name}.instant_edit.props")
+        context_module = importlib.import_module(f"{package_name}.instant_edit.context")
         server = importlib.import_module(f"{package_name}.instant_edit.server")
         ui = importlib.import_module(f"{package_name}.ui")
         material_preview = importlib.import_module(
             f"{package_name}.instant_edit.material_preview"
+        )
+        _require(
+            props._export_destination_items(None, bpy.context) == [],
+            "an empty scene context list does not expose a placeholder choice",
         )
         export_streams = importlib.import_module(f"{package_name}.io.model.exp.streams")
         model_file = importlib.import_module(f"{package_name}.xivpy.model.file")
@@ -228,6 +235,16 @@ def run_staging_isolation_regression() -> None:
         _require(
             ui._export_destination_display(display_ref) == "Files/models/original.mdl",
             "the export display omits the mod root and includes the model filename",
+        )
+        _require(
+            ui._wrap_display_value(
+                "model/normal/chara/equipment/e0691/model/c0201e0691_top.mdl",
+                42,
+            ) == [
+                "model/normal/chara/equipment/e0691/model/",
+                "c0201e0691_top.mdl",
+            ],
+            "path info wraps at slash boundaries",
         )
         legacy_display_ref = SimpleNamespace(
             target_relative_path="",
@@ -648,14 +665,6 @@ def run_staging_isolation_regression() -> None:
             "a lost export response is recovered by status lookup without a second write",
         )
 
-        instant_props.save_as_variant = True
-        instant_props.auto_setup_penumbra = True
-        instant_props.save_as_variant = False
-        _require(
-            not instant_props.auto_setup_penumbra,
-            "Penumbra setup is cleared when Save as Variant is disabled",
-        )
-
         _require(
             ops.normalise_variant_name("  alternate.mdl ") == "alternate",
             "variant names are normalized without duplicating the .mdl extension",
@@ -697,8 +706,6 @@ def run_staging_isolation_regression() -> None:
         variant_option.group_name = "Group A"
         variant_option.option_name = "Option a"
         variant_option.model_path = "Files/chara/equipment/e0001/model/alternate.mdl"
-        instant_props.save_as_variant = True
-        instant_props.auto_setup_penumbra = True
         instant_props.variant_target = variant_group.selection_id
         _require(
             ops.selected_variant_target(instant_props).group_name == "Group A",
@@ -716,8 +723,9 @@ def run_staging_isolation_regression() -> None:
             instant_props, "new-option", "Group A", variant_group,
         )
         _require(
-            group_payload["variantTarget"] == "group" and group_payload["variantTargetId"] == variant_group.selection_id,
-            "group selection is sent as an authenticated Penumbra export target",
+            group_payload["setupInPenumbra"] and group_payload["variantTarget"] == "group" and
+            group_payload["variantTargetId"] == variant_group.selection_id,
+            "group selection always configures an authenticated Penumbra export target",
         )
         instant_props.variant_targets_context_id = "context-id"
         instant_props.variant_name = "new-option"
@@ -736,15 +744,139 @@ def run_staging_isolation_regression() -> None:
             instant_props, None, None, variant_option,
         )
         _require(
-            option_payload["variantTarget"] == "option" and "variantName" not in option_payload,
+            option_payload["setupInPenumbra"] and option_payload["variantTarget"] == "option" and
+            "variantName" not in option_payload,
             "option selection overwrites its mapped model without creating a sibling name",
         )
+        variant_group_id = variant_group.selection_id
+        variant_option_id = variant_option.selection_id
+        variant_option_path = variant_option.model_path
         props._export_destination_changed(instant_props, None)
         _require(
             instant_props.variant_target == "NEW_GROUP" and not instant_props.variant_targets and
             not instant_props.variant_targets_context_id,
-            "changing Export Destination clears the previous context's Penumbra target tree",
+            "changing Context clears the previous context's Penumbra target tree",
         )
+        try:
+            ops.export_destination_context(bpy.context)
+        except context_module.ContextValidationError as error:
+            _require("Select a Context" in str(error), "Quick Export requires an explicit Context")
+        else:
+            raise AssertionError("Quick Export accepted no Context")
+
+        explicit_context_collection = context_module.create_collection(
+            bpy.context.scene,
+            {
+                "context_id": "explicit-context",
+                "schema": context_module.SCHEMA,
+                "version": context_module.VERSION,
+                "plugin_instance_id": "plugin-instance",
+                "capability": "capability",
+                "source_game_path": "chara/equipment/e0001/model/c0101e0001_top.mdl",
+                "managed_destination": r"D:\Penumbra\SourceMod\Files\models",
+                "target_file_path": r"D:\Penumbra\SourceMod\Files\models\original.mdl",
+                "source_mod_directory": "SourceModDirectory",
+                "source_mod_name": "Source Mod",
+                "source_mod_root_path": r"D:\Penumbra\SourceMod",
+                "target_relative_path": "Files/models/original.mdl",
+                "import_id": "explicit-import",
+                "callback_port": 42428,
+                "import_file_name": "original.mdl",
+            },
+        )
+        explicit_context_mesh_data = bpy.data.meshes.new("ExplicitContextMeshData")
+        explicit_context_mesh_data.from_pydata(
+            [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)]
+        )
+        explicit_context_mesh = bpy.data.objects.new("0.0 Explicit Context", explicit_context_mesh_data)
+        explicit_context_collection.objects.link(explicit_context_mesh)
+
+        _require(
+            "ACTIVE" not in {
+                item[0] for item in props._export_destination_items(None, bpy.context)
+            },
+            "Context choices never expose the active-context fallback",
+        )
+        refresh_contexts = []
+        original_variant_request = ops._request_variant_targets
+        mapped_option_id = "option:11111111-1111-1111-1111-333333333333"
+
+        def fake_variant_request(ref):
+            refresh_contexts.append(ref.context_id)
+            return [{
+                "id": variant_group_id,
+                "name": "Group A",
+                "options": [
+                    {
+                        "id": mapped_option_id,
+                        "name": "Original Option",
+                        "modelPath": "Files/models/original.mdl",
+                    },
+                    {
+                        "id": variant_option_id,
+                        "name": "new-option",
+                        "modelPath": variant_option_path,
+                    },
+                ],
+            }]
+
+        ops._request_variant_targets = fake_variant_request
+        try:
+            instant_props.export_destination = props.NO_EXPORT_CONTEXT
+            preselected_ref = ops.export_destination_context(bpy.context)
+            _require(
+                refresh_contexts == ["explicit-context"] and
+                preselected_ref.context_id == "explicit-context" and
+                instant_props.export_destination == "explicit-context" and
+                instant_props.variant_targets_context_id == "explicit-context",
+                "a sole Context is preselected and automatically refreshes Penumbra targets",
+            )
+            _require(
+                instant_props.variant_target == mapped_option_id,
+                "the imported mod's mapped Penumbra option is automatically selected",
+            )
+            _require(
+                ops.SelectVariantTarget.description(
+                    bpy.context,
+                    SimpleNamespace(selection_id="NEW_GROUP"),
+                ) == "Creates a new Group on Export. Define group and option names below.",
+                "New Group hover text explains both name fields",
+            )
+            _require(
+                ops.SelectVariantTarget.description(
+                    bpy.context,
+                    SimpleNamespace(selection_id=variant_group_id),
+                ) == "Creates a new Option in this group. Define the option name below.",
+                "existing group hover text explains new option creation",
+            )
+            _require(
+                ops.SelectVariantTarget.description(
+                    bpy.context,
+                    SimpleNamespace(selection_id=mapped_option_id),
+                ) == "Overwrites this mod option within the group.",
+                "existing option hover text explains overwrite behavior",
+            )
+            instant_props.variant_target = "NEW_GROUP"
+            _require(
+                instant_props.variant_target == "NEW_GROUP",
+                "a context refresh can switch from the mapped option to New Group",
+            )
+            ops.refresh_variant_targets(
+                bpy.context,
+                select_group_name="Group A",
+                select_option_name="new-option",
+            )
+            _require(
+                instant_props.variant_target == variant_option_id,
+                "post-export target refresh selects the newly created option",
+            )
+            selected_ref = ops.export_destination_context(bpy.context)
+            _require(
+                ops.export_objects_for_scope(selected_ref, "CURRENT_COLLECTION") == [explicit_context_mesh],
+                "Instant Edit Collection scope uses the explicitly selected Context",
+            )
+        finally:
+            ops._request_variant_targets = original_variant_request
 
         class FakeModel:
             bones = ("root",)
@@ -903,6 +1035,14 @@ def run_staging_isolation_regression() -> None:
             bpy.data.objects.remove(existing_mesh, do_unlink=True)
         if skeleton is not None and any(_same_object(item, skeleton) for item in bpy.data.objects):
             bpy.data.objects.remove(skeleton, do_unlink=True)
+        if explicit_context_mesh is not None and any(
+            _same_object(item, explicit_context_mesh) for item in bpy.data.objects
+        ):
+            bpy.data.objects.remove(explicit_context_mesh, do_unlink=True)
+        if explicit_context_collection is not None and any(
+            _same_object(item, explicit_context_collection) for item in bpy.data.collections
+        ):
+            bpy.data.collections.remove(explicit_context_collection, do_unlink=True)
         if existing_collection is not None and any(_same_object(item, existing_collection) for item in bpy.data.collections):
             bpy.data.collections.remove(existing_collection, do_unlink=True)
         if staging is not None and any(_same_object(item, staging) for item in bpy.data.collections):

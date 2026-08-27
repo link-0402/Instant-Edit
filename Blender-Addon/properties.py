@@ -81,6 +81,11 @@ class XIVIEExportSettings(PropertyGroup):
         description="Remove the imported armature and bind meshes to an existing Blender armature",
         default=False,
     )  # type: ignore
+    simple_import_set_export_directory: BoolProperty(
+        name="Set Simple Export Folder on Import",
+        description="Use the imported file's folder as the Simple Export destination after a successful import",
+        default=True,
+    )  # type: ignore
     simple_import_skeleton: PointerProperty(
         type=Object,
         name="Skeleton Object",

@@ -6,6 +6,7 @@ from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty, C
 
 
 _EXPORT_DESTINATION_ITEMS = []
+NO_EXPORT_CONTEXT = "NONE"
 
 
 def _export_destination_items(_self, context):
@@ -14,22 +15,10 @@ def _export_destination_items(_self, context):
 
     scene = getattr(context, "scene", None) or getattr(bpy.context, "scene", None)
     if scene is None:
-        _EXPORT_DESTINATION_ITEMS = [
-            (
-                "ACTIVE",
-                "Active Context",
-                "Use the context associated with the active or selected model",
-            )
-        ]
+        _EXPORT_DESTINATION_ITEMS = []
         return _EXPORT_DESTINATION_ITEMS
 
-    items = [
-        (
-            "ACTIVE",
-            "Active Context",
-            "Use the context associated with the active or selected model",
-        )
-    ]
+    items = []
     for collection in sorted(
         context_collections(scene),
         key=lambda value: str(_value(value, "source_game_path", "")).casefold(),
@@ -40,23 +29,39 @@ def _export_destination_items(_self, context):
         mod_name = str(_value(collection, "source_mod_name", ""))
         label = f"{model_name} ({mod_name})" if mod_name else model_name
         items.append((context_id, label, f"Overwrite the imported model at {game_path}"))
+    if items:
+        # Keep an explicit empty choice when real contexts exist, so multiple
+        # destinations can require a deliberate user selection. An empty
+        # enum is the correct representation when the scene has no contexts.
+        items.insert(
+            0,
+            (
+                NO_EXPORT_CONTEXT,
+                "Select Context",
+                "Choose the imported model destination for Quick Export",
+            ),
+        )
     # Blender requires dynamically generated enum strings to remain alive for
     # as long as the enum is in use.
     _EXPORT_DESTINATION_ITEMS = items
     return _EXPORT_DESTINATION_ITEMS
 
 
-def _export_destination_changed(self, _context) -> None:
-    """Never show targets cached for a different Quick Export context."""
+def _export_destination_changed(self, context) -> None:
+    """Refresh the authenticated Penumbra target tree for the selected context."""
     self.variant_target = "NEW_GROUP"
     self.variant_targets.clear()
     self.variant_targets_context_id = ""
+    if context is None or self.export_destination == NO_EXPORT_CONTEXT:
+        return
+    try:
+        # Import locally to keep property registration independent from the
+        # operator module's Blender imports.
+        from .ops import refresh_variant_targets
 
-
-def _save_as_variant_changed(self, _context) -> None:
-    """A Penumbra option can only be generated for an actual variant."""
-    if not self.save_as_variant:
-        self.auto_setup_penumbra = False
+        refresh_variant_targets(context)
+    except Exception as error:
+        self.last_status = f"Could not load Penumbra targets: {error}"
 
 
 class XIVIEVariantTarget(PropertyGroup):
@@ -79,7 +84,7 @@ class XIVIEInstantEditProps(PropertyGroup):
     )  # type: ignore
 
     export_destination: EnumProperty(
-        name="Export Destination",
+        name="Context",
         description="Choose which imported model destination Quick Export uses",
         items=_export_destination_items,
         update=_export_destination_changed,
@@ -87,7 +92,7 @@ class XIVIEInstantEditProps(PropertyGroup):
 
     export_scope: EnumProperty(
         name="Export Parts",
-        description="Choose which visible mesh objects Quick Export includes",
+        description="Choose which visible mesh objects Quick Export and Simple Export include",
         default="VISIBLE",
         items=[
             ("VISIBLE", "All Visible", "Export every visible mesh object"),
@@ -99,7 +104,7 @@ class XIVIEInstantEditProps(PropertyGroup):
             (
                 "CURRENT_COLLECTION",
                 "Instant Edit Collection",
-                "Export only visible mesh objects in the current Instant Edit collection",
+                "Export only visible mesh objects in the selected Context's Instant Edit collection",
             ),
         ],
     )  # type: ignore
@@ -158,24 +163,11 @@ class XIVIEInstantEditProps(PropertyGroup):
         maxlen=4096,
     )  # type: ignore
 
-    save_as_variant: BoolProperty(
-        name="Save as Variant",
-        description="Save beside the original model under a different file name instead of replacing it",
-        default=False,
-        update=_save_as_variant_changed,
-    )  # type: ignore
-
     variant_name: StringProperty(
-        name="Variant Name",
-        description="File name for the variant; .mdl is added automatically",
+        name="New Option Name",
+        description="File name and Penumbra option name; .mdl is added automatically",
         default="",
         maxlen=128,
-    )  # type: ignore
-
-    auto_setup_penumbra: BoolProperty(
-        name="Automatically setup in Penumbra",
-        description="Automatically set up this new model in Penumbra on a new or existing option group",
-        default=False,
     )  # type: ignore
 
     variant_group_name: StringProperty(
@@ -186,8 +178,8 @@ class XIVIEInstantEditProps(PropertyGroup):
     )  # type: ignore
 
     variant_target: StringProperty(
-        name="Penumbra Target",
-        description="The Penumbra group or option to receive this variant",
+        name="Penumbra Group Target",
+        description="The Penumbra group or option to receive the Quick Export",
         default="NEW_GROUP",
         maxlen=256,
     )  # type: ignore

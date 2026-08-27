@@ -4,7 +4,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Context, Operator
 
-from .instant_edit.context import mesh_ids_from_name
+from .instant_edit.context import ContextValidationError, mesh_ids_from_name
 from .materials import (
     assign_material_path,
     ensure_flow_data,
@@ -187,7 +187,22 @@ class XIVIE_OT_simple_export(Operator):
         suffix = {"MDL": ".mdl", "FBX": ".fbx", "GLTF": ".gltf"}[settings.model_format]
         if name.lower().endswith(suffix):
             name = name[:-len(suffix)]
-        objects = visible_meshobj()
+        from .instant_edit.ops import export_destination_context, export_objects_for_scope
+
+        scope = getattr(context.scene.xiv_ie_instant_edit_props, "export_scope", "VISIBLE")
+        try:
+            ref = export_destination_context(context) if scope == "CURRENT_COLLECTION" else None
+            objects = export_objects_for_scope(ref, scope)
+        except ContextValidationError as error:
+            message = (
+                "Select a Context before exporting the Instant Edit Collection."
+                if scope == "CURRENT_COLLECTION" else str(error)
+            )
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        if not objects:
+            self.report({"ERROR"}, "No visible mesh objects match Export Parts.")
+            return {"CANCELLED"}
         if settings.model_format == "MDL":
             not_triangulated = check_triangulation(objects)
             if not_triangulated:
@@ -287,6 +302,8 @@ class XIVIE_OT_simple_import(Operator):
 
             _simple_import_select_objects(imported_objects)
             imported_count = sum(obj.type == "MESH" for obj in imported_objects)
+            if settings.simple_import_set_export_directory:
+                settings.export_directory = str(file_path.parent)
         except Exception as error:
             _simple_import_remove_objects(imported_objects)
             self.report({"ERROR"}, f"Import failed: {error}")
