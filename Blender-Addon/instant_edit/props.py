@@ -1,4 +1,4 @@
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+# Modified for XIV Instant Edit, 2026.
 import bpy
 
 from bpy.types import PropertyGroup
@@ -79,7 +79,7 @@ class XIVIEInstantEditProps(PropertyGroup):
 
     show_utilities: BoolProperty(
         name="Toolbox",
-        description="Show maintenance actions for Instant Edit context data",
+        description="Show maintenance actions for XIV Instant Edit context data",
         default=False,
     )  # type: ignore
 
@@ -103,15 +103,15 @@ class XIVIEInstantEditProps(PropertyGroup):
             ),
             (
                 "CURRENT_COLLECTION",
-                "Instant Edit Collection",
-                "Export only visible mesh objects in the selected Context's Instant Edit collection",
+                "XIV Instant Edit Collection",
+                "Export only visible mesh objects in the selected Context's XIV Instant Edit collection",
             ),
         ],
     )  # type: ignore
 
     game_path: StringProperty(
         name="",
-        description="Game path of the model loaded via Instant Edit",
+        description="Game path of the model loaded via XIV Instant Edit",
         default="",
         maxlen=255,
     )  # type: ignore
@@ -133,21 +133,21 @@ class XIVIEInstantEditProps(PropertyGroup):
     # export reads the collection and tagged objects, not these scene values.
     context_id: StringProperty(
         name="",
-        description="Active Instant Edit context identifier",
+        description="Active XIV Instant Edit context identifier",
         default="",
         maxlen=256,
     )  # type: ignore
 
     context_schema: StringProperty(
         name="",
-        description="Instant Edit context schema",
+        description="XIV Instant Edit context schema",
         default="",
         maxlen=128,
     )  # type: ignore
 
     context_version: IntProperty(
         name="",
-        description="Instant Edit context schema version",
+        description="XIV Instant Edit context schema version",
         default=0,
     )  # type: ignore
 
@@ -158,8 +158,8 @@ class XIVIEInstantEditProps(PropertyGroup):
 
     last_status: StringProperty(
         name="",
-        description="Status of the last Instant Edit action",
-        default="Pick a model in-game via the Instant Edit plugin to get started.",
+        description="Status of the last XIV Instant Edit action",
+        default="Pick a model in-game via the XIV Instant Edit plugin to get started.",
         maxlen=4096,
     )  # type: ignore
 

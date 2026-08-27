@@ -25,10 +25,10 @@
 
   <PropertyGroup>
     <Author>Luci</Author>
-    <Name>Instant Edit</Name>
+    <Name>XIV Instant Edit</Name>
     <Punchline>Send on-screen models straight to Blender and back.</Punchline>
-    <Description>Allows for easy and instant editing of Penumbra model files in Blender and saving them right back to the game. Requires XIV Instant Edit Blender addon installed (see source repository for instructions).</Description>
-    <RepoUrl>https://github.com/link-0402/Instant-Edit</RepoUrl>
+    <Description>Allows for easy and instant editing of Penumbra model files in Blender and saving them right back to the game. Requires the XIV Instant Edit Blender add-on installed (see source repository for instructions).</Description>
+    <RepoUrl>https://github.com/link-0402/XIV-Instant-Edit</RepoUrl>
     <ApplicableVersion>any</ApplicableVersion>
     <DalamudApiLevel>15</DalamudApiLevel>
     <LoadRequiredState>0</LoadRequiredState>

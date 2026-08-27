@@ -33,7 +33,7 @@ public sealed record VariantGroupTarget(string Id, string Name, IReadOnlyList<Va
 public sealed record VariantTargetsResult(bool Success, string Code, string Message, IReadOnlyList<VariantGroupTarget> Groups);
 
 /// <summary>
-/// Wraps all Penumbra IPC used by Instant Edit:
+/// Wraps all Penumbra IPC used by XIV Instant Edit:
 /// reading the resolved model files of on-screen game objects and
 /// writing/updating a persistent mod so the edited model applies in-game.
 /// </summary>
@@ -45,7 +45,9 @@ public sealed class PenumbraService
     private const string OwnershipMarkerFile = ".instant-edit-owner.json";
     private const string OwnershipSchema = "instant-edit.owner";
     private const string OwnershipOwner = "Luci";
-    private const string VariantGroupDescriptionPrefix = "Managed by Instant Edit variant group: ";
+    private const string VariantGroupDescriptionPrefix = "Managed by XIV Instant Edit variant group: ";
+    private const string ManagedModDescription = "Managed by the XIV Instant Edit plugin.";
+    private const string LegacyManagedModDescription = "Managed by the Instant Edit plugin.";
 
     private readonly IDalamudPluginInterface  _pi;
     private readonly GetGameObjectResourcePaths _getPaths;
@@ -201,7 +203,7 @@ public sealed class PenumbraService
     }
 
     /// <summary>
-    /// Write the exported mdl into the persistent Instant Edit mod and reload + redraw so it applies in-game.
+    /// Write the exported mdl into the persistent XIV Instant Edit mod and reload + redraw so it applies in-game.
     /// </summary>
     /// <param name="modName">Directory name of the mod used for exports.</param>
     /// <param name="gamePath">The game path the model was imported from (e.g. chara/weapon/.../x.mdl).</param>
@@ -251,7 +253,7 @@ public sealed class PenumbraService
             return new ExportResult(false, validationError);
         if (!IsSafeGamePath(sourceGamePath))
             return new ExportResult(false, "Invalid source game path.");
-        var resolvedVariantGroupName = penumbraVariantGroupName ?? "Instant Edit Variants";
+        var resolvedVariantGroupName = penumbraVariantGroupName ?? "XIV Instant Edit Variants";
         if (penumbraVariantName is not null &&
             (!IsSafeVariantName(penumbraVariantName) || !IsSafeVariantGroupName(resolvedVariantGroupName)))
             return new ExportResult(false, "Invalid Penumbra variant or option group name.");
@@ -1142,7 +1144,7 @@ public sealed class PenumbraService
         }
         catch (Exception e)
         {
-            _log.Error(e, "Penumbra failed while reloading the Instant Edit mod.");
+            _log.Error(e, "Penumbra failed while reloading the XIV Instant Edit mod.");
             return new ExportResult(false, $"Penumbra add/reload failed: {e.Message}");
         }
 
@@ -1186,7 +1188,7 @@ public sealed class PenumbraService
         }
         catch (Exception e)
         {
-            _log.Error(e, "Penumbra failed while adding the Instant Edit mod.");
+            _log.Error(e, "Penumbra failed while adding the XIV Instant Edit mod.");
             return new ExportResult(false, $"Penumbra add failed: {e.Message}");
         }
         finally
@@ -1246,7 +1248,7 @@ public sealed class PenumbraService
         }
         catch (Exception e)
         {
-            _log.Error(e, "Could not enable the Instant Edit mod in Penumbra.");
+            _log.Error(e, "Could not enable the XIV Instant Edit mod in Penumbra.");
             return new ExportResult(false, $"Penumbra enable failed: {e.Message}");
         }
 
@@ -1265,7 +1267,7 @@ public sealed class PenumbraService
         }
         catch (Exception e)
         {
-            _log.Error(e, "Could not prioritize the Instant Edit mod in Penumbra.");
+            _log.Error(e, "Could not prioritize the XIV Instant Edit mod in Penumbra.");
             return new ExportResult(false, $"Penumbra priority failed: {e.Message}");
         }
 
@@ -1399,7 +1401,7 @@ public sealed class PenumbraService
         meta["FileVersion"] = 3;
         meta["Name"] = modName;
         meta["Author"] = "Luci";
-        meta["Description"] = "Managed by the Instant Edit plugin.";
+        meta["Description"] = ManagedModDescription;
         meta["Image"] = "";
         meta["Version"] = "";
         meta["Website"] = "";
@@ -1411,7 +1413,7 @@ public sealed class PenumbraService
         defaultMod["Version"] ??= 0;
         defaultMod["Files"] ??= new JsonObject();
         defaultMod["FileSwaps"] ??= new JsonObject();
-        // Older Instant Edit versions wrote an object here. It is not a valid
+        // Older releases wrote an object here. It is not a valid
         // Penumbra container, and there is no safe object-to-manipulation mapping.
         if (defaultMod["Manipulations"] is not JsonArray)
             defaultMod["Manipulations"] = new JsonArray();
@@ -1427,7 +1429,8 @@ public sealed class PenumbraService
             var meta = LoadJsonObject(Path.Combine(modFolder, "meta.json"));
             return string.Equals(meta["Name"]?.GetValue<string>(), modName, StringComparison.Ordinal) &&
                    string.Equals(meta["Author"]?.GetValue<string>(), OwnershipOwner, StringComparison.Ordinal) &&
-                   string.Equals(meta["Description"]?.GetValue<string>(), "Managed by the Instant Edit plugin.", StringComparison.Ordinal);
+                   (string.Equals(meta["Description"]?.GetValue<string>(), ManagedModDescription, StringComparison.Ordinal) ||
+                    string.Equals(meta["Description"]?.GetValue<string>(), LegacyManagedModDescription, StringComparison.Ordinal));
         }
         catch
         {

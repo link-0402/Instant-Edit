@@ -195,7 +195,7 @@ class XIVIE_OT_simple_export(Operator):
             objects = export_objects_for_scope(ref, scope)
         except ContextValidationError as error:
             message = (
-                "Select a Context before exporting the Instant Edit Collection."
+                "Select a Context before exporting the XIV Instant Edit Collection."
                 if scope == "CURRENT_COLLECTION" else str(error)
             )
             self.report({"ERROR"}, message)

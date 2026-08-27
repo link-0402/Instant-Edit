@@ -1,11 +1,11 @@
-"""Context records used by the safe Instant Edit v1 bridge.
+"""Context records used by the safe XIV Instant Edit v1 bridge.
 
 The collection and object custom properties in this module are deliberately
 duplicated (plain and ``instant_edit_*`` names).  The plain names make the
 metadata easy to inspect in Blender, while the prefixed names avoid confusing
 it with metadata produced by the normal exporter.
 """
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+# Modified for XIV Instant Edit, 2026.
 
 from dataclasses import dataclass
 from typing import Iterable
@@ -40,7 +40,7 @@ REQUIRED_OBJECT_FIELDS = (
 
 
 class ContextValidationError(ValueError):
-    """Raised when an Instant Edit context cannot be used safely."""
+    """Raised when an XIV Instant Edit context cannot be used safely."""
 
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ def create_collection(scene, metadata: dict):
     if any(_value(collection, "context_id") == context_id for collection in bpy.data.collections):
         raise ContextValidationError(f"Context {context_id!r} already exists")
 
-    collection = bpy.data.collections.new(f"Instant Edit [{context_id}]")
+    collection = bpy.data.collections.new(f"XIV Instant Edit [{context_id}]")
     scene.collection.children.link(collection)
     for name, value in metadata.items():
         _set(collection, name, value)
@@ -122,7 +122,7 @@ def _context_collections(context_id: str, scene=None) -> list:
 
 
 def context_collections(scene=None) -> list:
-    """Return the Instant Edit context collections currently held in a scene."""
+    """Return the XIV Instant Edit context collections currently held in a scene."""
     scene = scene or bpy.context.scene
     return [
         collection for collection in bpy.data.collections
@@ -139,7 +139,7 @@ def _remove_metadata(obj, fields=CONTEXT_METADATA_FIELDS) -> None:
 
 
 def clear_context_metadata(scene=None) -> int:
-    """Detach all Instant Edit routing metadata without deleting scene objects."""
+    """Detach all XIV Instant Edit routing metadata without deleting scene objects."""
     collections = context_collections(scene)
     context_ids = {
         _value(collection, "context_id", "")
@@ -193,7 +193,7 @@ def _require_int(value, name: str, minimum: int = 0) -> int:
 
 
 def context_id_for_object(obj) -> str:
-    """Resolve an object's context from its tag or Instant Edit collection."""
+    """Resolve an object's context from its tag or XIV Instant Edit collection."""
     ids = set()
     tagged = _value(obj, "context_id", "")
     if isinstance(tagged, str) and tagged:
@@ -207,7 +207,7 @@ def context_id_for_object(obj) -> str:
         ):
             ids.add(collection_id)
     if len(ids) > 1:
-        raise ContextValidationError(f"{obj.name}: object belongs to multiple Instant Edit contexts")
+        raise ContextValidationError(f"{obj.name}: object belongs to multiple XIV Instant Edit contexts")
     return next(iter(ids), "")
 
 
@@ -280,7 +280,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
             if tagged_context_id != context_id:
                 raise ContextValidationError(f"{obj.name}: context id does not match its collection")
             if _value(obj, "schema") != SCHEMA or _value(obj, "version") != VERSION:
-                raise ContextValidationError(f"{obj.name}: invalid Instant Edit metadata schema")
+                raise ContextValidationError(f"{obj.name}: invalid XIV Instant Edit metadata schema")
         if obj.type != "MESH":
             continue
 
@@ -341,7 +341,7 @@ def active_context(context=None) -> ContextRef:
     resolved = [context_id_for_object(obj) for obj in relevant]
     ids = {context_id for context_id in resolved if context_id}
     if len(ids) > 1:
-        raise ContextValidationError("selection contains mixed Instant Edit contexts")
+        raise ContextValidationError("selection contains mixed XIV Instant Edit contexts")
 
     if not ids:
         # Added meshes may intentionally live outside the imported collection.
@@ -350,7 +350,7 @@ def active_context(context=None) -> ContextRef:
         scene_props = getattr(context.scene, "xiv_ie_instant_edit_props", None)
         context_id = getattr(scene_props, "context_id", "") if scene_props else ""
         if not context_id:
-            raise ContextValidationError("no active Instant Edit context")
+        raise ContextValidationError("no active XIV Instant Edit context")
     else:
         context_id = next(iter(ids))
 
@@ -358,8 +358,8 @@ def active_context(context=None) -> ContextRef:
 
 
 def metadata_for_export(obj) -> tuple[int, int, int]:
-    """Return YAA-compatible name-based ordering within an Instant Edit context."""
+    """Return YAA-compatible name-based ordering within an XIV Instant Edit context."""
     context_id = context_id_for_object(obj)
     if not context_id:
-        raise ContextValidationError(f"{obj.name}: object is outside an Instant Edit context")
+        raise ContextValidationError(f"{obj.name}: object is outside an XIV Instant Edit context")
     return mesh_ids_from_name(obj)

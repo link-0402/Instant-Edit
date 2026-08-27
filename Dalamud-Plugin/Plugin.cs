@@ -24,7 +24,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow              _window;
     private readonly SettingsWindow          _settingsWindow;
 
-    public string Name => "Instant Edit";
+    public string Name => "XIV Instant Edit";
 
     public Plugin(
         IDalamudPluginInterface pi,
@@ -97,7 +97,7 @@ public sealed class Plugin : IDalamudPlugin
 
         _commands.AddHandler("/ie", new CommandInfo(OnCommand)
         {
-            HelpMessage = "Opens the Instant Edit window. Use /ie refresh to refresh the on-screen list.",
+            HelpMessage = "Opens the XIV Instant Edit window. Use /ie refresh to refresh the on-screen list.",
         });
 
         try
@@ -107,10 +107,10 @@ public sealed class Plugin : IDalamudPlugin
         catch (Exception e)
         {
             // A listener conflict must not prevent the rest of the plugin from loading.
-            _log.Error(e, "Instant Edit export receiver could not start.");
+            _log.Error(e, "XIV Instant Edit export receiver could not start.");
         }
 
-        _log.Information("Instant Edit loaded.");
+        _log.Information("XIV Instant Edit loaded.");
     }
 
     private void OnCommand(string command, string args)

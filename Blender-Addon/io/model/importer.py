@@ -1,4 +1,4 @@
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+# Modified for XIV Instant Edit, 2026.
 import bpy
 import numpy as np
 import random

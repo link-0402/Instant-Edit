@@ -41,13 +41,13 @@ public sealed class BlenderClient : IDisposable
         };
     }
 
-    /// <summary> Ping Blender's addon server. </summary>
+    /// <summary> Ping Blender's add-on server. </summary>
     public bool IsReachable(int port)
         => IsReachableAsync(port).GetAwaiter().GetResult();
 
     /// <summary>
-    /// Ping Blender's addon server without blocking the caller's thread.
-    /// A stopped addon is a normal condition, so connection and timeout failures
+    /// Ping Blender's add-on server without blocking the caller's thread.
+    /// A stopped add-on is a normal condition, so connection and timeout failures
     /// are reported as false rather than escaping to the UI thread.
     /// </summary>
     public async Task<bool> IsReachableAsync(int port, CancellationToken cancellationToken = default)
@@ -195,7 +195,7 @@ public sealed class BlenderClient : IDisposable
         try
         {
             // The nested context is authoritative for v1. The legacy top-level
-            // values remain solely for older addon versions which still read them.
+            // values remain solely for older add-on versions which still read them.
             var payload = JsonSerializer.Serialize(new
             {
                 schema      = "instant-edit.import",

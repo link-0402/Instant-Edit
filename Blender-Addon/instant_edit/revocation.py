@@ -173,7 +173,7 @@ def _poll_results():
                     if (item.get("contextId"), item.get("importId")) not in completed
                 ])
         except Exception as error:
-            print(f"Instant Edit: could not update context revocations: {error}")
+            print(f"XIV Instant Edit: could not update context revocations: {error}")
     return None
 
 
@@ -185,7 +185,7 @@ def schedule_revocations() -> None:
         with _lock:
             records = _load_locked()
     except Exception as error:
-        print(f"Instant Edit: could not load context revocations: {error}")
+        print(f"XIV Instant Edit: could not load context revocations: {error}")
         return
     if not records:
         return

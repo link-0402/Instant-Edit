@@ -312,7 +312,7 @@ def _mesh_index(obj) -> int:
 
 
 def group_mesh_objects(objects) -> list[MaterialGroup]:
-    """Group mesh objects by Instant Edit context and FFXIV mesh index."""
+    """Group mesh objects by XIV Instant Edit context and FFXIV mesh index."""
     grouped = defaultdict(list)
     for obj in objects:
         if obj.type != "MESH" or len(obj.data.vertices) == 0:

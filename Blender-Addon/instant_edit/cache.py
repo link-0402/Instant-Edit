@@ -64,7 +64,7 @@ def ensure_cache_root() -> Path:
             raise ValueError("cache ownership marker is invalid")
     else:
         if any(root.iterdir()):
-            raise ValueError("cache directory is not empty and has no Instant Edit ownership marker")
+            raise ValueError("cache directory is not empty and has no XIV Instant Edit ownership marker")
         marker.write_text(
             json.dumps({"schema": CACHE_SCHEMA, "version": CACHE_VERSION}),
             encoding="utf-8",

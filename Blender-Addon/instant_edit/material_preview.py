@@ -1,5 +1,5 @@
-"""Validated display-only FFXIV material previews for Instant Edit imports."""
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+"""Validated display-only FFXIV material previews for XIV Instant Edit imports."""
+# Modified for XIV Instant Edit, 2026.
 
 from __future__ import annotations
 

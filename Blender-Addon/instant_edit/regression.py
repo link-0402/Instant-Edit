@@ -1,9 +1,9 @@
-"""Blender checks for Instant Edit staging isolation.
+"""Blender checks for XIV Instant Edit staging isolation.
 
 Call ``assert_staging_isolated(collection, created_objects, sentinels)`` after a
 test import, where ``sentinels`` are user objects captured before the import.
 """
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+# Modified for XIV Instant Edit, 2026.
 
 import importlib
 import importlib.util
@@ -37,7 +37,7 @@ def _require(condition: bool, message: str) -> None:
 
 
 def assert_staging_isolated(collection, created_objects, sentinels=()) -> None:
-    """Assert that an Instant Edit import stayed in its dedicated collection."""
+    """Assert that an XIV Instant Edit import stayed in its dedicated collection."""
     _require(
         not _same_object(collection, bpy.context.collection),
         "staging collection is not the ambient context collection",
@@ -48,7 +48,7 @@ def assert_staging_isolated(collection, created_objects, sentinels=()) -> None:
     )
     _require(
         collection.get("instant_edit_collection_kind") == "instant_edit",
-        "staging collection has the Instant Edit collection tag",
+        "staging collection has the XIV Instant Edit collection tag",
     )
 
     created_objects = tuple(created_objects)
@@ -69,7 +69,7 @@ def assert_staging_isolated(collection, created_objects, sentinels=()) -> None:
     )
     _require(
         all(obj.get("instant_edit_context_id") for obj in created_objects),
-        "every created object has an Instant Edit context tag",
+        "every created object has an XIV Instant Edit context tag",
     )
 
 
@@ -873,7 +873,7 @@ def run_staging_isolation_regression() -> None:
             selected_ref = ops.export_destination_context(bpy.context)
             _require(
                 ops.export_objects_for_scope(selected_ref, "CURRENT_COLLECTION") == [explicit_context_mesh],
-                "Instant Edit Collection scope uses the explicitly selected Context",
+                "XIV Instant Edit Collection scope uses the explicitly selected Context",
             )
         finally:
             ops._request_variant_targets = original_variant_request
@@ -888,8 +888,8 @@ def run_staging_isolation_regression() -> None:
             context_metadata=None,
             **kwargs,
         ):
-            _require(collection is not None, "Instant Edit supplies a dedicated collection")
-            _require(kwargs.get("require_collection") is True, "Instant Edit requires collection containment")
+            _require(collection is not None, "XIV Instant Edit supplies a dedicated collection")
+            _require(kwargs.get("require_collection") is True, "XIV Instant Edit requires collection containment")
 
             mesh = bpy.data.meshes.new("InstantEditRegressionImportedMesh")
             obj = bpy.data.objects.new("InstantEditRegressionImported", mesh)
@@ -908,7 +908,7 @@ def run_staging_isolation_regression() -> None:
             result = bpy.ops.xiv_ie.instant_import(
                 "EXEC_DEFAULT",
                 file_path=str(temp_path),
-                import_name="Instant Edit Regression",
+                import_name="XIV Instant Edit Regression",
                 schema="",
                 version=0,
             )
@@ -916,7 +916,7 @@ def run_staging_isolation_regression() -> None:
             ops.ModelImport.from_file = original_import
             ops.XIVModel.from_file = original_model_from_file
 
-        _require(result == {"FINISHED"}, "legacy Instant Edit request completes")
+        _require(result == {"FINISHED"}, "legacy XIV Instant Edit request completes")
 
         staging = next(
             collection
@@ -994,7 +994,7 @@ def run_staging_isolation_regression() -> None:
         )
         _require(
             not skeleton.get("instant_edit_context_id"),
-            "existing scene armature is not tagged as an Instant Edit object",
+            "existing scene armature is not tagged as an XIV Instant Edit object",
         )
 
         revocation = importlib.import_module(f"{package_name}.instant_edit.revocation")

@@ -174,7 +174,7 @@ def run() -> None:
         if any(item["xiv_material"] != assigned for item in groups[0].objects):
             raise AssertionError("Material path was not assigned to every submesh")
         if obj["instant_edit_xiv_material"] != assigned:
-            raise AssertionError("Instant Edit material alias was not kept in sync")
+            raise AssertionError("XIV Instant Edit material alias was not kept in sync")
         print("[PASS] Per-group material assignment updates every submesh")
 
         added_material = materials.assign_material_path(
@@ -195,15 +195,15 @@ def run() -> None:
                 try:
                     bpy.ops.xiv_ie.simple_export()
                 except RuntimeError as error:
-                    if "Instant Edit Collection" not in str(error):
+                    if "XIV Instant Edit Collection" not in str(error):
                         raise
                 else:
-                    raise AssertionError("Simple Export accepted Instant Edit Collection without a Context")
+                    raise AssertionError("Simple Export accepted XIV Instant Edit Collection without a Context")
         finally:
             initial_instant_props.export_scope = initial_scope
             initial_settings.export_directory = initial_export_directory
             initial_settings.export_name = initial_export_name
-        print("[PASS] Simple Export rejects Instant Edit Collection without a Context")
+        print("[PASS] Simple Export rejects XIV Instant Edit Collection without a Context")
 
         context_module = importlib.import_module(f"{addon.__name__}.instant_edit.context")
         context_id = "smoke-context"
@@ -246,7 +246,7 @@ def run() -> None:
         bpy.context.view_layer.objects.active = added_group
         ref = context_module.active_context(bpy.context)
         if len(ref.mesh_objects) != 1:
-            raise AssertionError("Instant Edit destination context was not preserved")
+            raise AssertionError("XIV Instant Edit destination context was not preserved")
         visible_groups = materials.visible_material_groups()
         if [group.mesh_index for group in visible_groups] != [0, 1]:
             raise AssertionError("New mesh group was not discovered from object names")
@@ -254,7 +254,7 @@ def run() -> None:
             raise AssertionError("New visible mesh part was not grouped with the source mesh")
         if materials.material_paths(visible_groups[1].objects) != [added_material]:
             raise AssertionError("New mesh group material was not retained")
-        print("[PASS] Instant Edit discovers new visible parts and groups outside its collection")
+        print("[PASS] XIV Instant Edit discovers new visible parts and groups outside its collection")
 
         instant_ops = importlib.import_module(f"{addon.__name__}.instant_edit.ops")
         export_module = importlib.import_module(f"{addon.__name__}.mesh.export")
@@ -312,7 +312,7 @@ def run() -> None:
 
                 instant_props.export_scope = "CURRENT_COLLECTION"
                 if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or scope_capture[-1] != (obj,):
-                    raise AssertionError("Simple Export Instant Edit Collection ignored the selected Context")
+                    raise AssertionError("Simple Export XIV Instant Edit Collection ignored the selected Context")
         finally:
             operators.export_result = original_simple_export_result
             settings.model_format = original_model_format

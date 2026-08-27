@@ -1,12 +1,12 @@
 # XIV Instant Edit
 
-XIV Instant Edit is a focused Blender extension for the Instant Edit Dalamud
+XIV Instant Edit is a focused Blender extension for the XIV Instant Edit Dalamud
 plugin. It contains only the model I/O and scene tools needed for the bridge,
 plus a standalone Simple Import/Export panel.
 
 ## Features
 
-- Receives secure, versioned `.mdl` import requests from Instant Edit.
+- Receives secure, versioned `.mdl` import requests from XIV Instant Edit.
 - Creates isolated import collections and preserves the authorized Penumbra
   export destination.
 - Supports generated import armatures or a named existing scene armature.
@@ -46,12 +46,12 @@ The source directory itself can also be used for development with Blender 4.5
 or newer.
 
 Do not enable this extension at the same time as a custom Yet Another Addon
-build that also contains the Instant Edit listener. Both would attempt to own
+build that also contains the XIV Instant Edit listener. Both would attempt to own
 the same local port (42424 by default). The unmodified upstream Yet Another
 Addon can coexist because it does not provide that listener.
 
 The connection ports can be changed in the extension preferences. Simple
-Export and Instant Edit controls are in the **XIV Instant Edit** sidebar tab of
+Export and XIV Instant Edit controls are in the **XIV Instant Edit** sidebar tab of
 the 3D Viewport.
 
 ## Attribution and license
@@ -62,5 +62,4 @@ and vendors the relevant portions of
 [XIVPy](https://github.com/Arrenval/XIVPy).
 
 It is distributed under the GNU General Public License version 3 or later.
-See `LICENSE`, `xivpy/LICENSE`, `THIRD_PARTY_NOTICES.md`, and
-`MODIFICATIONS.md`.
+See `LICENSE`, `xivpy/LICENSE`, and `THIRD_PARTY_NOTICES.md`.

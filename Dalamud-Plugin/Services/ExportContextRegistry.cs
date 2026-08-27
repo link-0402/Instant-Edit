@@ -6,7 +6,7 @@ namespace InstantEdit.Services;
 /// <summary>
 /// Authority for the import/export relationship. Active contexts are indexed in
 /// memory, while their durable records let a saved Blender scene reconnect after
-/// a plugin or application restart. The addon can echo a context, but it cannot
+/// a plugin or application restart. The add-on can echo a context, but it cannot
 /// choose a different target because all target data lives here.
 /// </summary>
 public sealed class ExportContextRegistry : IDisposable

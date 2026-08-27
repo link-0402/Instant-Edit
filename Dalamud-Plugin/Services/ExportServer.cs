@@ -11,7 +11,7 @@ namespace InstantEdit.Services;
 
 /// <summary>
 /// Minimal HTTP server that receives export results from Blender's Quick Export button
-/// and applies them to Penumbra as the persistent Instant Edit mod.
+/// and applies them to Penumbra as the persistent XIV Instant Edit mod.
 /// </summary>
 public sealed class ExportServer : IDisposable
 {
@@ -228,7 +228,7 @@ public sealed class ExportServer : IDisposable
             }
         }
 
-        _log.Information($"Instant Edit export receiver listening on port {_config.ListenPort}.");
+        _log.Information($"XIV Instant Edit export receiver listening on port {_config.ListenPort}.");
     }
 
     /// <summary> Stop and start the listener using the current configuration. </summary>

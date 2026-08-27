@@ -1,4 +1,4 @@
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+# Modified for XIV Instant Edit, 2026.
 import json
 import socket
 import threading
@@ -274,7 +274,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
 
 
 def start_server(port: int = 42424) -> bool:
-    """Starts the HTTP listener that receives import commands from the Instant Edit plugin."""
+    """Starts the HTTP listener that receives import commands from the XIV Instant Edit plugin."""
     global _server, _thread, _port, _server_error
 
     if _server is not None:
@@ -288,7 +288,7 @@ def start_server(port: int = 42424) -> bool:
         _server = None
         _thread = None
         _server_error = str(e)
-        print(f"Instant Edit: could not listen on port {port}: {_server_error}")
+        print(f"XIV Instant Edit: could not listen on port {port}: {_server_error}")
         return False
 
     _port   = port
@@ -296,7 +296,7 @@ def start_server(port: int = 42424) -> bool:
     _server_error = ""
     _thread = threading.Thread(target=_server.serve_forever, daemon=True)
     _thread.start()
-    print(f"Instant Edit: listening on port {port}")
+    print(f"XIV Instant Edit: listening on port {port}")
     return True
 
 
@@ -369,8 +369,8 @@ def poll_import_queue() -> float:
                     cache_job_directory=data.get("cacheJobDirectory", ""),
                 )
             except Exception as e:
-                print(f"Instant Edit: import failed: {e}")
+                print(f"XIV Instant Edit: import failed: {e}")
     except Exception as e:
-        print(f"Instant Edit: queue error: {e}")
+        print(f"XIV Instant Edit: queue error: {e}")
 
     return 0.5

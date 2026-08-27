@@ -1,4 +1,4 @@
-"""Reconnect persisted Instant Edit scene contexts to the Dalamud plugin."""
+"""Reconnect persisted XIV Instant Edit scene contexts to the Dalamud plugin."""
 
 import json
 import queue
@@ -176,7 +176,7 @@ def _poll_recovery_results():
                 props = getattr(bpy.context.scene, "xiv_ie_instant_edit_props", None)
                 if props is not None:
                     props.last_status = (
-                        f"Recovered {recovered} Instant Edit context(s); "
+                        f"Recovered {recovered} XIV Instant Edit context(s); "
                         f"{failed} context(s) could not reconnect. Re-import if needed."
                     )
             return None
@@ -195,7 +195,7 @@ def _update_scene_properties(payload: dict, scene) -> None:
     props.plugin_instance_id = payload.get("pluginInstanceId", "")
     props.capability = payload.get("capability", "")
     props.managed_destination = payload.get("managedDestination", "")
-    props.last_status = "Instant Edit context reconnected."
+    props.last_status = "XIV Instant Edit context reconnected."
 
 
 def _run_scheduled_recovery():
@@ -204,7 +204,7 @@ def _run_scheduled_recovery():
     try:
         recover_saved_contexts()
     except Exception as error:
-        print(f"Instant Edit: context recovery failed: {error}")
+        print(f"XIV Instant Edit: context recovery failed: {error}")
     return None
 
 

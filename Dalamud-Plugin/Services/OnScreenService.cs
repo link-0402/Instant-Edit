@@ -286,7 +286,7 @@ internal static class ResourcePresentation
         if (path.Contains("/obj/tail/")) return ("Tail", ResourceSection.CharacterFeatures, 3);
 
         // Penumbra shows all top-level trees, including these connector resources.
-        // Instant Edit intentionally keeps them out of Gear: they are not the model
+        // XIV Instant Edit intentionally keeps them out of Gear: they are not the model
         // occupying an equipment slot and are therefore listed under Other instead.
         if (path.StartsWith("chara/equipment/", StringComparison.Ordinal) ||
             path.StartsWith("chara/accessory/", StringComparison.Ordinal) ||

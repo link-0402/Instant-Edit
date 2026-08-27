@@ -13,7 +13,7 @@ public sealed record ActorIdentity
     public required long Address { get; init; }
 }
 
-/// <summary> Versioned, plugin-owned context sent to the Blender addon. </summary>
+/// <summary> Versioned, plugin-owned context sent to the Blender add-on. </summary>
 public sealed record InstantEditImportContext
 {
     [JsonPropertyName("schema")]

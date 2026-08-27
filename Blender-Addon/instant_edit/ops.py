@@ -1,4 +1,4 @@
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+# Modified for XIV Instant Edit, 2026.
 import bpy
 from bpy.props import StringProperty
 import json
@@ -258,7 +258,7 @@ def _remove_staging_objects(objects: list, collection) -> None:
 class InstantImport(Operator):
     bl_idname      = "xiv_ie.instant_import"
     bl_label       = "Instant Import"
-    bl_description = "Imports a model sent by the Instant Edit plugin into the active scene"
+    bl_description = "Imports a model sent by the XIV Instant Edit plugin into the active scene"
     bl_options     = {"UNDO"}
 
     file_path: bpy.props.StringProperty(options={'HIDDEN'})  # type: ignore
@@ -424,7 +424,7 @@ class InstantImport(Operator):
                 try:
                     finish_job(self.cache_job_directory)
                 except OSError as error:
-                    print(f"Instant Edit: could not remove import cache job: {error}")
+                    print(f"XIV Instant Edit: could not remove import cache job: {error}")
 
         if preview_validation_warning or (preview_package is not None and preview_package.warnings):
             self.report({"WARNING"}, props.last_status)
@@ -661,7 +661,7 @@ class QuickExport(Operator):
 class ClearInstantEditContexts(Operator):
     bl_idname = "xiv_ie.clear_contexts"
     bl_label = "Clear Contexts"
-    bl_description = "Clear all Instant Edit context information without deleting scene objects"
+    bl_description = "Clear all XIV Instant Edit context information without deleting scene objects"
 
     @classmethod
     def poll(cls, context: Context):
@@ -690,22 +690,22 @@ class ClearInstantEditContexts(Operator):
             "managed_destination": "",
             "last_export_id": "",
             "variant_group_name": "New Group",
-            "last_status": f"Instant Edit contexts cleared; {queued} revocation(s) queued.",
+            "last_status": f"XIV Instant Edit contexts cleared; {queued} revocation(s) queued.",
         }.items():
             setattr(props, field, value)
         schedule_revocations()
-        self.report({"INFO"}, f"Cleared {cleared} Instant Edit context(s); revocation queued.")
+        self.report({"INFO"}, f"Cleared {cleared} XIV Instant Edit context(s); revocation queued.")
         return {"FINISHED"}
 
 
 class CopyInstantEditStatus(Operator):
     bl_idname = "xiv_ie.copy_status"
     bl_label = "Copy Full Import Status"
-    bl_description = "Copy the complete Instant Edit status message to the clipboard"
+    bl_description = "Copy the complete XIV Instant Edit status message to the clipboard"
 
     def execute(self, context):
         context.window_manager.clipboard = get_instant_edit_props().last_status
-        self.report({"INFO"}, "Instant Edit status copied")
+        self.report({"INFO"}, "XIV Instant Edit status copied")
         return {"FINISHED"}
 
 
@@ -945,7 +945,7 @@ def export_objects_for_scope(ref, scope: str) -> list:
     if scope == "CURRENT_COLLECTION":
         if ref is None:
             raise ContextValidationError(
-                "Select a Context before exporting the Instant Edit Collection."
+                "Select a Context before exporting the XIV Instant Edit Collection."
             )
         collection_objects = {obj.as_pointer() for obj in ref.collection.objects}
         return [obj for obj in objects if obj.as_pointer() in collection_objects]
@@ -1076,13 +1076,13 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
         try:
             finish_job(temp_dir)
         except OSError as error:
-            print(f"Instant Edit: could not remove export cache job: {error}")
+            print(f"XIV Instant Edit: could not remove export cache job: {error}")
 
 
 class ApplyInstantEdit(Operator):
     bl_idname = "xiv_ie.instant_apply"
-    bl_label = "Apply Instant Edit"
-    bl_description = "Apply the active Instant Edit context"
+    bl_label = "Apply XIV Instant Edit"
+    bl_description = "Apply the active XIV Instant Edit context"
 
     @classmethod
     def poll(cls, context):

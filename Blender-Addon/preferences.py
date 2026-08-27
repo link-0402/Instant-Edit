@@ -31,13 +31,13 @@ def _update_cache(self, _context) -> None:
         if self.instant_edit_auto_cleanup:
             clean_cache(STALE_SECONDS)
     except Exception as error:
-        print(f"Instant Edit: could not configure cache: {error}")
+        print(f"XIV Instant Edit: could not configure cache: {error}")
 
 
 class XIVIE_OT_clean_cache(Operator):
     bl_idname = "xiv_ie.clean_cache"
     bl_label = "Clean Cache Now"
-    bl_description = "Remove all owned Instant Edit import and export cache jobs"
+    bl_description = "Remove all owned XIV Instant Edit import and export cache jobs"
 
     def execute(self, _context):
         try:
@@ -54,7 +54,7 @@ class XIVIEPreferences(AddonPreferences):
 
     instant_edit_blender_port: IntProperty(
         name="Blender Listen Port",
-        description="Port used to receive imports from the Instant Edit Dalamud plugin",
+        description="Port used to receive imports from the XIV Instant Edit Dalamud plugin",
         default=42424,
         min=1,
         max=65535,
@@ -87,11 +87,11 @@ class XIVIEPreferences(AddonPreferences):
 
     def draw(self, _context) -> None:
         layout = self.layout
-        layout.label(text="Instant Edit Connection")
+        layout.label(text="XIV Instant Edit Connection")
         layout.prop(self, "instant_edit_blender_port")
         layout.prop(self, "instant_edit_plugin_port")
         layout.separator()
-        layout.label(text="Instant Edit Cache")
+        layout.label(text="XIV Instant Edit Cache")
         layout.prop(self, "instant_edit_cache_directory")
         layout.prop(self, "instant_edit_auto_cleanup")
         layout.label(text=f"Managed folder: {cache_root()}")

@@ -24,13 +24,13 @@ public sealed class SettingsWindow
     public void Draw()
     {
         if (!_open) return;
-        if (!ImGui.Begin("Instant Edit Settings##Settings", ref _open)) { ImGui.End(); return; }
-        ImGui.TextColored(new Vector4(.95f, .78f, .35f, 1), "INSTANT EDIT SETTINGS");
+        if (!ImGui.Begin("XIV Instant Edit Settings##Settings", ref _open)) { ImGui.End(); return; }
+        ImGui.TextColored(new Vector4(.95f, .78f, .35f, 1), "XIV INSTANT EDIT SETTINGS");
         ImGui.TextColored(new Vector4(.58f, .6f, .67f, 1), "Connection and export preferences");
         ImGui.Spacing();
         ImGui.Separator(); ImGui.Text("Blender connection");
         var blenderPort = _config.BlenderPort; if (ImGui.InputInt("Blender port", ref blenderPort)) { _config.BlenderPort = blenderPort; Save(); }
-        ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Blender and the XIV Instant Edit addon must already be running before editing.");
+        ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Blender and the XIV Instant Edit add-on must already be running before editing.");
         ImGui.Spacing(); ImGui.Separator(); ImGui.Text("Export connection");
         var listenPort = _config.ListenPort; if (ImGui.InputInt("Listener port", ref listenPort)) { var changed = listenPort != _config.ListenPort; _config.ListenPort = listenPort; Save(); if (changed) RestartListener(); }
         ImGui.TextColored(new Vector4(.55f, .57f, .64f, 1), "Quick Export writes back to the model's original Penumbra mod.");

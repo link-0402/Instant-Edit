@@ -1,4 +1,4 @@
-# Modified for XIV Instant Edit, 2026. See MODIFICATIONS.md.
+# Modified for XIV Instant Edit, 2026.
 import bpy
 from bpy.app.handlers import persistent
 
@@ -36,7 +36,7 @@ def register() -> None:
     if not start_server(port):
         error = get_server_error() or "the port may already be in use"
         props = get_instant_edit_props()
-        props.last_status = f"Instant Edit listener unavailable on port {port}: {error}"
+        props.last_status = f"XIV Instant Edit listener unavailable on port {port}: {error}"
         print(props.last_status)
     bpy.app.timers.register(poll_import_queue, first_interval=1.0, persistent=True)
     if _recover_after_scene_load not in bpy.app.handlers.load_post:

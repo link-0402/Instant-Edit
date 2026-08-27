@@ -43,7 +43,7 @@ public sealed class MainWindow : Window, IDisposable
     public MainWindow(Configuration config, PenumbraService penumbra, OnScreenService onScreen, BlenderClient blender,
         IDataManager data, IChatGui chat, IPluginLog log, Action saveConfig, Action restartExportListener, IUiBuilder uiBuilder,
         ITextureProvider textureProvider)
-        : base("Instant Edit##Main")
+        : base("XIV Instant Edit##Main")
     {
         _config = config; _penumbra = penumbra; _onScreen = onScreen; _blender = blender; _data = data; _chat = chat; _log = log;
         _materialPreviews = new MaterialPreviewBundleBuilder(data, log);
@@ -119,7 +119,7 @@ public sealed class MainWindow : Window, IDisposable
                 _uiBuilder.DisableUserUiHide = keepVisible;
                 _saveConfig();
             }
-            ImGuiComponents.HelpMarker("Keep Instant Edit visible when the game UI is hidden with Scroll Lock.");
+            ImGuiComponents.HelpMarker("Keep XIV Instant Edit visible when the game UI is hidden with Scroll Lock.");
             ImGui.EndPopup();
         }
         ImGui.PopStyleVar();
@@ -198,7 +198,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawHeader()
     {
-        ImGui.TextColored(new Vector4(.95f, .78f, .35f, 1), "INSTANT EDIT"); ImGui.SameLine(); ImGui.TextColored(new Vector4(.56f, .58f, .65f, 1), "On Screen");
+        ImGui.TextColored(new Vector4(.95f, .78f, .35f, 1), "XIV INSTANT EDIT"); ImGui.SameLine(); ImGui.TextColored(new Vector4(.56f, .58f, .65f, 1), "On Screen");
         ImGui.SameLine(0, 12); if (ImGui.SmallButton("Refresh character list")) RequestRefresh();
         var penumbra = false;
         try { penumbra = _penumbra.Available; } catch (Exception e) { _log.Debug(e.Message); }
@@ -972,13 +972,13 @@ public sealed class MainWindow : Window, IDisposable
         try
         {
             if (!await CheckBlenderAsync(blenderPort, cancellationToken).ConfigureAwait(false))
-                throw new InvalidOperationException("Blender is offline. Start Blender and enable the XIV Instant Edit addon before editing.");
+                throw new InvalidOperationException("Blender is offline. Start Blender and enable the XIV Instant Edit add-on before editing.");
             if (importOptions.ArmatureMode == BlenderImportOptions.ExistingMode &&
                 !await _blender.SupportsImportOptionsAsync(blenderPort, cancellationToken).ConfigureAwait(false))
-                throw new InvalidOperationException("The XIV Instant Edit addon is too old for custom import options. Update the add-on and restart Blender.");
+                throw new InvalidOperationException("The XIV Instant Edit add-on is too old for custom import options. Update the add-on and restart Blender.");
             if (importOptions.ApplyTexturesAndMaterials &&
                 !await _blender.SupportsMaterialPreviewAsync(blenderPort, cancellationToken).ConfigureAwait(false))
-                throw new InvalidOperationException("The XIV Instant Edit addon is too old for texture and material previews. Update the add-on and restart Blender.");
+                throw new InvalidOperationException("The XIV Instant Edit add-on is too old for texture and material previews. Update the add-on and restart Blender.");
 
             var bytes = model.IsFilePath
                 ? await File.ReadAllBytesAsync(model.LocalPath, cancellationToken).ConfigureAwait(false)
@@ -1022,7 +1022,7 @@ public sealed class MainWindow : Window, IDisposable
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
             SetStatus($"Sent {model.FileName} to Blender.{warning}", true);
-            _chat.Print($"Instant Edit: {model.FileName} sent to Blender.");
+            _chat.Print($"XIV Instant Edit: {model.FileName} sent to Blender.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1032,7 +1032,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             _log.Error(e, "Failed to send model to Blender.");
             SetStatus($"Failed: {e.Message}", false);
-            _chat.PrintError($"Instant Edit: could not send model to Blender: {e.Message}");
+            _chat.PrintError($"XIV Instant Edit: could not send model to Blender: {e.Message}");
         }
         finally
         {
