@@ -24,6 +24,7 @@ CONTEXT_METADATA_FIELDS = (
     "source_game_path", "managed_destination", "target_file_path",
     "source_mod_directory", "source_mod_name", "source_mod_root_path",
     "target_relative_path",
+    "resource_manifest_version", "resource_manifest_status",
     "import_id", "callback_port", "import_file_name", "collection_kind",
 )
 
@@ -59,6 +60,8 @@ class ContextRef:
     source_mod_name: str
     source_mod_root_path: str
     target_relative_path: str
+    resource_manifest_version: int
+    resource_manifest_status: str
     callback_port: int
 
 
@@ -177,6 +180,8 @@ def apply_authoritative_context(collection, payload: dict) -> None:
         "source_mod_name": payload.get("sourceModName"),
         "source_mod_root_path": payload.get("sourceModRootPath") or "",
         "target_relative_path": payload.get("targetRelativePath") or "",
+        "resource_manifest_version": payload.get("resourceManifestVersion") or 0,
+        "resource_manifest_status": payload.get("resourceManifestStatus") or "legacy",
         "import_id": payload.get("importId"),
         "callback_port": payload.get("callbackPort"),
     }
@@ -245,6 +250,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         "source_game_path", "managed_destination", "target_file_path",
         "source_mod_directory", "source_mod_name", "source_mod_root_path", "callback_port",
         "target_relative_path",
+        "resource_manifest_version", "resource_manifest_status",
     ))
 
     if _value(collection, "schema") != SCHEMA or _value(collection, "version") != VERSION:
@@ -259,6 +265,8 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
     source_mod_name = _value(collection, "source_mod_name", "")
     source_mod_root_path = _value(collection, "source_mod_root_path", "")
     target_relative_path = _value(collection, "target_relative_path", "")
+    resource_manifest_version = _value(collection, "resource_manifest_version", 0)
+    resource_manifest_status = _value(collection, "resource_manifest_status", "legacy")
     import_id = _value(collection, "import_id", "")
     callback_port = _value(collection, "callback_port", 0)
     if not all(isinstance(value, str) and value for value in (
@@ -267,6 +275,9 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
     )):
         raise ContextValidationError("context collection is missing immutable reference data")
     callback_port = _require_int(callback_port, "callback port", 1)
+    resource_manifest_version = _require_int(resource_manifest_version, "resource manifest version")
+    if resource_manifest_status not in {"legacy", "capture_failed", "ready"}:
+        raise ContextValidationError("context collection has an invalid resource manifest status")
     if callback_port > 65535:
         raise ContextValidationError("callback port is out of range")
 
@@ -327,6 +338,8 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         source_mod_name=source_mod_name,
         source_mod_root_path=source_mod_root_path if isinstance(source_mod_root_path, str) else "",
         target_relative_path=target_relative_path if isinstance(target_relative_path, str) else "",
+        resource_manifest_version=resource_manifest_version,
+        resource_manifest_status=resource_manifest_status,
         callback_port=callback_port,
     )
 

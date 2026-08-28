@@ -121,7 +121,7 @@ if (-not $SkipBlender) {
     if ($LASTEXITCODE -ne 0) {
         throw "Blender repository generation failed with exit code $LASTEXITCODE."
     }
-    Assert-BlenderRepository $blenderRepository '4.5.0'
+    Assert-BlenderRepository $blenderRepository '4.5.3'
 }
 
 if (-not (Test-Path -LiteralPath $blenderManifest -PathType Leaf)) {

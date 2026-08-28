@@ -16,6 +16,7 @@ public sealed class ExportContextRegistry : IDisposable
         public required string FilePath { get; init; }
         public required long Size { get; init; }
         public required string Sha256 { get; init; }
+        public string? RequestFingerprint { get; init; }
         public required TaskCompletionSource<ExportReceipt> Completion { get; init; }
         public required DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? CompletedAt { get; set; }
@@ -105,7 +106,9 @@ public sealed class ExportContextRegistry : IDisposable
         int callbackPort,
         ActorIdentity? actorIdentity,
         string? sourceModRootPath = null,
-        string? targetRelativePath = null)
+        string? targetRelativePath = null,
+        ResourceDependencyManifest? resourceManifest = null,
+        bool resourceManifestCaptureAttempted = false)
     {
         if (!PenumbraService.IsSafeGamePath(gamePath) || objectIndex is < 0 or > ushort.MaxValue ||
             !PenumbraService.IsSafeModName(sourceModDirectory) || callbackPort is < 1 or > 65535)
@@ -135,6 +138,7 @@ public sealed class ExportContextRegistry : IDisposable
         if (actorIdentity is not null && actorIdentity.ObjectIndex != objectIndex)
             throw new ArgumentException("The actor identity does not match the object index.");
 
+        var safeManifest = IsSafeResourceManifest(resourceManifest) ? resourceManifest : null;
         var context = new InstantEditImportContext
         {
             PluginInstanceId = PluginInstanceId,
@@ -152,6 +156,10 @@ public sealed class ExportContextRegistry : IDisposable
             SourceModRootPath = sourceModRootPath,
             TargetRelativePath = targetRelativePath,
             CallbackPort = callbackPort,
+            ResourceManifest = safeManifest,
+            ResourceManifestStatus = safeManifest is not null
+                ? "ready"
+                : resourceManifestCaptureAttempted ? "capture_failed" : "legacy",
         };
 
         lock (_lock)
@@ -229,6 +237,163 @@ public sealed class ExportContextRegistry : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Update durable paths after Penumbra normalization moves files inside a
+    /// source mod. The operation is deliberately keyed by Penumbra directory
+    /// name so unrelated imported contexts are never rewritten.
+    /// </summary>
+    public bool RemapModPaths(
+        string sourceModDirectory,
+        string modRoot,
+        IReadOnlyDictionary<string, string> relativePaths)
+    {
+        if (!PenumbraService.IsSafeModName(sourceModDirectory) ||
+            string.IsNullOrWhiteSpace(modRoot) || relativePaths.Count == 0)
+            return false;
+
+        var remap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in relativePaths)
+        {
+            if (!TryNormalizeRelativePath(pair.Key, out var oldPath) ||
+                !TryNormalizeRelativePath(pair.Value, out var newPath))
+                continue;
+            remap[oldPath] = newPath;
+            if (oldPath.StartsWith("Files/", StringComparison.OrdinalIgnoreCase))
+                remap[oldPath[6..]] = newPath;
+            else
+                remap["Files/" + oldPath] = newPath;
+        }
+        if (remap.Count == 0)
+            return false;
+
+        string root;
+        try
+        {
+            root = Path.GetFullPath(modRoot)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return false;
+        }
+
+        var changed = false;
+        lock (_lock)
+        {
+            if (_disposed)
+                return false;
+
+            foreach (var entry in _contexts.Values)
+            {
+                var context = entry.Context;
+                if (!string.Equals(context.SourceModDirectory, sourceModDirectory, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var updated = context;
+                if (TryGetRemappedPath(context.TargetRelativePath, remap, out var relative))
+                {
+                    var contextRoot = string.IsNullOrWhiteSpace(context.SourceModRootPath)
+                        ? root
+                        : context.SourceModRootPath!;
+                    try
+                    {
+                        var targetPath = Path.GetFullPath(Path.Combine(
+                            contextRoot, relative.Replace('/', Path.DirectorySeparatorChar)));
+                        if (IsPathWithin(targetPath, contextRoot))
+                        {
+                            updated = updated with
+                            {
+                                TargetRelativePath = relative,
+                                TargetFilePath = targetPath,
+                                TargetFolder = Path.GetDirectoryName(targetPath) ?? updated.TargetFolder,
+                            };
+                        }
+                    }
+                    catch
+                    {
+                        // A malformed remap cannot invalidate an otherwise
+                        // usable context; the unchanged context remains safe.
+                    }
+                }
+
+                if (updated.ResourceManifest is { } manifest)
+                {
+                    var manifestChanged = false;
+                    var materials = manifest.Materials.Select(material =>
+                    {
+                        var materialResource = RemapLocator(material.Resource, sourceModDirectory, remap, ref manifestChanged);
+                        var textures = material.Textures.Select(texture => texture with
+                        {
+                            Resource = RemapLocator(texture.Resource, sourceModDirectory, remap, ref manifestChanged),
+                        }).ToArray();
+                        return material with { Resource = materialResource, Textures = textures };
+                    }).ToArray();
+                    if (manifestChanged)
+                        updated = updated with { ResourceManifest = manifest with { Materials = materials } };
+                }
+
+                if (!Equals(updated, context))
+                {
+                    entry.Context = updated;
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed)
+            Persist();
+        return changed;
+    }
+
+    private static SourceResourceLocator RemapLocator(
+        SourceResourceLocator locator,
+        string sourceModDirectory,
+        IReadOnlyDictionary<string, string> remap,
+        ref bool changed)
+    {
+        if (!string.Equals(locator.Kind, "mod", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(locator.SourceModDirectory, sourceModDirectory, StringComparison.OrdinalIgnoreCase) ||
+            !TryGetRemappedPath(locator.SourceRelativePath, remap, out var relative))
+            return locator;
+        changed = true;
+        return locator with { SourceRelativePath = relative };
+    }
+
+    private static bool TryGetRemappedPath(
+        string? path,
+        IReadOnlyDictionary<string, string> remap,
+        out string relative)
+    {
+        relative = string.Empty;
+        if (!TryNormalizeRelativePath(path, out var normalized))
+            return false;
+        if (!remap.TryGetValue(normalized, out var candidate) || string.IsNullOrWhiteSpace(candidate))
+            return false;
+        relative = candidate;
+        return true;
+    }
+
+    private static bool TryNormalizeRelativePath(string? path, out string normalized)
+    {
+        normalized = (path ?? string.Empty).Replace('\\', '/').Trim();
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+            normalized = normalized[2..];
+        normalized = normalized.TrimStart('/');
+        if (normalized.Length == 0 || normalized.Length > 4096 || normalized.Contains('\0') ||
+            Path.IsPathRooted(normalized))
+            return false;
+        return normalized.Split('/').All(segment => segment.Length > 0 && segment is not ("." or ".."));
+    }
+
+    private static bool IsPathWithin(string path, string root)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase) ||
+               fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+               fullPath.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
     public bool TryBeginExport(
         string pluginInstanceId,
         string contextId,
@@ -238,7 +403,8 @@ public sealed class ExportContextRegistry : IDisposable
         long size,
         string sha256,
         out ExportReservation? reservation,
-        out string code)
+        out string code,
+        string? requestFingerprint = null)
     {
         reservation = null;
         code = "invalid_context";
@@ -282,7 +448,8 @@ public sealed class ExportContextRegistry : IDisposable
             if (entry.Exports.TryGetValue(exportId, out var previous))
             {
                 if (string.Equals(previous.FilePath, filePath, StringComparison.OrdinalIgnoreCase) &&
-                    previous.Size == size && string.Equals(previous.Sha256, sha256, StringComparison.OrdinalIgnoreCase))
+                    previous.Size == size && string.Equals(previous.Sha256, sha256, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(previous.RequestFingerprint, requestFingerprint, StringComparison.Ordinal))
                 {
                     reservation = new ExportReservation(entry.Context, previous.Completion.Task, false);
                     code = "duplicate_export";
@@ -299,6 +466,7 @@ public sealed class ExportContextRegistry : IDisposable
                 FilePath = filePath,
                 Size = size,
                 Sha256 = sha256,
+                RequestFingerprint = requestFingerprint,
                 Completion = completion,
                 CreatedAt = now,
             };
@@ -514,15 +682,6 @@ public sealed class ExportContextRegistry : IDisposable
         return relative;
     }
 
-    private static bool IsPathWithin(string path, string root)
-    {
-        var fullPath = Path.GetFullPath(path);
-        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase) ||
-               fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-               fullPath.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-    }
-
     private static bool IsSafeId(string? value)
         => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&
            value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
@@ -563,6 +722,9 @@ public sealed class ExportContextRegistry : IDisposable
             }
         }
 
+        var safeManifest = IsSafeResourceManifest(saved.ResourceManifest)
+            ? saved.ResourceManifest
+            : null;
         return new InstantEditImportContext
         {
             PluginInstanceId = PluginInstanceId,
@@ -580,6 +742,12 @@ public sealed class ExportContextRegistry : IDisposable
             SourceModRootPath = saved.SourceModRootPath,
             TargetRelativePath = relative,
             CallbackPort = saved.CallbackPort,
+            ResourceManifest = safeManifest,
+            ResourceManifestStatus = safeManifest is not null
+                ? "ready"
+                : string.Equals(saved.ResourceManifestStatus, "capture_failed", StringComparison.Ordinal)
+                    ? "capture_failed"
+                    : "legacy",
         };
     }
 
@@ -597,6 +765,40 @@ public sealed class ExportContextRegistry : IDisposable
             return false;
 
         return true;
+    }
+
+    private static bool IsSafeResourceManifest(ResourceDependencyManifest? manifest)
+    {
+        if (manifest is null)
+            return true;
+        if (manifest.Version != ResourceDependencyManifest.CurrentVersion ||
+            manifest.Materials.Count is < 1 or > 256)
+            return false;
+
+        foreach (var material in manifest.Materials)
+        {
+            if (string.IsNullOrWhiteSpace(material.ModelMaterial) || material.ModelMaterial.Length > 512 ||
+                !PenumbraService.IsSafeGameResourcePath(material.GamePath, ".mtrl") || material.Textures.Count > 1024 ||
+                !IsSafeResourceLocator(material.Resource))
+                return false;
+            foreach (var texture in material.Textures)
+                if (!PenumbraService.IsSafeGameResourcePath(texture.StoredGamePath, ".tex") ||
+                    !PenumbraService.IsSafeGameResourcePath(texture.EffectiveGamePath, ".tex") ||
+                    !IsSafeResourceLocator(texture.Resource))
+                    return false;
+        }
+        return true;
+    }
+
+    private static bool IsSafeResourceLocator(SourceResourceLocator locator)
+    {
+        if (locator.Sha256.Length != 64 || locator.Sha256.Any(c => !Uri.IsHexDigit(c)) ||
+            !PenumbraService.IsSafeGameResourcePath(locator.GamePath, ".mtrl", ".tex"))
+            return false;
+        if (locator.Kind == "game")
+            return locator.SourceModDirectory is null && locator.SourceRelativePath is null;
+        return locator.Kind == "mod" && PenumbraService.IsSafeModName(locator.SourceModDirectory) &&
+               PenumbraService.IsSafeRelativeResourcePath(locator.SourceRelativePath);
     }
 
     private void Persist()

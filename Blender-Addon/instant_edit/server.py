@@ -164,6 +164,8 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 ),
                 "sourceModDirectory": nested.get("sourceModDirectory", nested.get("modName", "")),
                 "sourceModName": nested.get("sourceModName", nested.get("modName", "")),
+                "resourceManifestVersion": nested.get("resourceManifestVersion", 0),
+                "resourceManifestStatus": nested.get("resourceManifestStatus", "legacy"),
                 "previewManifestPath": data.get("previewManifestPath", ""),
                 "importOptions": import_options,
             }
@@ -212,6 +214,12 @@ class _ImportHandler(BaseHTTPRequestHandler):
             object_index = data.get("objectIndex", -1)
             if isinstance(object_index, bool) or not isinstance(object_index, int):
                 raise ValueError("objectIndex must be an integer")
+            resource_manifest_version = data.get("resourceManifestVersion", 0)
+            if isinstance(resource_manifest_version, bool) or not isinstance(resource_manifest_version, int) or resource_manifest_version < 0:
+                raise ValueError("resourceManifestVersion must be a non-negative integer")
+            resource_manifest_status = data.get("resourceManifestStatus", "legacy")
+            if resource_manifest_status not in {"legacy", "capture_failed", "ready"}:
+                raise ValueError("resourceManifestStatus must be legacy, capture_failed, or ready")
 
             return {
                 **data,
@@ -228,6 +236,8 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 "sourceModName": source_mod_name,
                 "sourceModRootPath": source_mod_root_path,
                 "targetRelativePath": target_relative_path,
+                "resourceManifestVersion": resource_manifest_version,
+                "resourceManifestStatus": resource_manifest_status,
                 "previewManifestPath": preview_manifest_path,
                 "callbackPort": callback_port,
                 "name": _string(data, "displayName", "name", max_length=255),
@@ -361,6 +371,8 @@ def poll_import_queue() -> float:
                     source_mod_name=data.get("sourceModName", ""),
                     source_mod_root_path=data.get("sourceModRootPath", ""),
                     target_relative_path=data.get("targetRelativePath", ""),
+                    resource_manifest_version=int(data.get("resourceManifestVersion", 0)),
+                    resource_manifest_status=data.get("resourceManifestStatus", "legacy"),
                     import_id=data.get("importId", ""),
                     armature_mode=data.get("importOptions", {}).get("armatureMode", "generated"),
                     armature_target=data.get("importOptions", {}).get("targetObject", "Skeleton"),

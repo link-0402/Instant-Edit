@@ -6,7 +6,8 @@ import bpy
 from bpy.types import Context, Panel
 
 from .instant_edit.context import ContextValidationError, mesh_ids_from_name
-from .instant_edit.ops import export_destination_context, normalise_variant_name
+from .instant_edit.ops import (MASHUP_TARGET, export_destination_context,
+                               mashup_target_state, normalise_variant_name)
 from .instant_edit.props import get_instant_edit_props
 from .materials import (
     attribute_display_name,
@@ -67,6 +68,9 @@ def _export_destination_display(ref, props=None) -> str:
             destination = Path(target_file_path).name if target_file_path else "Unavailable"
 
     if props is None:
+        return destination
+
+    if getattr(props, "variant_target", "") == MASHUP_TARGET:
         return destination
 
     selected_target = next(
@@ -167,6 +171,7 @@ class XIVIE_PT_main(Panel):
         self._draw_instant_edit(layout, context)
         self._draw_mesh_materials(layout, context)
         self._draw_simple_export(layout)
+        self._draw_import_options(layout)
         self._draw_export_options(layout)
         self._draw_backups(layout, context)
         self._draw_utilities(layout)
@@ -215,6 +220,18 @@ class XIVIE_PT_main(Panel):
                 depress=props.variant_target == "NEW_GROUP",
                 icon="ADD",
             ).selection_id = "NEW_GROUP"
+            show_mashup, mashup_enabled, mashup_message = mashup_target_state(context, ref)
+            if show_mashup:
+                mashup_row = targets.row(align=True)
+                mashup_row.enabled = mashup_enabled
+                mashup_row.operator(
+                    "xiv_ie.select_variant_target",
+                    text="Create Mashup",
+                    depress=props.variant_target == MASHUP_TARGET,
+                    icon="EXPERIMENTAL",
+                ).selection_id = MASHUP_TARGET
+                if not mashup_enabled and mashup_message:
+                    targets.label(text=mashup_message, icon="ERROR")
             if not props.variant_targets:
                 targets.label(text="Refresh to load compatible groups and options.", icon="INFO")
             group_expanded = True
@@ -248,7 +265,7 @@ class XIVIE_PT_main(Panel):
                 (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
             if props.variant_target == "NEW_GROUP":
                 _draw_named_text_input(box, props, "variant_group_name", "New Group Name")
-            if selected_target is None or selected_target.kind != "OPTION":
+            if props.variant_target != MASHUP_TARGET and (selected_target is None or selected_target.kind != "OPTION"):
                 _draw_named_text_input(box, props, "variant_name", "New Option Name")
             box.operator("xiv_ie.instant_export", text="Quick Export", icon="EXPORT")
         status_row = box.row(align=True)
@@ -447,6 +464,26 @@ class XIVIE_PT_main(Panel):
         box.operator("xiv_ie.simple_export", icon="EXPORT")
 
     @staticmethod
+    def _draw_import_options(layout) -> None:
+        settings = get_settings()
+        box = layout.box()
+        expanded = settings.show_import_options
+        header = box.row(align=True)
+        header.prop(
+            settings,
+            "show_import_options",
+            text="",
+            icon="TRIA_DOWN" if expanded else "TRIA_RIGHT",
+            emboss=False,
+        )
+        header.label(text="Import Options", icon="IMPORT")
+        if not expanded:
+            return
+
+        box.prop(settings, "resolve_mesh_group_conflicts")
+        box.prop(settings, "simple_import_set_export_directory")
+
+    @staticmethod
     def _draw_export_options(layout) -> None:
         settings = get_settings()
         box = layout.box()
@@ -472,7 +509,6 @@ class XIVIE_PT_main(Panel):
         row.prop(settings, "create_backfaces")
         options.prop(settings, "remove_yas")
         options.prop(settings, "backup_models_on_export")
-        options.prop(settings, "simple_import_set_export_directory")
 
         cleanup = box.box()
         cleanup.label(text="Vertex Data Fixes")

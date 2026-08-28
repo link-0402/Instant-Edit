@@ -1,8 +1,9 @@
 # Modified for XIV Instant Edit, 2026.
 import bpy
-from bpy.props import StringProperty
+from bpy.props import StringProperty, EnumProperty
 import json
 import hashlib
+import re
 import uuid
 import urllib.request
 import time
@@ -20,7 +21,7 @@ from ..xivpy.model   import XIVModel
 from .props          import NO_EXPORT_CONTEXT, get_instant_edit_props
 from .context        import (SCHEMA, VERSION, ContextValidationError,
                              _value, clear_context_metadata,
-                             context_collections, create_collection, tag_object,
+                             context_collections, context_id_for_object, create_collection, tag_object,
                              validate_context)
 from .material_preview import (cleanup_preview_bundle, discard_preview_data,
                                load_preview_manifest)
@@ -30,6 +31,7 @@ from .cache import create_job, finish_job
 MAX_PLUGIN_RESPONSE_SIZE = 64 * 1024
 EXPORT_STATUS_POLL_ATTEMPTS = 30
 INVALID_VARIANT_CHARS = frozenset('<>:"/\\|?*')
+MASHUP_TARGET = "CREATE_MASHUP"
 
 
 class PluginResponseError(ValueError):
@@ -38,6 +40,89 @@ class PluginResponseError(ValueError):
         self.code = code
         self.message = message
         super().__init__(f"plugin returned HTTP {status} ({code}): {message}")
+
+
+def _normalize_mashup_material(material_name: str) -> str:
+    normalized = re.sub(r"\.\d{3}$", "", (material_name or "").strip())
+    if not normalized.casefold().endswith(".mtrl"):
+        normalized += ".mtrl"
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized
+    return normalized
+
+
+def _object_material_name(obj) -> str:
+    value = obj.get("xiv_material", "")
+    if not value and obj.material_slots and obj.material_slots[0].material is not None:
+        value = obj.material_slots[0].material.name
+    if not isinstance(value, str) or not value.strip():
+        raise ContextValidationError(f"{obj.name}: missing material path")
+    return _normalize_mashup_material(value)
+
+
+def mashup_export_selection(context: Context, ref=None):
+    """Return (objects, refs, material map) for a mashup or raise a precise error."""
+    ref = ref or export_destination_context(context)
+    props = get_instant_edit_props()
+    objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
+    if not objects:
+        raise ContextValidationError("No visible mesh objects match Export Parts.")
+
+    refs = {ref.context_id: ref}
+    materials: dict[str, list[str]] = {}
+    context_order = [ref.context_id]
+    object_contexts = {}
+    for obj in objects:
+        context_id = context_id_for_object(obj) or ref.context_id
+        if context_id not in refs:
+            refs[context_id] = validate_context(context_id, context.scene)
+            context_order.append(context_id)
+        material = _object_material_name(obj)
+        context_materials = materials.setdefault(context_id, [])
+        if material.casefold() not in {item.casefold() for item in context_materials}:
+            context_materials.append(material)
+        object_contexts[obj.as_pointer()] = (context_id, material)
+
+    if ref.context_id not in materials:
+        raise ContextValidationError("The active Context must contribute at least one exported mesh.")
+    if len(materials) < 2:
+        raise ContextValidationError("Create Mashup requires visible exported meshes from at least two Contexts.")
+    source_mods = {refs[context_id].source_mod_directory.casefold() for context_id in materials}
+    if len(source_mods) < 2:
+        raise ContextValidationError("Create Mashup requires Contexts from at least two different Penumbra mods.")
+    incomplete = [refs[context_id] for context_id in materials
+                  if refs[context_id].resource_manifest_version != 1]
+    failed = [item.source_mod_name for item in incomplete
+              if item.resource_manifest_status == "capture_failed"]
+    legacy = [item.source_mod_name for item in incomplete
+              if item.resource_manifest_status != "capture_failed"]
+    if failed:
+        raise ContextValidationError(
+            "Dependency capture failed; re-import after resolving the missing resources: "
+            + ", ".join(sorted(set(failed))))
+    if legacy:
+        raise ContextValidationError(
+            "Reload/update the Dalamud plugin, then re-import: " + ", ".join(sorted(set(legacy))))
+
+    ordered_refs = [refs[key] for key in context_order if key in materials]
+    return objects, ordered_refs, materials, object_contexts
+
+
+def mashup_target_state(context: Context, ref=None) -> tuple[bool, bool, str]:
+    try:
+        ref = ref or export_destination_context(context)
+        objects = export_objects_for_scope(
+            ref, getattr(get_instant_edit_props(), "export_scope", "VISIBLE"))
+        ids = {context_id_for_object(obj) or ref.context_id for obj in objects}
+        if ref.context_id not in ids or len(ids) < 2:
+            return False, False, ""
+        refs = [validate_context(context_id, context.scene) for context_id in ids]
+        if len({item.source_mod_directory.casefold() for item in refs}) < 2:
+            return False, False, ""
+        mashup_export_selection(context, ref)
+        return True, True, ""
+    except ContextValidationError as error:
+        return True, False, str(error)
 
 
 def normalise_variant_name(value: str) -> str:
@@ -279,6 +364,8 @@ class InstantImport(Operator):
     source_mod_name: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_root_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     target_relative_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    resource_manifest_version: bpy.props.IntProperty(default=0, options={'HIDDEN'})  # type: ignore
+    resource_manifest_status: bpy.props.StringProperty(default="legacy", options={'HIDDEN'})  # type: ignore
     import_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     armature_mode: bpy.props.EnumProperty(
         items=[
@@ -329,6 +416,8 @@ class InstantImport(Operator):
                     "source_mod_name": self.source_mod_name,
                     "source_mod_root_path": self.source_mod_root_path,
                     "target_relative_path": self.target_relative_path,
+                    "resource_manifest_version": self.resource_manifest_version,
+                    "resource_manifest_status": self.resource_manifest_status,
                     "import_id": self.import_id,
                     "callback_port": self.callback_port,
                     "import_file_name": file_path.name,
@@ -582,6 +671,8 @@ class SelectVariantTarget(Operator):
         selection_id = getattr(properties, "selection_id", "")
         if selection_id == "NEW_GROUP":
             return "Creates a new Group on Export. Define group and option names below."
+        if selection_id == MASHUP_TARGET:
+            return "Combines the visible exported meshes and their material and texture dependencies."
         try:
             target = next(
                 (
@@ -639,6 +730,8 @@ class QuickExport(Operator):
             return False
 
     def invoke(self, context: Context, _event):
+        if get_instant_edit_props().variant_target == MASHUP_TARGET:
+            return bpy.ops.xiv_ie.mashup_destination("INVOKE_DEFAULT")
         return self.execute(context)
 
     def execute(self, context: Context):
@@ -654,6 +747,68 @@ class QuickExport(Operator):
             {"WARNING"} if " with warnings:" in status or "could not refresh" in status else {"INFO"},
             status,
         )
+        get_export_stats(context)
+        return {"FINISHED"}
+
+
+class MashupDestination(Operator):
+    bl_idname = "xiv_ie.mashup_destination"
+    bl_label = "Create Mashup"
+    bl_description = "Choose where the self-contained mashup will be created"
+
+    destination: EnumProperty(
+        name="Destination",
+        items=[
+            ("ACTIVE_MOD", "Combine in active context mod...", "Create a new group in the active Context mod"),
+            ("NEW_MOD", "Create as new mod...", "Create a new self-contained Penumbra mod"),
+        ],
+        default="ACTIVE_MOD",
+    )  # type: ignore
+
+    def invoke(self, context: Context, _event):
+        try:
+            mashup_export_selection(context)
+        except Exception as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(self, width=430)
+
+    def execute(self, _context):
+        return bpy.ops.xiv_ie.mashup_name(
+            "INVOKE_DEFAULT",
+            destination=self.destination,
+            name="Mashup" if self.destination == "ACTIVE_MOD" else "",
+        )
+
+
+class MashupName(Operator):
+    bl_idname = "xiv_ie.mashup_name"
+    bl_label = "Create Mashup"
+    bl_description = "Name the Penumbra mashup destination"
+
+    destination: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+    name: StringProperty(name="Name", default="", maxlen=120)  # type: ignore
+
+    def draw(self, _context):
+        self.layout.prop(
+            self,
+            "name",
+            text="Mashup Name" if self.destination == "ACTIVE_MOD" else "Mod Name",
+        )
+
+    def invoke(self, context: Context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=430)
+
+    def execute(self, context: Context):
+        try:
+            perform_mashup_export(context, self.destination, self.name)
+        except Exception as error:
+            props = get_instant_edit_props()
+            props.last_status = f"Mashup failed: {error}"
+            self.report({"ERROR"}, props.last_status)
+            return {"CANCELLED"}
+        status = get_instant_edit_props().last_status
+        self.report({"WARNING"} if "warnings:" in status else {"INFO"}, status)
         get_export_stats(context)
         return {"FINISHED"}
 
@@ -834,8 +989,12 @@ def _recover_export_receipt(ref, export_id: str) -> dict | None:
 
 
 def _send_plugin_export(ref, payload: dict) -> dict:
+    return _send_plugin_export_to(ref, payload, "/export")
+
+
+def _send_plugin_export_to(ref, payload: dict, endpoint: str) -> dict:
     request = urllib.request.Request(
-        f"http://127.0.0.1:{ref.callback_port}/export",
+        f"http://127.0.0.1:{ref.callback_port}{endpoint}",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -851,13 +1010,76 @@ def _send_plugin_export(ref, payload: dict) -> dict:
         body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
         raise _plugin_error_from_body(body, error.code) from error
     except (URLError, TimeoutError, OSError) as error:
-        receipt = _recover_export_receipt(ref, str(payload.get("exportId", "")))
-        if receipt is not None:
-            return receipt
-        raise ValueError(
-            f"plugin response was lost and no receipt was available for export "
-            f"{payload.get('exportId', '')}: {str(error) or 'connection failed'}"
-        ) from error
+        export_id = str(payload.get("exportId", ""))
+        if export_id:
+            receipt = _recover_export_receipt(ref, export_id)
+            if receipt is not None:
+                return receipt
+            message = f"plugin response was lost and no receipt was available for export {export_id}"
+        else:
+            message = "plugin response was lost"
+        raise ValueError(f"{message}: {str(error) or 'connection failed'}") from error
+
+
+def _send_plugin_mashup(ref, payload: dict) -> dict:
+    return _send_plugin_export_to(ref, payload, "/mashup/export")
+
+
+def _send_plugin_mashup_plan(ref, contributors: list[dict]) -> dict:
+    payload = {
+        "schema": "instant-edit.mashup-plan",
+        "version": 1,
+        "pluginInstanceId": ref.plugin_instance_id,
+        "contextId": ref.context_id,
+        "capability": ref.capability,
+        "contributors": contributors,
+    }
+    result = _send_plugin_export_to(ref, payload, "/mashup/plan")
+    fingerprint = result.get("planFingerprint")
+    assignments = result.get("assignments")
+    if (
+        not isinstance(fingerprint, str) or len(fingerprint) != 64 or
+        not all(char in "0123456789abcdefABCDEF" for char in fingerprint) or
+        not isinstance(assignments, list)
+    ):
+        raise ValueError("plugin returned an invalid mashup material plan")
+    return result
+
+
+def _mashup_contributor_payload(refs, materials: dict[str, list[str]]) -> list[dict]:
+    return [
+        {
+            "contextId": item.context_id,
+            "capability": item.capability,
+            "materials": list(materials[item.context_id]),
+        }
+        for item in refs
+    ]
+
+
+def _mashup_assignment_map(plan: dict, materials: dict[str, list[str]]) -> dict[tuple[str, str], str]:
+    expected = {
+        (context_id, _normalize_mashup_material(material).casefold())
+        for context_id, values in materials.items()
+        for material in values
+    }
+    assignments = {}
+    for raw in plan["assignments"]:
+        if not isinstance(raw, dict):
+            raise ValueError("plugin returned an invalid mashup material assignment")
+        context_id = raw.get("contextId")
+        model_material = raw.get("modelMaterial")
+        alias = raw.get("alias")
+        if not all(isinstance(value, str) and value for value in (context_id, model_material, alias)):
+            raise ValueError("plugin returned an incomplete mashup material assignment")
+        key = (context_id, _normalize_mashup_material(model_material).casefold())
+        normalized_alias = _normalize_mashup_material(alias)
+        if key in assignments or key not in expected:
+            raise ValueError("plugin returned an unexpected mashup material assignment")
+        assignments[key] = normalized_alias
+    if set(assignments) != expected:
+        raise ValueError("plugin mashup material plan is incomplete")
+    return assignments
 
 
 def _send_plugin_restore(ref, backup_name: str) -> dict:
@@ -952,10 +1174,138 @@ def export_objects_for_scope(ref, scope: str) -> list:
     return objects
 
 
+def perform_mashup_export(context: Context, destination: str, name: str) -> Path:
+    name = (name or "").strip()
+    if not name or len(name) > 120 or any(ord(char) < 32 for char in name):
+        raise ValueError("Enter a valid mashup or mod name.")
+    if destination not in {"ACTIVE_MOD", "NEW_MOD"}:
+        raise ValueError("Invalid mashup destination.")
+    if destination == "NEW_MOD" and (
+        name != name.strip() or name in {".", ".."} or name.endswith(".") or
+        any(char in INVALID_VARIANT_CHARS for char in name)
+    ):
+        raise ValueError("Mod name contains characters that cannot be used in a folder name.")
+
+    ref = export_destination_context(context)
+    export_objects, refs, materials, object_contexts = mashup_export_selection(context, ref)
+    export_groups = group_mesh_objects(export_objects)
+    recognized = {obj for group in export_groups for obj in group.objects}
+    unrecognized = [obj.name for obj in export_objects if obj not in recognized]
+    if unrecognized:
+        raise ValueError(
+            "Visible mesh names must use 'group.part Name' or 'Name group.part': "
+            + ", ".join(unrecognized))
+    not_triangulated = check_triangulation(export_objects)
+    if not_triangulated:
+        raise ValueError("Not Triangulated: " + ", ".join(not_triangulated) + ".")
+
+    contributors = _mashup_contributor_payload(refs, materials)
+    try:
+        plan = _send_plugin_mashup_plan(ref, contributors)
+    except PluginResponseError as error:
+        if error.status != 410 and not (
+            error.status == 401 and error.code == "plugin_instance_mismatch"
+        ):
+            raise
+        from .recovery import reattach_collection
+
+        if not all(reattach_collection(item.collection, context.scene) for item in refs):
+            raise ValueError(
+                f"plugin returned HTTP {error.status} ({error.code}); mashup context recovery failed"
+            ) from error
+        ref = export_destination_context(context)
+        export_objects, refs, materials, object_contexts = mashup_export_selection(context, ref)
+        contributors = _mashup_contributor_payload(refs, materials)
+        plan = _send_plugin_mashup_plan(ref, contributors)
+    assignments = _mashup_assignment_map(plan, materials)
+
+    export_id = uuid.uuid4().hex
+    temp_dir = create_job("exports", export_id)
+    mdl_path = temp_dir / f"mashup_{export_id}.mdl"
+    saved_materials = []
+    try:
+        for obj in export_objects:
+            context_id, material = object_contexts[obj.as_pointer()]
+            alias = assignments[(context_id, material.casefold())]
+            properties = []
+            for property_name in ("xiv_material", "instant_edit_xiv_material"):
+                existed = property_name in obj
+                properties.append((property_name, existed, obj.get(property_name)))
+                if property_name == "xiv_material" or existed:
+                    obj[property_name] = alias
+            saved_materials.append((obj, properties))
+
+        get_settings().model_format = "MDL"
+        export_result(mdl_path.with_suffix(""), "MDL", export_objects=export_objects)
+        if not mdl_path.is_file():
+            raise ValueError("Mashup export produced no .mdl file.")
+        data = mdl_path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        payload = {
+            "schema": "instant-edit.mashup-export",
+            "version": 2,
+            "pluginInstanceId": ref.plugin_instance_id,
+            "contextId": ref.context_id,
+            "exportId": export_id,
+            "capability": ref.capability,
+            "filePath": str(mdl_path),
+            "size": len(data),
+            "sha256": digest,
+            "destination": "active_mod" if destination == "ACTIVE_MOD" else "new_mod",
+            "name": name,
+            "planFingerprint": plan["planFingerprint"],
+            "contributors": contributors,
+        }
+        try:
+            result = _send_plugin_mashup(ref, payload)
+        except PluginResponseError as error:
+            if error.status != 410 and not (
+                error.status == 401 and error.code == "plugin_instance_mismatch"
+            ):
+                raise
+            from .recovery import reattach_collection
+
+            if not all(reattach_collection(item.collection, context.scene) for item in refs):
+                raise ValueError(
+                    f"plugin returned HTTP {error.status} ({error.code}); mashup context recovery failed"
+                ) from error
+            ref = export_destination_context(context)
+            _objects, refs, materials, _object_contexts = mashup_export_selection(context, ref)
+            payload["pluginInstanceId"] = ref.plugin_instance_id
+            payload["capability"] = ref.capability
+            payload["contributors"] = _mashup_contributor_payload(refs, materials)
+            result = _send_plugin_mashup(ref, payload)
+        warnings = result.get("warnings", [])
+        target = result.get("targetFilePath") or ref.target_file_path
+        destination_name = result.get("destinationName") or name
+        get_instant_edit_props().last_export_id = export_id
+        get_instant_edit_props().last_status = (
+            f"Created mashup {destination_name} at {target} with warnings: "
+            f"{plugin_warning_summary(warnings)}"
+            if warnings else f"Created mashup {destination_name} at {target}"
+        )
+        return mdl_path
+    finally:
+        for obj, properties in reversed(saved_materials):
+            if obj.name not in bpy.data.objects:
+                continue
+            for property_name, existed, previous in properties:
+                if existed:
+                    obj[property_name] = previous
+                else:
+                    obj.pop(property_name, None)
+        try:
+            finish_job(temp_dir)
+        except OSError as error:
+            print(f"XIV Instant Edit: could not remove mashup export cache job: {error}")
+
+
 def perform_instant_export(context: Context, destination: str | None = None) -> Path:
     """Export one validated context and send only the v1 secure envelope."""
     ref = export_destination_context(context, destination)
     props = get_instant_edit_props()
+    if props.variant_target == MASHUP_TARGET:
+        raise ValueError("Use Quick Export to choose the mashup destination and name.")
     variant_target = selected_variant_target(props)
     if variant_target is not None and props.variant_targets_context_id != ref.context_id:
         raise ValueError("Refresh Penumbra targets after changing Context.")
@@ -1110,6 +1460,8 @@ CLASSES = [
     SelectVariantTarget,
     ToggleVariantTargetGroup,
     QuickExport,
+    MashupDestination,
+    MashupName,
     ClearInstantEditContexts,
     CopyInstantEditStatus,
     ApplyInstantEdit,

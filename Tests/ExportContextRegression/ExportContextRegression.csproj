@@ -6,7 +6,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>InstantEdit.ExportContextRegression</AssemblyName>
   </PropertyGroup>
+  <PropertyGroup>
+    <DalamudDevPath Condition="Exists('$(APPDATA)\XIVLauncher\addon\Hooks\dev\Lumina.dll')">$(APPDATA)\XIVLauncher\addon\Hooks\dev</DalamudDevPath>
+    <DalamudDevPath Condition="'$(DalamudDevPath)' == ''">$(APPDATA)\XIVLauncher\addon\Hooks</DalamudDevPath>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Dalamud-Plugin\InstantEdit.csproj" />
+    <Reference Include="Lumina">
+      <HintPath>$(DalamudDevPath)\Lumina.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 </Project>

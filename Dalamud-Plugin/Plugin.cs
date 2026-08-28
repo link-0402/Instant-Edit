@@ -42,13 +42,13 @@ public sealed class Plugin : IDalamudPlugin
         _log      = log;
 
         _config    = pi.GetPluginConfig() as Configuration ?? new Configuration();
-        if (_config.Version < 8)
+        if (_config.Version < 9)
         {
-            _config.Version = 8;
+            _config.Version = 9;
             pi.SavePluginConfig(_config);
         }
         pi.UiBuilder.DisableUserUiHide = _config.KeepVisibleWhenUiHidden;
-        _penumbra  = new PenumbraService(pi, framework, log, objects);
+        _penumbra  = new PenumbraService(pi, framework, log, objects, data);
         _onScreen  = new OnScreenService(objects, clientState, framework, _penumbra, log);
         _contexts  = new ExportContextRegistry(
             Guid.NewGuid().ToString("N"),

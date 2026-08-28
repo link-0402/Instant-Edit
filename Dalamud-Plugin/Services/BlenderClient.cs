@@ -246,7 +246,9 @@ public sealed class BlenderClient : IDisposable
         string? previewManifestPath = null,
         string? sourceModRootPath = null,
         string? targetRelativePath = null,
-        ActorIdentity? redrawActorIdentity = null)
+        ActorIdentity? redrawActorIdentity = null,
+        ResourceDependencyManifest? resourceManifest = null,
+        bool resourceManifestCaptureAttempted = false)
     {
         if (port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -269,7 +271,9 @@ public sealed class BlenderClient : IDisposable
                 callbackPort,
                 redrawActorIdentity,
                 sourceModRootPath,
-                targetRelativePath);
+                targetRelativePath,
+                resourceManifest,
+                resourceManifestCaptureAttempted);
         }
 
         try

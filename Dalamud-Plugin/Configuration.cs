@@ -6,7 +6,7 @@ namespace InstantEdit;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 8;
+    public int Version { get; set; } = 9;
 
     /// <summary> Port the Blender add-on listens on for import commands. </summary>
     public int BlenderPort { get; set; } = 42424;

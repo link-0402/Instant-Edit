@@ -22,6 +22,7 @@ public sealed class MainWindow : Window, IDisposable
     private readonly Configuration _config; private readonly PenumbraService _penumbra; private readonly OnScreenService _onScreen;
     private readonly BlenderClient _blender; private readonly IDataManager _data; private readonly IChatGui _chat; private readonly IPluginLog _log;
     private readonly MaterialPreviewBundleBuilder _materialPreviews;
+    private readonly ResourceSourceAttributor _resourceSources;
     private readonly Action _saveConfig;
     private readonly IUiBuilder _uiBuilder;
     private readonly object _stateLock = new();
@@ -46,7 +47,8 @@ public sealed class MainWindow : Window, IDisposable
         : base("XIV Instant Edit##Main")
     {
         _config = config; _penumbra = penumbra; _onScreen = onScreen; _blender = blender; _data = data; _chat = chat; _log = log;
-        _materialPreviews = new MaterialPreviewBundleBuilder(data, log);
+        _resourceSources = new ResourceSourceAttributor(penumbra, log);
+        _materialPreviews = new MaterialPreviewBundleBuilder(data, log, _resourceSources);
         _saveConfig = saveConfig;
         _uiBuilder = uiBuilder;
         AllowPinning = true;
@@ -991,11 +993,17 @@ public sealed class MainWindow : Window, IDisposable
             Directory.CreateDirectory(dir);
             handoffDirectory = dir;
             MaterialPreviewBundleResult? preview = null;
+            ResourceDependencyManifest? resourceManifest = null;
             var file = Path.Combine(dir, $"{Sanitize(actor.Name)}-{actor.ImportObjectIndex}-{model.FileName}");
             await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
+            var resources = await ResolvePreviewResourcesAsync(actor).ConfigureAwait(false);
+            resourceManifest = await _materialPreviews.BuildDependencyManifestAsync(
+                bytes,
+                model.GamePath,
+                resources,
+                cancellationToken).ConfigureAwait(false);
             if (importOptions.ApplyTexturesAndMaterials)
             {
-                var resources = await ResolvePreviewResourcesAsync(actor).ConfigureAwait(false);
                 preview = await _materialPreviews.BuildAsync(
                     bytes,
                     model.GamePath,
@@ -1019,9 +1027,14 @@ public sealed class MainWindow : Window, IDisposable
                 sourceModRootPath: source.SourceModRootPath,
                 targetRelativePath: source.SourceRelativePath,
                 redrawActorIdentity: actor.Entity?.ActorIdentity,
+                resourceManifest: resourceManifest,
+                resourceManifestCaptureAttempted: true,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
-            SetStatus($"Sent {model.FileName} to Blender.{warning}", true);
+            var mashupWarning = resourceManifest is null
+                ? " Mashup warning: exact material/texture sources could not be captured; re-import after resolving the missing resources."
+                : string.Empty;
+            SetStatus($"Sent {model.FileName} to Blender.{warning}{mashupWarning}", true);
             _chat.Print($"XIV Instant Edit: {model.FileName} sent to Blender.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

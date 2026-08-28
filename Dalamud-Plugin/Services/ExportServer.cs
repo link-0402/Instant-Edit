@@ -81,6 +81,65 @@ public sealed class ExportServer : IDisposable
         public string? Capability { get; set; }
     }
 
+    private sealed class MashupContributorRequest
+    {
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+
+        [JsonPropertyName("materials")]
+        public List<string>? Materials { get; set; }
+    }
+
+    private sealed class MashupExportRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+        [JsonPropertyName("pluginInstanceId")]
+        public string? PluginInstanceId { get; set; }
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+        [JsonPropertyName("exportId")]
+        public string? ExportId { get; set; }
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+        [JsonPropertyName("filePath")]
+        public string? FilePath { get; set; }
+        [JsonPropertyName("size")]
+        public long Size { get; set; }
+        [JsonPropertyName("sha256")]
+        public string? Sha256 { get; set; }
+        [JsonPropertyName("destination")]
+        public string? Destination { get; set; }
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+        [JsonPropertyName("contributors")]
+        public List<MashupContributorRequest>? Contributors { get; set; }
+
+        [JsonPropertyName("planFingerprint")]
+        public string? PlanFingerprint { get; set; }
+    }
+
+    private sealed class MashupPlanRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+        [JsonPropertyName("pluginInstanceId")]
+        public string? PluginInstanceId { get; set; }
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+        [JsonPropertyName("contributors")]
+        public List<MashupContributorRequest>? Contributors { get; set; }
+    }
+
     private sealed class RevokeRequest
     {
         [JsonPropertyName("schema")]
@@ -543,6 +602,156 @@ public sealed class ExportServer : IDisposable
                 result.TargetFilePath));
         }
 
+        if (method == "POST" && path.TrimEnd('/') == "/mashup/plan")
+        {
+            var parsed = DeserializeRequest<MashupPlanRequest>(request.Body, "mashup plan", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var requestPlan = parsed!;
+            var envelopeError = ValidateMashupPlanEnvelope(requestPlan);
+            if (envelopeError is not null)
+                return Error(StatusForCode(envelopeError), envelopeError, "unsupported or malformed mashup plan envelope");
+            if (!_contexts.TryAuthorizeOperation(
+                    requestPlan.PluginInstanceId!, requestPlan.ContextId!, requestPlan.Capability!,
+                    out var activeContext, out var activeCode) || activeContext is null)
+                return Error(StatusForCode(activeCode), activeCode, "active export context was rejected");
+
+            var contributors = new List<MashupContributor>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var contributor in requestPlan.Contributors!)
+            {
+                if (!seen.Add(contributor.ContextId!))
+                    return Error(400, "duplicate_context", "a mashup context was supplied more than once");
+                if (!_contexts.TryAuthorizeOperation(
+                        requestPlan.PluginInstanceId!, contributor.ContextId!, contributor.Capability!,
+                        out var contributorContext, out var contributorCode) || contributorContext is null)
+                    return Error(StatusForCode(contributorCode), contributorCode, "a contributor context was rejected");
+                contributors.Add(new MashupContributor(contributorContext, contributor.Materials!));
+            }
+
+            var plan = PenumbraService.BuildMashupPlan(activeContext, contributors);
+            if (!plan.Success)
+                return Error(StatusForCode(plan.Code), plan.Code, plan.Message);
+            return (200, Json(new
+            {
+                ok = true,
+                code = plan.Code,
+                message = plan.Message,
+                planFingerprint = plan.Fingerprint,
+                assignments = plan.Assignments.Select(item => new
+                {
+                    contextId = item.ContextId,
+                    modelMaterial = item.ModelMaterial,
+                    alias = item.Alias,
+                    gamePath = item.GamePath,
+                    slot = item.Slot,
+                }),
+            }));
+        }
+
+        if (method == "POST" && path.TrimEnd('/') == "/mashup/export")
+        {
+            var parsed = DeserializeRequest<MashupExportRequest>(request.Body, "mashup export", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var mashup = parsed!;
+            var envelopeError = ValidateMashupEnvelope(mashup);
+            if (envelopeError is not null)
+                return Error(StatusForCode(envelopeError), envelopeError, "unsupported or malformed mashup envelope");
+
+            if (!_contexts.TryAuthorizeOperation(
+                    mashup.PluginInstanceId!, mashup.ContextId!, mashup.Capability!,
+                    out var activeContext, out var activeCode) || activeContext is null)
+                return Error(StatusForCode(activeCode), activeCode, "active export context was rejected");
+
+            var contributors = new List<MashupContributor>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var contributor in mashup.Contributors!)
+            {
+                if (!seen.Add(contributor.ContextId!))
+                    return Error(400, "duplicate_context", "a mashup context was supplied more than once");
+                if (!_contexts.TryAuthorizeOperation(
+                        mashup.PluginInstanceId!, contributor.ContextId!, contributor.Capability!,
+                        out var contributorContext, out var contributorCode) || contributorContext is null)
+                    return Error(StatusForCode(contributorCode), contributorCode, "a contributor context was rejected");
+                contributors.Add(new MashupContributor(contributorContext, contributor.Materials!));
+            }
+
+            var plan = PenumbraService.BuildMashupPlan(activeContext, contributors);
+            if (!plan.Success)
+                return Error(StatusForCode(plan.Code), plan.Code, plan.Message);
+            if (!string.Equals(plan.Fingerprint, mashup.PlanFingerprint, StringComparison.OrdinalIgnoreCase))
+                return Error(409, "mashup_plan_mismatch", "The mashup material plan changed; retry the export.");
+
+            var fingerprintSource = JsonSerializer.Serialize(new
+            {
+                mashup.Destination,
+                mashup.Name,
+                mashup.PlanFingerprint,
+                contributors = mashup.Contributors!.Select(item => new
+                    {
+                        item.ContextId,
+                        materials = item.Materials,
+                    }),
+            }, JsonOpts);
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintSource)));
+            if (!_contexts.TryBeginExport(
+                    mashup.PluginInstanceId!, mashup.ContextId!, mashup.ExportId!, mashup.Capability!,
+                    mashup.FilePath!, mashup.Size, mashup.Sha256!, out var reservation, out var registryCode,
+                    fingerprint))
+                return Error(StatusForCode(registryCode), registryCode, "mashup export was rejected");
+            if (reservation is null)
+                return Error(500, "internal_error", "mashup reservation was not created");
+            if (!reservation.IsOwner)
+                return ResultResponse(await reservation.Completion.ConfigureAwait(false));
+
+            ExportReceipt receipt;
+            StagedExport? staged = null;
+            try
+            {
+                var stageResult = await StageExportFileAsync(
+                    mashup.FilePath!, mashup.Size, mashup.Sha256!).ConfigureAwait(false);
+                staged = stageResult.Export;
+                if (stageResult.Error is not null)
+                    receipt = new ExportReceipt(false, stageResult.Error.Value.Code, stageResult.Error.Value.Message);
+                else
+                {
+                    var result = await _penumbra.ApplyMashupAsync(
+                        activeContext,
+                        contributors,
+                        plan,
+                        staged!.FilePath,
+                        mashup.ExportId!,
+                        mashup.Destination!,
+                        mashup.Name!).ConfigureAwait(false);
+                    if (result.Success && result.PathRemap is { } pathRemap)
+                        _contexts.RemapModPaths(
+                            pathRemap.ModDirectory,
+                            pathRemap.ModRoot,
+                            pathRemap.RelativePaths);
+                    receipt = new ExportReceipt(
+                        result.Success,
+                        result.Code,
+                        result.Message,
+                        result.WarningList,
+                        result.TargetFilePath,
+                        result.DestinationName);
+                }
+            }
+            catch (Exception e)
+            {
+                _log.Error(e, "Mashup processing failed.");
+                receipt = new ExportReceipt(false, "internal_error", "mashup processing failed");
+            }
+            finally
+            {
+                CleanupStagedExport(staged);
+            }
+
+            _contexts.CompleteExport(mashup.ContextId!, mashup.ExportId!, receipt);
+            return ResultResponse(receipt);
+        }
+
         if (method == "POST" && path.TrimEnd('/') == "/export")
         {
             string body;
@@ -740,6 +949,55 @@ public sealed class ExportServer : IDisposable
         if (request.SetupInPenumbra && request.VariantTarget is not "new_group" &&
             string.IsNullOrWhiteSpace(request.VariantTargetId))
             return "missing_variant_target";
+        return null;
+    }
+
+    private static string? ValidateMashupEnvelope(MashupExportRequest request)
+    {
+        if (!string.Equals(request.Schema, "instant-edit.mashup-export", StringComparison.Ordinal))
+            return request.Version == 2 ? "unsupported_schema" : "unsupported_version";
+        if (request.Version != 2)
+            return "unsupported_version";
+        if (string.IsNullOrWhiteSpace(request.PluginInstanceId) || !IsSafeId(request.ContextId) ||
+            !IsSafeId(request.ExportId) || string.IsNullOrWhiteSpace(request.Capability) ||
+            string.IsNullOrWhiteSpace(request.FilePath) || string.IsNullOrWhiteSpace(request.Sha256) ||
+            string.IsNullOrWhiteSpace(request.PlanFingerprint) ||
+            request.Destination is not ("active_mod" or "new_mod") ||
+            !PenumbraService.IsSafeVariantGroupName(request.Name))
+            return "missing_field";
+        if (request.Size <= 0 || request.Size > MaxExportBytes || request.Sha256.Length != 64 ||
+            request.Sha256.Any(c => !Uri.IsHexDigit(c)) || request.PlanFingerprint.Length != 64 ||
+            request.PlanFingerprint.Any(c => !Uri.IsHexDigit(c)))
+            return "invalid_export_file";
+        if (request.Contributors is not { Count: >= 2 and <= 16 })
+            return "invalid_contributors";
+        foreach (var contributor in request.Contributors)
+        {
+            if (!IsSafeId(contributor.ContextId) || string.IsNullOrWhiteSpace(contributor.Capability) ||
+                contributor.Materials is not { Count: >= 1 and <= 256 } ||
+                contributor.Materials.Any(material => string.IsNullOrWhiteSpace(material) || material.Length > 512))
+                return "invalid_contributors";
+        }
+        return null;
+    }
+
+    private static string? ValidateMashupPlanEnvelope(MashupPlanRequest request)
+    {
+        if (!string.Equals(request.Schema, "instant-edit.mashup-plan", StringComparison.Ordinal))
+            return request.Version == 1 ? "unsupported_schema" : "unsupported_version";
+        if (request.Version != 1)
+            return "unsupported_version";
+        if (string.IsNullOrWhiteSpace(request.PluginInstanceId) || !IsSafeId(request.ContextId) ||
+            string.IsNullOrWhiteSpace(request.Capability) ||
+            request.Contributors is not { Count: >= 2 and <= 16 })
+            return "invalid_contributors";
+        foreach (var contributor in request.Contributors)
+        {
+            if (!IsSafeId(contributor.ContextId) || string.IsNullOrWhiteSpace(contributor.Capability) ||
+                contributor.Materials is not { Count: >= 1 and <= 256 } ||
+                contributor.Materials.Any(material => string.IsNullOrWhiteSpace(material) || material.Length > 512))
+                return "invalid_contributors";
+        }
         return null;
     }
 
@@ -953,6 +1211,7 @@ public sealed class ExportServer : IDisposable
                 message = receipt.Message,
                 warnings = receipt.Warnings ?? Array.Empty<string>(),
                 targetFilePath = receipt.TargetFilePath,
+                destinationName = receipt.DestinationName,
             }))
             : Error(StatusForCode(receipt.Code), receipt.Code, receipt.Message);
 
@@ -962,6 +1221,7 @@ public sealed class ExportServer : IDisposable
             "stale_context" => 410,
             "invalid_capability" or "plugin_instance_mismatch" => 401,
             "duplicate_export_id" => 409,
+            "mashup_plan_mismatch" => 409,
             "export_not_found" => 404,
             "server_stopped" or "internal_error" => 500,
             _ => 400,

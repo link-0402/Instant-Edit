@@ -14,6 +14,30 @@ from .imp.weights    import create_weight_matrix, set_weights
 from ...xivpy.model  import XIVModel, Submesh, VertexDeclaration, VertexUsage
 from .com.exceptions import XIVMeshError
 from ...instant_edit.material_preview import create_preview_material
+from ...instant_edit.context import mesh_ids_from_name
+
+
+def mesh_group_conflict_offset(incoming_groups, visible_groups) -> int:
+    """Return the smallest offset that makes incoming groups disjoint."""
+    incoming = sorted({int(group) for group in incoming_groups if int(group) >= 0})
+    visible = {int(group) for group in visible_groups if int(group) >= 0}
+    offset = 0
+    while any(group + offset in visible for group in incoming):
+        offset += 1
+    return offset
+
+
+def visible_mesh_group_ids() -> set[int]:
+    """Read numeric groups from visible mesh objects, ignoring unrelated names."""
+    groups = set()
+    for obj in getattr(bpy.context, "visible_objects", ()):
+        if obj.type != "MESH":
+            continue
+        try:
+            groups.add(mesh_ids_from_name(obj)[0])
+        except (ValueError, AttributeError):
+            continue
+    return groups
 
 
 def material_object_label(material_path: str) -> str:
@@ -155,6 +179,17 @@ class ModelImport:
         mdl_buffer    = model.buffers
         lod_level     = 0
         mesh_count    = model.lods[lod_level].mesh_count
+        incoming_groups = {
+            mesh_idx
+            for mesh_idx, mesh in enumerate(model.meshes[:mesh_count])
+            if mesh.vertex_count > 0
+        }
+        settings = getattr(getattr(bpy.context, "scene", None), "xiv_ie_settings", None)
+        self.mesh_group_offset = (
+            mesh_group_conflict_offset(incoming_groups, visible_mesh_group_ids())
+            if getattr(settings, "resolve_mesh_group_conflicts", True)
+            else 0
+        )
 
         indices = np.frombuffer(
                             mdl_buffer,
@@ -261,7 +296,8 @@ class ModelImport:
 
         material_path = self.model.materials[self.mesh.material_idx]
         object_label = material_object_label(material_path) or self.obj_name
-        obj_name   = f"{self.mesh_idx}.{self.submesh_idx} {object_label}"
+        effective_mesh_idx = self.mesh_idx + self.mesh_group_offset
+        obj_name   = f"{effective_mesh_idx}.{self.submesh_idx} {object_label}"
         blend_mesh = self._create_blend_mesh(submesh_streams, submesh_indices - vert_start, vert_count)
         new_obj    = bpy.data.objects.new(
                             name=obj_name, 
@@ -287,7 +323,7 @@ class ModelImport:
         new_obj["xiv_material"] = material_path
         new_obj["original_material"] = material.name
         new_obj["material_index"] = int(self.mesh.material_idx)
-        new_obj["mesh_index"] = int(self.mesh_idx)
+        new_obj["mesh_index"] = int(effective_mesh_idx)
         new_obj["submesh_index"] = int(self.submesh_idx)
         if self.context_metadata:
             for key, value in self.context_metadata.items():

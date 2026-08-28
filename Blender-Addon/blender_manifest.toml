@@ -1,14 +1,14 @@
 schema_version = "1.0.0"
 
 id = "xiv_instant_edit"
-version = "1.0.8"
+version = "1.1.0"
 name = "XIV Instant Edit"
 tagline = "Instant FFXIV model editing and focused model export"
 maintainer = "Luci"
 type = "add-on"
 
 tags = ["Import-Export", "Modeling", "Mesh", "Rigging", "User Interface"]
-blender_version_min = "4.5.0"
+blender_version_min = "4.5.3"
 blender_version_max = "5.3.0"
 license = ["SPDX:GPL-3.0-or-later"]
 

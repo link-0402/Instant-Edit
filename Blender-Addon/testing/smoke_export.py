@@ -2,6 +2,7 @@
 
 import importlib.util
 import importlib
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -95,12 +96,45 @@ def assert_corner_aware_uv_export(addon) -> None:
     bpy.data.meshes.remove(mesh)
 
 
+def assert_mesh_group_conflict_resolution(addon) -> None:
+    importer = importlib.import_module(f"{addon.__name__}.io.model.importer")
+    visible = []
+    hidden = []
+    try:
+        for name in ("0.0 Visible A", "1.0 Visible B"):
+            mesh = bpy.data.meshes.new(f"{name} Data")
+            obj = bpy.data.objects.new(name, mesh)
+            bpy.context.collection.objects.link(obj)
+            visible.append(obj)
+        hidden_mesh = bpy.data.meshes.new("9.0 Hidden Data")
+        hidden_obj = bpy.data.objects.new("9.0 Hidden", hidden_mesh)
+        bpy.context.collection.objects.link(hidden_obj)
+        hidden_obj.hide_set(True)
+        hidden.append(hidden_obj)
+
+        _visible_groups = importer.visible_mesh_group_ids()
+        if _visible_groups != {0, 1}:
+            raise AssertionError(f"hidden mesh groups leaked into visibility scan: {_visible_groups}")
+        if importer.mesh_group_conflict_offset((0, 1, 2), _visible_groups) != 2:
+            raise AssertionError("incoming groups 0,1,2 were not shifted to 2,3,4")
+        if importer.mesh_group_conflict_offset((3, 4), _visible_groups) != 0:
+            raise AssertionError("non-conflicting incoming groups were shifted")
+        print("[PASS] MDL imports resolve visible mesh-group conflicts while ignoring hidden groups")
+    finally:
+        for obj in visible + hidden:
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+
 def run() -> None:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     root = Path(__file__).resolve().parents[1]
     addon = load_addon(root)
     try:
         assert_corner_aware_uv_export(addon)
+        assert_mesh_group_conflict_resolution(addon)
 
         if bpy.context.scene.xiv_ie_settings.create_backfaces:
             raise AssertionError("Create Backfaces should default to disabled")
@@ -110,6 +144,8 @@ def run() -> None:
             raise AssertionError("Keep Shape Keys should default to disabled")
         if not bpy.context.scene.xiv_ie_settings.simple_import_set_export_directory:
             raise AssertionError("Set Simple Export Folder on Import should default to enabled")
+        if not bpy.context.scene.xiv_ie_settings.resolve_mesh_group_conflicts:
+            raise AssertionError("Resolve Mesh Group Name Conflicts should default to enabled")
         bpy.context.scene.xiv_ie_settings.keep_shapekeys = True
         if bpy.context.scene.xiv_ie_instant_edit_props.show_utilities:
             raise AssertionError("Utilities should be collapsed by default")
@@ -218,6 +254,8 @@ def run() -> None:
             "target_file_path": "C:/Penumbra/Smoke/model.mdl",
             "source_mod_directory": "SmokeMod",
             "source_mod_name": "Smoke Mod",
+            "resource_manifest_version": 1,
+            "resource_manifest_status": "ready",
             "callback_port": 42428,
         })
         context_collection.objects.link(obj)
@@ -262,6 +300,9 @@ def run() -> None:
         class FakeResponse:
             status = 200
 
+            def __init__(self, body=b'{"ok":true}'):
+                self.body = body
+
             def __enter__(self):
                 return self
 
@@ -272,15 +313,168 @@ def run() -> None:
                 return self.status
 
             def read(self, _size=-1):
-                return b'{"ok":true}'
+                return self.body
 
         original_urlopen = instant_ops.urllib.request.urlopen
-        instant_ops.urllib.request.urlopen = lambda request, timeout=0: FakeResponse()
+
+        planned_aliases = {
+            (context_id, assigned.casefold()): "/mt_c0101e0001_top_a.mtrl",
+            (context_id, added_material.casefold()): "/mt_c0101e0001_top_b.mtrl",
+        }
+
+        def fake_urlopen(request, timeout=0):
+            if request.full_url.endswith("/mashup/plan"):
+                payload = json.loads(request.data.decode("utf-8"))
+                assignments = []
+                incoming_slot = "c"
+                for contributor in payload["contributors"]:
+                    for material_path in contributor["materials"]:
+                        key = (contributor["contextId"], material_path.casefold())
+                        alias = planned_aliases.get(key)
+                        if alias is None:
+                            alias = f"/mt_c0101e0001_top_{incoming_slot}.mtrl"
+                            incoming_slot = chr(ord(incoming_slot) + 1)
+                        assignments.append({
+                            "contextId": contributor["contextId"],
+                            "modelMaterial": material_path,
+                            "alias": alias,
+                            "gamePath": "chara/equipment/e0001/material/v0001" + alias,
+                            "slot": alias[-6],
+                        })
+                body = json.dumps({
+                    "ok": True,
+                    "planFingerprint": "a" * 64,
+                    "assignments": assignments,
+                }).encode("utf-8")
+                return FakeResponse(body)
+            return FakeResponse()
+
+        instant_ops.urllib.request.urlopen = fake_urlopen
         instant_props = bpy.context.scene.xiv_ie_instant_edit_props
         instant_props.export_destination = context_id
         instant_props.variant_target = "NEW_GROUP"
         instant_props.variant_group_name = "Smoke Group"
         instant_props.variant_name = "smoke-quick"
+
+        mashup_context_id = "smoke-mashup-context"
+        mashup_collection = context_module.create_collection(bpy.context.scene, {
+            "context_id": mashup_context_id,
+            "schema": context_module.SCHEMA,
+            "version": context_module.VERSION,
+            "plugin_instance_id": "smoke-plugin",
+            "capability": "smoke-mashup-capability",
+            "source_game_path": "chara/equipment/e0002/model/c0101e0002_top.mdl",
+            "managed_destination": "C:/Penumbra/OtherSmoke",
+            "target_file_path": "C:/Penumbra/OtherSmoke/model.mdl",
+            "source_mod_directory": "OtherSmokeMod",
+            "source_mod_name": "Other Smoke Mod",
+            "resource_manifest_version": 0,
+            "resource_manifest_status": "legacy",
+            "callback_port": 42428,
+        })
+        mashup_obj = added_group.copy()
+        mashup_obj.data = added_group.data.copy()
+        mashup_obj.name = "3.0 Mashup"
+        mashup_collection.objects.link(mashup_obj)
+        context_module.tag_object(mashup_obj, {
+            **imported_metadata,
+            "context_id": mashup_context_id,
+            "xiv_material": added_material,
+            "mesh_index": 2,
+        })
+        original_scope_for_mashup = instant_props.export_scope
+        instant_props.export_scope = "VISIBLE"
+        show, enabled, message = instant_ops.mashup_target_state(bpy.context)
+        if not show or enabled or "Reload/update" not in message:
+            raise AssertionError("Legacy mashup Context did not request a plugin update and re-import")
+
+        context_module._set(mashup_collection, "resource_manifest_status", "capture_failed")
+        show, enabled, message = instant_ops.mashup_target_state(bpy.context)
+        if not show or enabled or "Dependency capture failed" not in message:
+            raise AssertionError("Failed mashup capture was not distinguished from a legacy Context")
+
+        context_module._set(mashup_collection, "resource_manifest_version", 1)
+        context_module._set(mashup_collection, "resource_manifest_status", "ready")
+        context_module._set(mashup_collection, "source_mod_directory", "SmokeMod")
+        if instant_ops.mashup_target_state(bpy.context)[0]:
+            raise AssertionError("Same-mod Contexts incorrectly offered Create Mashup")
+        context_module._set(mashup_collection, "source_mod_directory", "OtherSmokeMod")
+        show, enabled, message = instant_ops.mashup_target_state(bpy.context)
+        if not show or not enabled or message:
+            raise AssertionError(f"Valid multi-mod Contexts did not enable Create Mashup: {message}")
+        instant_props.export_scope = "CURRENT_COLLECTION"
+        if instant_ops.mashup_target_state(bpy.context)[0]:
+            raise AssertionError("Current-collection Export Parts incorrectly admitted another Context")
+        instant_props.export_scope = "VISIBLE"
+
+        untagged_obj = added_group.copy()
+        untagged_obj.data = added_group.data.copy()
+        untagged_obj.name = "4.0 Untagged"
+        bpy.context.scene.collection.objects.link(untagged_obj)
+        selection = instant_ops.mashup_export_selection(bpy.context)
+        if selection[3][untagged_obj.as_pointer()][0] != context_id:
+            raise AssertionError("Untagged mashup mesh did not inherit the active Context")
+        bpy.data.objects.remove(untagged_obj, do_unlink=True)
+
+        original_material_properties = {
+            item.as_pointer(): (
+                item.get("xiv_material"), item.get("instant_edit_xiv_material"))
+            for item in (obj, second, added_group, mashup_obj)
+        }
+        original_finish_job = instant_ops.finish_job
+        instant_ops.finish_job = lambda _job: None
+        try:
+            mashup_target = instant_ops.perform_mashup_export(
+                bpy.context, "ACTIVE_MOD", "Smoke Mashup")
+        finally:
+            instant_ops.finish_job = original_finish_job
+        mashup_model = instant_ops.XIVModel.from_file(mashup_target)
+        expected_aliases = {
+            "/mt_c0101e0001_top_a.mtrl",
+            "/mt_c0101e0001_top_b.mtrl",
+            "/mt_c0101e0001_top_c.mtrl",
+        }
+        if set(mashup_model.materials) != expected_aliases:
+            raise AssertionError(
+                f"Mashup MDL aliases differ: actual={set(mashup_model.materials)} "
+                f"expected={expected_aliases}"
+            )
+        if any(
+            (item.get("xiv_material"), item.get("instant_edit_xiv_material")) !=
+            original_material_properties[item.as_pointer()]
+            for item in (obj, second, added_group, mashup_obj)
+        ):
+            raise AssertionError("Successful mashup export did not restore temporary aliases")
+        importlib.import_module(f"{addon.__name__}.instant_edit.cache").remove_job(
+            Path(mashup_target).parent)
+
+        original_mashup_export_result = instant_ops.export_result
+        instant_ops.export_result = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("forced mashup failure"))
+        try:
+            try:
+                instant_ops.perform_mashup_export(bpy.context, "ACTIVE_MOD", "Failed Mashup")
+            except RuntimeError as error:
+                if str(error) != "forced mashup failure":
+                    raise
+            else:
+                raise AssertionError("Forced mashup export failure did not occur")
+        finally:
+            instant_ops.export_result = original_mashup_export_result
+        if any(
+            (item.get("xiv_material"), item.get("instant_edit_xiv_material")) !=
+            original_material_properties[item.as_pointer()]
+            for item in (obj, second, added_group, mashup_obj)
+        ):
+            raise AssertionError("Failed mashup export did not restore temporary aliases")
+        print("[PASS] Create Mashup eligibility, attribution, aliases, and restoration")
+
+        mashup_obj.hide_set(True)
+        if instant_ops.mashup_target_state(bpy.context)[0]:
+            raise AssertionError("Hidden second Context did not remove Create Mashup")
+        bpy.data.objects.remove(mashup_obj, do_unlink=True)
+        bpy.data.collections.remove(mashup_collection)
+        instant_props.export_scope = original_scope_for_mashup
 
         scope_capture = []
         original_simple_export_result = operators.export_result

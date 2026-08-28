@@ -56,6 +56,7 @@ class XIVIEExportSettings(PropertyGroup):
         ],
         default="EXPORT",
     )  # type: ignore
+    show_import_options: BoolProperty(name="Import Options", default=True)  # type: ignore
     show_export_options: BoolProperty(name="Export Options", default=True)  # type: ignore
     backup_models_on_export: BoolProperty(
         name="Backup models on Export",
@@ -84,6 +85,11 @@ class XIVIEExportSettings(PropertyGroup):
     simple_import_set_export_directory: BoolProperty(
         name="Set Simple Export Folder on Import",
         description="Use the imported file's folder as the Simple Export destination after a successful import",
+        default=True,
+    )  # type: ignore
+    resolve_mesh_group_conflicts: BoolProperty(
+        name="Resolve Mesh Group Name Conflicts",
+        description="Automatically offset imported mesh groups to avoid conflicts with visible mesh groups",
         default=True,
     )  # type: ignore
     simple_import_skeleton: PointerProperty(

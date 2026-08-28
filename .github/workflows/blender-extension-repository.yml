@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - version: 4.5.12
+          - version: 4.5.3
             release: Blender4.5
           - version: 5.2.0
             release: Blender5.2
@@ -60,7 +60,7 @@ jobs:
 
       - name: Install Blender
         env:
-          BLENDER_VERSION: 4.5.12
+          BLENDER_VERSION: 4.5.3
         run: |
           curl --fail --location --retry 3 \
             "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \

@@ -2,6 +2,68 @@ using System.Text.Json.Serialization;
 
 namespace InstantEdit.Models;
 
+public sealed record SourceResourceLocator
+{
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    [JsonPropertyName("gamePath")]
+    public required string GamePath { get; init; }
+
+    [JsonPropertyName("sourceModDirectory")]
+    public string? SourceModDirectory { get; init; }
+
+    [JsonPropertyName("sourceModRootPath")]
+    public string? SourceModRootPath { get; init; }
+
+    [JsonPropertyName("sourceRelativePath")]
+    public string? SourceRelativePath { get; init; }
+
+    [JsonPropertyName("sha256")]
+    public required string Sha256 { get; init; }
+}
+
+public sealed record TextureDependency
+{
+    [JsonPropertyName("storedGamePath")]
+    public required string StoredGamePath { get; init; }
+
+    [JsonPropertyName("effectiveGamePath")]
+    public required string EffectiveGamePath { get; init; }
+
+    [JsonPropertyName("flags")]
+    public required ushort Flags { get; init; }
+
+    [JsonPropertyName("resource")]
+    public required SourceResourceLocator Resource { get; init; }
+}
+
+public sealed record MaterialDependency
+{
+    [JsonPropertyName("modelMaterial")]
+    public required string ModelMaterial { get; init; }
+
+    [JsonPropertyName("gamePath")]
+    public required string GamePath { get; init; }
+
+    [JsonPropertyName("resource")]
+    public required SourceResourceLocator Resource { get; init; }
+
+    [JsonPropertyName("textures")]
+    public required IReadOnlyList<TextureDependency> Textures { get; init; }
+}
+
+public sealed record ResourceDependencyManifest
+{
+    public const int CurrentVersion = 1;
+
+    [JsonPropertyName("version")]
+    public int Version { get; init; } = CurrentVersion;
+
+    [JsonPropertyName("materials")]
+    public required IReadOnlyList<MaterialDependency> Materials { get; init; }
+}
+
 /// <summary> The actor identity captured when an import is started. </summary>
 public sealed record ActorIdentity
 {
@@ -76,6 +138,15 @@ public sealed record InstantEditImportContext
 
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
+
+    [JsonPropertyName("resourceManifestVersion")]
+    public int ResourceManifestVersion => ResourceManifest?.Version ?? 0;
+
+    [JsonPropertyName("resourceManifestStatus")]
+    public string ResourceManifestStatus { get; init; } = "legacy";
+
+    [JsonIgnore]
+    public ResourceDependencyManifest? ResourceManifest { get; init; }
 }
 
 /// <summary>
@@ -123,6 +194,12 @@ public sealed record PersistedExportContext
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
 
+    [JsonPropertyName("resourceManifest")]
+    public ResourceDependencyManifest? ResourceManifest { get; init; }
+
+    [JsonPropertyName("resourceManifestStatus")]
+    public string ResourceManifestStatus { get; init; } = "legacy";
+
     [JsonPropertyName("expiresAt")]
     public required DateTimeOffset ExpiresAt { get; init; }
 
@@ -142,6 +219,8 @@ public sealed record PersistedExportContext
             SourceModRootPath = context.SourceModRootPath,
             TargetRelativePath = context.TargetRelativePath,
             CallbackPort = context.CallbackPort,
+            ResourceManifest = context.ResourceManifest,
+            ResourceManifestStatus = context.ResourceManifestStatus,
             ExpiresAt = expiresAt,
         };
 }
@@ -152,4 +231,5 @@ public sealed record ExportReceipt(
     string Code,
     string Message,
     IReadOnlyList<string>? Warnings = null,
-    string? TargetFilePath = null);
+    string? TargetFilePath = null,
+    string? DestinationName = null);

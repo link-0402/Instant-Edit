@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -8,6 +9,7 @@ using Dalamud.Utility;
 using Lumina.Data;
 using Lumina.Data.Files;
 using Lumina.Data.Structs;
+using InstantEdit.Models;
 
 namespace InstantEdit.Services;
 
@@ -39,14 +41,110 @@ public sealed class MaterialPreviewBundleBuilder
     private static readonly Regex StandardBodyMaterial = new(
         @"^mt_c\d{4}b\d{4}_(?:a|b|bibo|body|skin)\.mtrl$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex RacialMaterialName = new(
+        @"^mt_c\d{4}(?<identity>.+\.mtrl)$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly IDataManager _data;
     private readonly IPluginLog _log;
+    private readonly ResourceSourceAttributor? _sourceAttributor;
 
-    public MaterialPreviewBundleBuilder(IDataManager data, IPluginLog log)
+    public MaterialPreviewBundleBuilder(
+        IDataManager data,
+        IPluginLog log,
+        ResourceSourceAttributor? sourceAttributor = null)
     {
         _data = data;
         _log = log;
+        _sourceAttributor = sourceAttributor;
+    }
+
+    public async Task<ResourceDependencyManifest?> BuildDependencyManifestAsync(
+        byte[] modelBytes,
+        string modelGamePath,
+        IReadOnlyCollection<MaterialResourceCandidate> candidates,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var warnings = new List<string>();
+            var resources = BuildResourceMap(candidates, warnings);
+            var materialNames = ReadModelMaterials(modelBytes)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxMaterials + 1)
+                .ToArray();
+            if (materialNames.Length is 0 or > MaxMaterials)
+                return null;
+
+            var materials = new List<MaterialDependency>(materialNames.Length);
+            foreach (var modelMaterial in materialNames)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var materialPath = ResolveMaterialPath(modelGamePath, modelMaterial, resources, warnings);
+                if (materialPath is null)
+                {
+                    _log.Warning("Mashup capture could not resolve model material {Material} for {ModelPath}.",
+                        modelMaterial, modelGamePath);
+                    return null;
+                }
+                var resolvedMaterial = await ResolveResourceAsync(
+                    materialPath, resources, MaxMaterialBytes, cancellationToken).ConfigureAwait(false);
+                if (resolvedMaterial is null)
+                    return null;
+                var mtrl = LooseLuminaFile.Load<MtrlFile>(resolvedMaterial.Value.Bytes);
+                var materialLocator = CreateLocator(materialPath, resolvedMaterial.Value);
+                if (materialLocator is null)
+                    return null;
+
+                var textures = new List<TextureDependency>();
+                foreach (var textureOffset in mtrl.TextureOffsets)
+                {
+                    var storedPath = NormaliseGamePath(ReadString(mtrl.Strings, textureOffset.Offset));
+                    if (!IsSafeGameResourcePath(storedPath, ".tex"))
+                        return null;
+                    var effectivePath = Dx11TexturePath(storedPath, textureOffset.Flags);
+                    var resourceGamePath = effectivePath;
+                    var resolvedTexture = await ResolveResourceAsync(
+                        effectivePath, resources, MaxTextureBytes, cancellationToken).ConfigureAwait(false);
+                    if (resolvedTexture is null &&
+                        !effectivePath.Equals(storedPath, StringComparison.OrdinalIgnoreCase) &&
+                        !resources.ContainsKey(effectivePath))
+                    {
+                        resolvedTexture = await ResolveResourceAsync(
+                            storedPath, resources, MaxTextureBytes, cancellationToken).ConfigureAwait(false);
+                        resourceGamePath = storedPath;
+                    }
+                    if (resolvedTexture is null)
+                        return null;
+                    var textureLocator = CreateLocator(resourceGamePath, resolvedTexture.Value);
+                    if (textureLocator is null)
+                        return null;
+                    textures.Add(new TextureDependency
+                    {
+                        StoredGamePath = storedPath,
+                        EffectiveGamePath = effectivePath,
+                        Flags = textureOffset.Flags,
+                        Resource = textureLocator,
+                    });
+                }
+
+                materials.Add(new MaterialDependency
+                {
+                    ModelMaterial = modelMaterial,
+                    GamePath = materialPath,
+                    Resource = materialLocator,
+                    Textures = textures,
+                });
+            }
+
+            return new ResourceDependencyManifest { Materials = materials };
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Warning(e, "Could not capture mashup resource dependencies.");
+            return null;
+        }
     }
 
     public async Task<MaterialPreviewBundleResult> BuildAsync(
@@ -280,15 +378,64 @@ public sealed class MaterialPreviewBundleBuilder
         return result;
     }
 
-    private static IReadOnlyList<string> ReadModelMaterials(byte[] bytes)
+    internal static IReadOnlyList<string> ReadModelMaterials(byte[] bytes)
     {
-        var mdl = LooseLuminaFile.Load<Lumina.Data.Files.MdlFile>(bytes);
-        return mdl.MaterialNameOffsets
-            .Select(offset => ReadString(mdl.Strings, checked((int)offset)))
-            .ToArray();
+        // Lumina builds bundled with some Dalamud versions still read the V6
+        // model header as the older layout and can run past the end of otherwise
+        // valid Dawntrail MDLs. The material strings are available in the
+        // version-stable leading string table, before the layout diverges.
+        const uint mdlV5 = 0x01000005;
+        const uint mdlV6 = 0x01000006;
+        const int fileHeaderSize = 68;
+        const int vertexDeclarationSize = 17 * 8;
+        const int stringHeaderSize = 8;
+        const int maxVertexDeclarations = 256;
+        const int maxStrings = 16_384;
+        const int maxStringBytes = 16 * 1024 * 1024;
+
+        if (bytes.Length < fileHeaderSize + stringHeaderSize)
+            throw new InvalidDataException("MDL is too short to contain its string table.");
+        var version = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0, 4));
+        if (version is not (mdlV5 or mdlV6))
+            throw new InvalidDataException($"Unsupported MDL version 0x{version:X8}.");
+
+        var declarationCount = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(12, 2));
+        var materialCount = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(14, 2));
+        if (declarationCount > maxVertexDeclarations || materialCount > MaxMaterials)
+            throw new InvalidDataException("MDL header counts exceed the supported limits.");
+
+        var stringHeaderOffset = checked(fileHeaderSize + declarationCount * vertexDeclarationSize);
+        if (stringHeaderOffset > bytes.Length - stringHeaderSize)
+            throw new InvalidDataException("MDL string-table header is outside the file.");
+        var stringCount = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(stringHeaderOffset, 2));
+        var stringSize = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(stringHeaderOffset + 4, 4));
+        if (stringCount > maxStrings || stringSize > maxStringBytes ||
+            stringSize > bytes.Length - stringHeaderOffset - stringHeaderSize)
+            throw new InvalidDataException("MDL string table exceeds the supported bounds.");
+
+        var start = stringHeaderOffset + stringHeaderSize;
+        var end = checked(start + (int)stringSize);
+        var materials = new List<string>(materialCount);
+        var strictUtf8 = new UTF8Encoding(false, true);
+        for (var index = 0; index < stringCount; index++)
+        {
+            var terminator = Array.IndexOf(bytes, (byte)0, start, end - start);
+            if (terminator < 0)
+                throw new InvalidDataException("MDL string table contains an unterminated string.");
+            var value = strictUtf8.GetString(bytes, start, terminator - start);
+            if (value.EndsWith(".mtrl", StringComparison.OrdinalIgnoreCase) &&
+                IsSafeGameResourcePath(value, ".mtrl"))
+                materials.Add(value);
+            start = terminator + 1;
+        }
+
+        if (materials.Count != materialCount)
+            throw new InvalidDataException(
+                $"MDL declares {materialCount} materials but its string table contains {materials.Count} safe material paths.");
+        return materials;
     }
 
-    private static string? ResolveMaterialPath(
+    internal static string? ResolveMaterialPath(
         string modelGamePath,
         string modelMaterial,
         IReadOnlyDictionary<string, List<string>> resources,
@@ -315,6 +462,23 @@ public sealed class MaterialPreviewBundleBuilder
             return null;
         }
 
+        var racialIdentity = RacialMaterialIdentity(fileName);
+        if (racialIdentity is not null)
+        {
+            var racialCandidates = resources.Keys
+                .Where(path => string.Equals(
+                    RacialMaterialIdentity(FileName(path)), racialIdentity,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (racialCandidates.Length == 1 && resources[racialCandidates[0]].Count == 1)
+                return racialCandidates[0];
+            if (racialCandidates.Length > 0)
+            {
+                warnings.Add($"Material path is ambiguous after racial remapping: {fileName}");
+                return null;
+            }
+        }
+
         var fallback = DeriveMaterialPath(modelGamePath, modelMaterial);
         if (!IsSafeGameResourcePath(fallback, ".mtrl"))
             return null;
@@ -326,7 +490,23 @@ public sealed class MaterialPreviewBundleBuilder
         return fallback;
     }
 
+    private static string? RacialMaterialIdentity(string fileName)
+    {
+        var match = RacialMaterialName.Match(fileName);
+        return match.Success ? match.Groups["identity"].Value : null;
+    }
+
     private async Task<byte[]?> ReadResourceAsync(
+        string gamePath,
+        IReadOnlyDictionary<string, List<string>> resources,
+        long maxBytes,
+        CancellationToken cancellationToken)
+        => (await ResolveResourceAsync(gamePath, resources, maxBytes, cancellationToken)
+            .ConfigureAwait(false))?.Bytes;
+
+    private readonly record struct ResolvedResource(byte[] Bytes, string? ActualPath);
+
+    private async Task<ResolvedResource?> ResolveResourceAsync(
         string gamePath,
         IReadOnlyDictionary<string, List<string>> resources,
         long maxBytes,
@@ -343,14 +523,18 @@ public sealed class MaterialPreviewBundleBuilder
                 var info = new FileInfo(actual);
                 if (!info.Exists || info.Length <= 0 || info.Length > maxBytes)
                     return null;
-                return await File.ReadAllBytesAsync(info.FullName, cancellationToken).ConfigureAwait(false);
+                return new ResolvedResource(
+                    await File.ReadAllBytesAsync(info.FullName, cancellationToken).ConfigureAwait(false),
+                    info.FullName);
             }
         }
 
         try
         {
             var gameFile = await _data.GetFileAsync<FileResource>(gamePath, cancellationToken).ConfigureAwait(false);
-            return gameFile?.Data is { Length: > 0 } data && data.LongLength <= maxBytes ? data : null;
+            return gameFile?.Data is { Length: > 0 } data && data.LongLength <= maxBytes
+                ? new ResolvedResource(data, null)
+                : null;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -360,6 +544,35 @@ public sealed class MaterialPreviewBundleBuilder
             _log.Debug(e, "Could not read preview resource {GamePath}.", gamePath);
             return null;
         }
+    }
+
+    private SourceResourceLocator? CreateLocator(string gamePath, ResolvedResource resource)
+    {
+        var hash = Convert.ToHexString(SHA256.HashData(resource.Bytes)).ToLowerInvariant();
+        if (resource.ActualPath is null)
+        {
+            return new SourceResourceLocator
+            {
+                Kind = "game",
+                GamePath = NormaliseGamePath(gamePath),
+                Sha256 = hash,
+            };
+        }
+
+        var source = _sourceAttributor?.AttributionFor(resource.ActualPath);
+        if (source is not { State: ResourceSourceState.LoadedMod } ||
+            string.IsNullOrWhiteSpace(source.ModDirectory) ||
+            string.IsNullOrWhiteSpace(source.RelativePath))
+            return null;
+        return new SourceResourceLocator
+        {
+            Kind = "mod",
+            GamePath = NormaliseGamePath(gamePath),
+            SourceModDirectory = source.ModDirectory,
+            SourceModRootPath = source.ModRootPath,
+            SourceRelativePath = source.RelativePath,
+            Sha256 = hash,
+        };
     }
 
     private static string DeriveMaterialPath(string mdlPath, string materialName)
@@ -467,6 +680,30 @@ public sealed class MaterialPreviewBundleBuilder
         return new MaterialMetadata(samplers, shaderKeys, shaderConstants);
     }
 
+    internal static IReadOnlyList<string> ReadTextureUsages(byte[] materialBytes)
+    {
+        try
+        {
+            var mtrl = LooseLuminaFile.Load<MtrlFile>(materialBytes);
+            var usages = Enumerable.Repeat("other", mtrl.TextureOffsets.Length).ToArray();
+            var metadata = ReadMaterialMetadata(materialBytes, mtrl);
+
+            foreach (var sampler in metadata.Samplers)
+            {
+                if (sampler.TextureIndex == byte.MaxValue || sampler.TextureIndex >= usages.Length)
+                    continue;
+                var usage = TextureUsage(sampler.SamplerId);
+                if (usages[sampler.TextureIndex] == "other" || usage != "other")
+                    usages[sampler.TextureIndex] = usage;
+            }
+            return usages;
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
     private static int DataSetOffset(MtrlFile mtrl)
         => checked(16
             + 4 * (mtrl.FileHeader.TextureCount + mtrl.FileHeader.UvSetCount + mtrl.FileHeader.ColorSetCount)
@@ -564,7 +801,7 @@ public sealed class MaterialPreviewBundleBuilder
                extensions.Any(extension => path.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static class LooseLuminaFile
+    internal static class LooseLuminaFile
     {
         private static readonly PropertyInfo DataProperty = typeof(FileResource).GetProperty(nameof(FileResource.Data), BindingFlags.Public | BindingFlags.Instance)
             ?? throw new MissingMemberException(typeof(FileResource).FullName, nameof(FileResource.Data));

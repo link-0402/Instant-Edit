@@ -17,6 +17,10 @@ plus a standalone Simple Import/Export panel.
   YAA-compatible `group.part Name` object names.
 - Quick Export back to the original source mod, including variants and optional
   Penumbra setup.
+- Creates self-contained multi-context mashups as a new group in the active mod
+  or as a new Penumbra mod, with isolated material and texture dependencies.
+- Automatically shifts incoming MDL mesh groups away from visible conflicts
+  while preserving incoming part numbers and labels.
 - Persists import authorization in the Dalamud plugin and reconnects saved scene
   contexts after Blender or plugin restarts.
 - Recovers export receipts after network timeouts without submitting a second
@@ -25,6 +29,8 @@ plus a standalone Simple Import/Export panel.
   mounts after Quick Export.
 - Simple Export to MDL, FBX, or glTF for visible mesh objects.
 - Simple Import from MDL or FBX files.
+- Simple Import/Export settings are separated into dedicated option sections,
+  including the import-time export-folder setting.
 - Export-time UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup.
 
 Material previews are display-only and intentionally approximate. They do not
@@ -42,7 +48,7 @@ placeholders without producing missing-preview warnings.
 ## Installation
 
 Build or install the extension ZIP through Blender's Extensions preferences.
-The source directory itself can also be used for development with Blender 4.5
+The source directory itself can also be used for development with Blender 4.5.3
 or newer.
 
 Do not enable this extension at the same time as a custom Yet Another Addon

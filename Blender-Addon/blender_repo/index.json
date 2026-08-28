@@ -7,13 +7,13 @@
       "id": "xiv_instant_edit",
       "name": "XIV Instant Edit",
       "tagline": "Instant FFXIV model editing and focused model export",
-      "version": "1.0.8",
+      "version": "1.1.0",
       "type": "add-on",
       "maintainer": "Luci",
       "license": [
         "SPDX:GPL-3.0-or-later"
       ],
-      "blender_version_min": "4.5.0",
+      "blender_version_min": "4.5.3",
       "blender_version_max": "5.3.0",
       "permissions": {
         "files": "Import and export FFXIV model files",
@@ -27,8 +27,8 @@
         "User Interface"
       ],
       "archive_url": "./XIV-Instant-Edit.zip",
-      "archive_size": 158195,
-      "archive_hash": "sha256:f21c60711aca497c0c8effc8c0dd51d395282b18f8e5b25d59d4a8d2ad56e7bb"
+      "archive_size": 163041,
+      "archive_hash": "sha256:cb284f6292d9bb32ced7d1bb5003f6d011eaae0dd7d4af8d8e01dcc9ae33fd02"
     }
   ]
 }

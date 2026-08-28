@@ -8,7 +8,7 @@ resources belonging to your character or through a simplified resource browser f
 
 - [XIVLauncher](https://goatcorp.github.io/) with Dalamud enabled
 - [Penumbra](https://github.com/xivdev/Penumbra)
-- [Blender](https://www.blender.org/) 4.5+
+- [Blender](https://www.blender.org/) 4.5.3+
 
 ## Installation
 
@@ -43,9 +43,12 @@ Note that you will not receive automatic feature and compatibility updates this 
 3. Click **Refresh character list** at the top and browse to the model you are looking for, then click Edit.
 4. Edit the model in Blender. XIV Instant Edit tools are available in the
    **XIV Instant Edit** tab of the 3D Viewport sidebar.
-5. Click **Quick Export** to send the edited model back to its Penumbra mod.
-   If the scene contains multiple XIV Instant Edit contexts and the destination is
-   otherwise ambiguous, Quick Export asks you to choose an explicit target first.
+5. (Optional) If you want to redirect the model export to another file/option group, pick a new target from the list.
+   Default behavior is to export in-place, so replacing the exact model that was originally imported.
+6. Click **Quick Export** to send the edited model back to its Penumbra mod.
+
+The addon supports various other features, such as creating mashups on export, although
+the workflow required for this should hopefully be fairly self-explanatory from the UI.
 
 
 ## Additional notes
