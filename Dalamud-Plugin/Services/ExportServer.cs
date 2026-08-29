@@ -973,7 +973,7 @@ public sealed class ExportServer : IDisposable
             request.Sha256.Any(c => !Uri.IsHexDigit(c)) || request.PlanFingerprint.Length != 64 ||
             request.PlanFingerprint.Any(c => !Uri.IsHexDigit(c)))
             return "invalid_export_file";
-        if (request.Contributors is not { Count: >= 2 and <= 16 })
+        if (request.Contributors is not { Count: >= 1 and <= 16 })
             return "invalid_contributors";
         foreach (var contributor in request.Contributors)
         {
@@ -993,7 +993,7 @@ public sealed class ExportServer : IDisposable
             return "unsupported_version";
         if (string.IsNullOrWhiteSpace(request.PluginInstanceId) || !IsSafeId(request.ContextId) ||
             string.IsNullOrWhiteSpace(request.Capability) ||
-            request.Contributors is not { Count: >= 2 and <= 16 })
+            request.Contributors is not { Count: >= 1 and <= 16 })
             return "invalid_contributors";
         foreach (var contributor in request.Contributors)
         {

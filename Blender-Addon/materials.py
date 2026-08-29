@@ -11,7 +11,7 @@ import numpy as np
 
 from .io.model.com.space import lin_to_srgb
 from .io.model.exp.validators import clean_material_path
-from .instant_edit.context import context_id_for_object, mesh_ids_from_name
+from .instant_edit.context import context_id_for_object, mesh_ids_from_name, mesh_name_info
 from .mesh.objects import visible_meshobj
 from .xivpy.model import XIV_ATTR
 
@@ -27,9 +27,6 @@ MATERIAL_PRESETS = {
     "yet another toenail": "/mt_c0201b0001_yatoe.mtrl",
 }
 
-_MESH_ID_PREFIX = re.compile(r"^(?P<group>\d+)\.(?P<part>\d+)(?:\s+|$)(?P<label>.*)$")
-_MESH_ID_SUFFIX = re.compile(r"^(?P<label>.*?)(?:\s+|^)(?P<group>\d+)\.(?P<part>\d+)$")
-_LOD_SUFFIX = re.compile(r"\s+LOD(?P<lod>\d+)$", re.IGNORECASE)
 _CUSTOM_ATTRIBUTE = re.compile(r"^atr_[a-z0-9_]+$")
 
 ATTRIBUTE_NAMES = {
@@ -84,15 +81,79 @@ def mesh_part_objects(objects, mesh_index: int, part_index: int) -> tuple:
 
 def mesh_display_name(obj) -> str:
     """Return the editable human label while hiding the exporter mesh ID."""
-    name = str(obj.name).strip()
-    match = _MESH_ID_PREFIX.match(name)
-    if match:
-        label = match.group("label").strip()
-    else:
-        match = _MESH_ID_SUFFIX.match(name)
-        label = match.group("label").strip() if match else name
-    label = _LOD_SUFFIX.sub("", label).strip()
+    try:
+        label = mesh_name_info(obj).label
+    except Exception:
+        label = str(obj.name).strip()
     return label or "Unnamed Part"
+
+
+def _front_mesh_name(info) -> str:
+    label = " ".join(info.label.split())
+    identifier = f"{info.mesh_group}.{info.mesh_part}"
+    lod_suffix = f" LOD{info.lod}" if info.lod else ""
+    return f"{identifier}{f' {label}' if label else ''}{lod_suffix}"
+
+
+def convert_suffix_mesh_names(objects) -> int:
+    """Move suffix-form mesh IDs to the front without allowing name collisions."""
+    candidates = []
+    for obj in objects:
+        if obj.type != "MESH":
+            continue
+        try:
+            info = mesh_name_info(obj)
+        except Exception:
+            continue
+        if info.prefix:
+            continue
+        candidates.append((obj, _front_mesh_name(info)))
+
+    if not candidates:
+        return 0
+
+    candidate_ids = {obj.as_pointer() for obj, _target in candidates}
+    existing_names = {
+        obj.name
+        for obj in objects
+        if obj.as_pointer() not in candidate_ids
+    }
+    targets = defaultdict(list)
+    for obj, target in candidates:
+        targets[target].append(obj.name)
+    conflicts = {
+        target: names
+        for target, names in targets.items()
+        if target in existing_names or len(names) > 1
+    }
+    if conflicts:
+        details = "; ".join(
+            f"{target} ({', '.join(names)})"
+            for target, names in sorted(conflicts.items())
+        )
+        raise ValueError(f"Mesh ID conversion would create name collisions: {details}")
+
+    all_names = {obj.name for obj in objects}
+    temporary_names = []
+    for index, (obj, _target) in enumerate(candidates):
+        temporary = f"__xiv_ie_mesh_name_convert_{obj.as_pointer()}_{index}"
+        while temporary in all_names or temporary in temporary_names:
+            temporary += "_"
+        temporary_names.append(temporary)
+
+    originals = [(obj, obj.name) for obj, _target in candidates]
+    try:
+        for (obj, _target), temporary in zip(candidates, temporary_names):
+            obj.name = temporary
+        for (obj, target), _temporary in zip(candidates, temporary_names):
+            obj.name = target
+    except Exception:
+        for (obj, _old_name), temporary in zip(originals, temporary_names):
+            obj.name = temporary
+        for obj, old_name in originals:
+            obj.name = old_name
+        raise
+    return len(candidates)
 
 
 def mesh_part_tags(objects) -> str:

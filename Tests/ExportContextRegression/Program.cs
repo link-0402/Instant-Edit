@@ -558,6 +558,29 @@ try
             customPlan.Assignments[0].GamePath.EndsWith("/bloodspiller.mtrl", StringComparison.Ordinal) &&
             customPlan.Assignments[1].Alias == "/mt_c0201e0118_top_b.mtrl",
         "custom active materials remain unchanged and incoming gear retains a zero-padded canonical id");
+    var singleContextPlan = PenumbraService.BuildMashupPlan(customTopContext,
+    [
+        new MashupContributor(customTopContext, ["/bloodspiller.mtrl"]),
+    ]);
+    Require(singleContextPlan.Success && singleContextPlan.Assignments.Count == 1 &&
+            singleContextPlan.Assignments[0].Alias == "/bloodspiller.mtrl",
+        "single-context plans preserve the captured material for a standalone new mod");
+    var sameSourceContext = incomingTopContext with
+    {
+        SourceModDirectory = customTopContext.SourceModDirectory,
+        SourceModName = customTopContext.SourceModName,
+    };
+    var sameSourcePlan = PenumbraService.BuildMashupPlan(customTopContext,
+    [
+        new MashupContributor(customTopContext, ["/bloodspiller.mtrl"]),
+        new MashupContributor(sameSourceContext, ["/anything.mtrl"]),
+    ]);
+    Require(sameSourcePlan.Success && sameSourcePlan.Assignments.Count == 2,
+        "multi-context plans accept contributors from the same source mod");
+    Require(PenumbraService.IsValidMashupContributorCount("new_mod", 1) &&
+            !PenumbraService.IsValidMashupContributorCount("active_mod", 1) &&
+            PenumbraService.IsValidMashupContributorCount("active_mod", 2),
+        "active-mod mashup requests still require at least two contributors");
     var customHairManifest = new ResourceDependencyManifest
     {
         Materials =

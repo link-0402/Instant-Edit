@@ -21,6 +21,7 @@ from .materials import (
     set_mesh_part_tags,
     swap_mesh_groups,
     swap_mesh_parts,
+    convert_suffix_mesh_names,
     visible_material_groups,
 )
 from .mesh.export import check_triangulation, export_result, get_export_stats
@@ -589,6 +590,30 @@ class XIVIE_OT_rename_mesh_part(Operator):
         except ValueError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
+        _redraw(context)
+        return {"FINISHED"}
+
+
+class XIVIE_OT_convert_mesh_names(Operator):
+    bl_idname = "xiv_ie.convert_mesh_names"
+    bl_label = "Move Mesh IDs to Front"
+    bl_description = "Convert suffix-form mesh IDs in every scene mesh to the prefix naming convention"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: Context):
+        return context.mode == "OBJECT"
+
+    def execute(self, context: Context):
+        try:
+            converted = convert_suffix_mesh_names(bpy.context.scene.objects)
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        if converted:
+            self.report({"INFO"}, f"Moved mesh IDs to the front on {converted} object{'s' if converted != 1 else ''}.")
+        else:
+            self.report({"INFO"}, "No suffix-form mesh IDs found.")
         _redraw(context)
         return {"FINISHED"}
 

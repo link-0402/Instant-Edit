@@ -46,6 +46,58 @@ class ContextValidationError(ValueError):
     """Raised when an XIV Instant Edit context cannot be used safely."""
 
 
+@dataclass(frozen=True)
+class MeshNameInfo:
+    """Parsed YAA mesh identifier and the label/orientation around it."""
+
+    mesh_group: int
+    mesh_part: int
+    lod: int
+    label: str
+    prefix: bool
+
+
+_MESH_ID_PREFIX = re.compile(r"^(\d+)\.(\d+)(?:\s+(.*))?$")
+_MESH_ID_SUFFIX = re.compile(r"^(.+?)\s+(\d+)\.(\d+)$")
+_LOD_SUFFIX = re.compile(r"\s+LOD(\d+)$", re.IGNORECASE)
+
+
+def mesh_name_info(obj) -> MeshNameInfo:
+    """Parse a mesh name while retaining its ID orientation and display label."""
+    name = str(obj.name).strip()
+    lod = 0
+    lod_match = _LOD_SUFFIX.search(name)
+    if lod_match:
+        lod = int(lod_match.group(1))
+        name = name[:lod_match.start()].rstrip()
+    if lod > 2:
+        raise ContextValidationError(f"{obj.name}: LOD must be 0, 1, or 2")
+
+    prefix = _MESH_ID_PREFIX.match(name)
+    if prefix:
+        return MeshNameInfo(
+            int(prefix.group(1)),
+            int(prefix.group(2)),
+            lod,
+            (prefix.group(3) or "").strip(),
+            True,
+        )
+
+    suffix = _MESH_ID_SUFFIX.match(name)
+    if suffix:
+        return MeshNameInfo(
+            int(suffix.group(2)),
+            int(suffix.group(3)),
+            lod,
+            suffix.group(1).strip(),
+            False,
+        )
+
+    raise ContextValidationError(
+        f'{obj.name}: expected a mesh name such as "1.2 Name" or "Name 1.2"'
+    )
+
+
 def is_safe_game_model_path(value: str) -> bool:
     """Accept only normalized, non-rooted game paths for model contexts."""
     if not isinstance(value, str) or not value or len(value) > 4096:
@@ -240,19 +292,8 @@ def context_id_for_object(obj) -> str:
 
 def mesh_ids_from_name(obj) -> tuple[int, int, int]:
     """Parse YAA-compatible group, part, and LOD identifiers from an object name."""
-    name = obj.name.strip()
-    prefix = re.match(r"^(\d+)\.(\d+)(?:\s|$)", name)
-    suffix = re.search(r"(?:^|\s)(\d+)\.(\d+)$", name)
-    match = prefix or suffix
-    if match is None:
-        raise ContextValidationError(
-            f'{obj.name}: expected a mesh name such as "1.2 Name" or "Name 1.2"'
-        )
-    lod_match = re.search(r"\sLOD(\d+)$", name, re.IGNORECASE)
-    lod = int(lod_match.group(1)) if lod_match else 0
-    if lod > 2:
-        raise ContextValidationError(f"{obj.name}: LOD must be 0, 1, or 2")
-    return int(match.group(1)), int(match.group(2)), lod
+    info = mesh_name_info(obj)
+    return info.mesh_group, info.mesh_part, info.lod
 
 
 def validate_context(context_id: str, scene=None) -> ContextRef:

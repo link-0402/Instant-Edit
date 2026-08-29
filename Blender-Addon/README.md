@@ -15,8 +15,12 @@ plus a standalone Simple Import/Export panel.
   effective game/Penumbra MTRL and TEX resources supplied by the plugin.
 - Supports adding new visible mesh parts and groups anywhere in the scene using
   YAA-compatible `group.part Name` object names.
+- Includes a Toolbox action to convert suffix-form mesh IDs from Textools/FBX
+  scenes into the prefix naming convention.
 - Quick Export back to the original source mod, including variants and optional
   Penumbra setup.
+- Saves a single-context export as a self-contained new Penumbra mod with its
+  captured material and texture dependencies.
 - Creates self-contained multi-context mashups as a new group in the active mod
   or as a new Penumbra mod, with isolated material and texture dependencies.
 - Automatically shifts incoming MDL mesh groups away from visible conflicts
@@ -27,7 +31,8 @@ plus a standalone Simple Import/Export panel.
   write, and durably queues context revocations while the plugin is offline.
 - Redraws the local player and their currently spawned summons, minions, and
   mounts after Quick Export.
-- Simple Export to MDL, FBX, or glTF for visible mesh objects.
+- Simple Export to MDL, FBX, or glTF for visible mesh objects, with an explicit
+  `All except...` mesh exclusion option.
 - Simple Import from MDL or FBX files.
 - Simple Import/Export settings are separated into dedicated option sections,
   including the import-time export-folder setting.

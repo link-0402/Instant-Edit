@@ -47,8 +47,9 @@ Note that you will not receive automatic feature and compatibility updates this 
    Default behavior is to export in-place, so replacing the exact model that was originally imported.
 6. Click **Quick Export** to send the edited model back to its Penumbra mod.
 
-The addon supports various other features, such as creating mashups on export, although
-the workflow required for this should hopefully be fairly self-explanatory from the UI.
+The addon supports saving a single-context model to a self-contained new mod and
+creating multi-context mashups on export. The workflow for both is available from
+the export target list in the Blender UI.
 
 
 ## Additional notes

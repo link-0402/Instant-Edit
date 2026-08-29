@@ -569,11 +569,11 @@ public sealed class PenumbraService
             return new ExportResult(false, "destination_not_ready", "The active Context has no Penumbra mod destination.");
         if (!plan.Success || string.IsNullOrWhiteSpace(plan.Fingerprint) ||
             !IsSafeVariantGroupName(name) || exportId.Length is < 8 or > 128 ||
-            destination is not ("active_mod" or "new_mod") || contributors.Count is < 2 or > 16)
+            destination is not ("active_mod" or "new_mod") ||
+            !IsValidMashupContributorCount(destination, contributors.Count))
             return new ExportResult(false, "invalid_mashup", "The mashup request is invalid.");
-        if (contributors.All(item => item.Context.ContextId != activeContext.ContextId) ||
-            contributors.Select(item => item.Context.SourceModDirectory).Distinct(StringComparer.OrdinalIgnoreCase).Count() < 2)
-            return new ExportResult(false, "invalid_mashup", "The active Context and at least two source mods must contribute.");
+        if (contributors.All(item => item.Context.ContextId != activeContext.ContextId))
+            return new ExportResult(false, "invalid_mashup", "The active Context must contribute.");
         if (contributors.Any(item => item.Context.ResourceManifest?.Version != ResourceDependencyManifest.CurrentVersion))
             return new ExportResult(false, "mashup_reimport_required", "Re-import every contributing Context before creating a mashup.");
 
@@ -3225,10 +3225,10 @@ public sealed class PenumbraService
         InstantEditImportContext activeContext,
         IReadOnlyList<MashupContributor> contributors)
     {
-        if (contributors.Count is < 2 or > 16 ||
+        if (contributors.Count is < 1 or > 16 ||
             contributors.All(item => !string.Equals(
                 item.Context.ContextId, activeContext.ContextId, StringComparison.Ordinal)))
-            return MashupPlanFailure("invalid_mashup", "The active Context and at least two contributors are required.");
+            return MashupPlanFailure("invalid_mashup", "The active Context and at least one contributor are required.");
         if (contributors.Any(item => item.Context.ResourceManifest?.Version != ResourceDependencyManifest.CurrentVersion))
             return MashupPlanFailure("mashup_reimport_required", "Re-import every contributing Context before creating a mashup.");
 
@@ -3358,6 +3358,10 @@ public sealed class PenumbraService
 
     private static MashupPlanResult MashupPlanFailure(string code, string message)
         => new(false, code, message, Array.Empty<MashupMaterialAssignment>());
+
+    internal static bool IsValidMashupContributorCount(string destination, int count)
+        => count is >= 1 and <= 16 &&
+           (!string.Equals(destination, "active_mod", StringComparison.Ordinal) || count >= 2);
 
     private static (string Prefix, string Suffix, char Slot)? ParseCanonicalMaterialFamily(string fileName)
     {

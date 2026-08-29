@@ -32,6 +32,7 @@ MAX_PLUGIN_RESPONSE_SIZE = 64 * 1024
 EXPORT_STATUS_POLL_ATTEMPTS = 30
 INVALID_VARIANT_CHARS = frozenset('<>:"/\\|?*')
 MASHUP_TARGET = "CREATE_MASHUP"
+SAVE_NEW_MOD_TARGET = "SAVE_NEW_MOD"
 
 
 class PluginResponseError(ValueError):
@@ -60,8 +61,8 @@ def _object_material_name(obj) -> str:
     return _normalize_mashup_material(value)
 
 
-def mashup_export_selection(context: Context, ref=None):
-    """Return (objects, refs, material map) for a mashup or raise a precise error."""
+def mashup_export_selection(context: Context, ref=None, *, minimum_contexts: int = 2):
+    """Return (objects, refs, material map) for a self-contained export."""
     ref = ref or export_destination_context(context)
     props = get_instant_edit_props()
     objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
@@ -85,14 +86,15 @@ def mashup_export_selection(context: Context, ref=None):
 
     if ref.context_id not in materials:
         raise ContextValidationError("The active Context must contribute at least one exported mesh.")
-    if len(materials) < 2:
-        raise ContextValidationError("Create Mashup requires visible exported meshes from at least two Contexts.")
+    if len(materials) < minimum_contexts:
+        raise ContextValidationError(
+            "Create Mashup requires visible exported meshes from at least two Contexts."
+            if minimum_contexts > 1 else
+            "Save to new mod requires visible exported meshes from a Context."
+        )
     pending = [refs[context_id] for context_id in materials if refs[context_id].destination_state != "ready"]
     if pending:
         raise ContextValidationError("Create the Penumbra mod for every game-data Context before making a Mashup.")
-    source_mods = {refs[context_id].source_mod_directory.casefold() for context_id in materials}
-    if len(source_mods) < 2:
-        raise ContextValidationError("Create Mashup requires Contexts from at least two different Penumbra mods.")
     incomplete = [refs[context_id] for context_id in materials
                   if refs[context_id].resource_manifest_version != 1]
     if incomplete:
@@ -115,9 +117,22 @@ def mashup_target_state(context: Context, ref=None) -> tuple[bool, bool, str]:
         refs = [validate_context(context_id, context.scene) for context_id in ids]
         if any(item.destination_state != "ready" for item in refs):
             return True, False, "Create the Penumbra mod for every game-data Context first."
-        if len({item.source_mod_directory.casefold() for item in refs}) < 2:
-            return False, False, ""
         mashup_export_selection(context, ref)
+        return True, True, ""
+    except ContextValidationError as error:
+        return True, False, str(error)
+
+
+def save_new_mod_target_state(context: Context, ref=None) -> tuple[bool, bool, str]:
+    """Return whether the single-context self-contained target is available."""
+    try:
+        ref = ref or export_destination_context(context)
+        objects = export_objects_for_scope(
+            ref, getattr(get_instant_edit_props(), "export_scope", "VISIBLE"))
+        ids = {context_id_for_object(obj) or ref.context_id for obj in objects}
+        if ref.context_id not in ids or len(ids) != 1:
+            return False, False, ""
+        mashup_export_selection(context, ref, minimum_contexts=1)
         return True, True, ""
     except ContextValidationError as error:
         return True, False, str(error)
@@ -266,7 +281,9 @@ def refresh_variant_targets(
         props.variant_target = selected_option.selection_id
     elif previous_targets_context_id != ref.context_id and not groups:
         props.variant_target = IN_PLACE_TARGET
-    elif props.variant_target not in {"NEW_GROUP", IN_PLACE_TARGET} and not any(
+    elif props.variant_target not in {
+        "NEW_GROUP", IN_PLACE_TARGET, MASHUP_TARGET, SAVE_NEW_MOD_TARGET,
+    } and not any(
             item.selection_id == props.variant_target for item in props.variant_targets
     ):
         props.variant_target = "NEW_GROUP"
@@ -667,6 +684,8 @@ class SelectVariantTarget(Operator):
             return "Overwrites the imported model at its original path without changing Penumbra option groups."
         if selection_id == MASHUP_TARGET:
             return "Combines the visible exported meshes and their material and texture dependencies."
+        if selection_id == SAVE_NEW_MOD_TARGET:
+            return "Saves the visible exported model as a self-contained new Penumbra mod."
         try:
             target = next(
                 (
@@ -732,6 +751,8 @@ class QuickExport(Operator):
             return {"CANCELLED"}
         if get_instant_edit_props().variant_target == MASHUP_TARGET:
             return bpy.ops.xiv_ie.mashup_destination("INVOKE_DEFAULT")
+        if get_instant_edit_props().variant_target == SAVE_NEW_MOD_TARGET:
+            return bpy.ops.xiv_ie.save_new_mod_name("INVOKE_DEFAULT", name="")
         return self.execute(context)
 
     def execute(self, context: Context):
@@ -805,6 +826,34 @@ class MashupName(Operator):
         except Exception as error:
             props = get_instant_edit_props()
             props.last_status = f"Mashup failed: {error}"
+            self.report({"ERROR"}, props.last_status)
+            return {"CANCELLED"}
+        status = get_instant_edit_props().last_status
+        self.report({"WARNING"} if "warnings:" in status else {"INFO"}, status)
+        get_export_stats(context)
+        return {"FINISHED"}
+
+
+class SaveNewModName(Operator):
+    bl_idname = "xiv_ie.save_new_mod_name"
+    bl_label = "Save to new mod"
+    bl_description = "Name the self-contained Penumbra mod"
+
+    name: StringProperty(name="Mod Name", default="", maxlen=120)  # type: ignore
+
+    def draw(self, _context):
+        self.layout.prop(self, "name", text="Mod Name")
+
+    def invoke(self, context: Context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=430)
+
+    def execute(self, context: Context):
+        try:
+            perform_mashup_export(
+                context, "NEW_MOD", self.name, allow_single_context=True)
+        except Exception as error:
+            props = get_instant_edit_props()
+            props.last_status = f"Save to new mod failed: {error}"
             self.report({"ERROR"}, props.last_status)
             return {"CANCELLED"}
         status = get_instant_edit_props().last_status
@@ -1170,7 +1219,10 @@ def export_objects_for_scope(ref, scope: str) -> list:
     """Return the mesh objects selected by a shared Quick/Simple export scope."""
     objects = visible_meshobj()
     if scope == "VISIBLE_NO_MANNEQUIN":
-        return [obj for obj in objects if obj.name != "Mannequin"]
+        excluded = getattr(get_instant_edit_props(), "export_excluded_mesh", None)
+        if excluded is not None:
+            return [obj for obj in objects if obj.as_pointer() != excluded.as_pointer()]
+        return objects
     if scope == "CURRENT_COLLECTION":
         if ref is None:
             raise ContextValidationError(
@@ -1181,7 +1233,13 @@ def export_objects_for_scope(ref, scope: str) -> list:
     return objects
 
 
-def perform_mashup_export(context: Context, destination: str, name: str) -> Path:
+def perform_mashup_export(
+    context: Context,
+    destination: str,
+    name: str,
+    *,
+    allow_single_context: bool = False,
+) -> Path:
     name = (name or "").strip()
     if not name or len(name) > 120 or any(ord(char) < 32 for char in name):
         raise ValueError("Enter a valid mashup or mod name.")
@@ -1194,7 +1252,9 @@ def perform_mashup_export(context: Context, destination: str, name: str) -> Path
         raise ValueError("Mod name contains characters that cannot be used in a folder name.")
 
     ref = export_destination_context(context)
-    export_objects, refs, materials, object_contexts = mashup_export_selection(context, ref)
+    minimum_contexts = 1 if allow_single_context else 2
+    export_objects, refs, materials, object_contexts = mashup_export_selection(
+        context, ref, minimum_contexts=minimum_contexts)
     export_groups = group_mesh_objects(export_objects)
     recognized = {obj for group in export_groups for obj in group.objects}
     unrecognized = [obj.name for obj in export_objects if obj not in recognized]
@@ -1221,7 +1281,8 @@ def perform_mashup_export(context: Context, destination: str, name: str) -> Path
                 f"plugin returned HTTP {error.status} ({error.code}); mashup context recovery failed"
             ) from error
         ref = export_destination_context(context)
-        export_objects, refs, materials, object_contexts = mashup_export_selection(context, ref)
+        export_objects, refs, materials, object_contexts = mashup_export_selection(
+            context, ref, minimum_contexts=minimum_contexts)
         contributors = _mashup_contributor_payload(refs, materials)
         plan = _send_plugin_mashup_plan(ref, contributors)
     assignments = _mashup_assignment_map(plan, materials)
@@ -1277,7 +1338,8 @@ def perform_mashup_export(context: Context, destination: str, name: str) -> Path
                     f"plugin returned HTTP {error.status} ({error.code}); mashup context recovery failed"
                 ) from error
             ref = export_destination_context(context)
-            _objects, refs, materials, _object_contexts = mashup_export_selection(context, ref)
+            _objects, refs, materials, _object_contexts = mashup_export_selection(
+                context, ref, minimum_contexts=minimum_contexts)
             payload["pluginInstanceId"] = ref.plugin_instance_id
             payload["capability"] = ref.capability
             payload["contributors"] = _mashup_contributor_payload(refs, materials)
@@ -1511,6 +1573,7 @@ CLASSES = [
     QuickExport,
     MashupDestination,
     MashupName,
+    SaveNewModName,
     VanillaModName,
     ClearInstantEditContexts,
     CopyInstantEditStatus,

@@ -6,8 +6,9 @@ import bpy
 from bpy.types import Context, Panel
 
 from .instant_edit.context import ContextValidationError, mesh_ids_from_name
-from .instant_edit.ops import (MASHUP_TARGET, export_destination_context,
-                               mashup_target_state, normalise_variant_name)
+from .instant_edit.ops import (MASHUP_TARGET, SAVE_NEW_MOD_TARGET,
+                               export_destination_context, mashup_target_state,
+                               normalise_variant_name, save_new_mod_target_state)
 from .instant_edit.props import IN_PLACE_TARGET, get_instant_edit_props
 from .materials import (
     attribute_display_name,
@@ -72,7 +73,9 @@ def _export_destination_display(ref, props=None) -> str:
     if props is None:
         return destination
 
-    if getattr(props, "variant_target", "") in {IN_PLACE_TARGET, MASHUP_TARGET}:
+    if getattr(props, "variant_target", "") in {
+        IN_PLACE_TARGET, MASHUP_TARGET, SAVE_NEW_MOD_TARGET,
+    }:
         return destination
 
     selected_target = next(
@@ -208,6 +211,8 @@ class XIVIE_PT_main(Panel):
 
         box.prop(props, "export_destination", text="Context")
         box.prop(props, "export_scope")
+        if props.export_scope == "VISIBLE_NO_MANNEQUIN":
+            box.prop(props, "export_excluded_mesh", text="Excluded Mesh")
         if ref is not None and ref.destination_state == "new_mod_required":
             pending = box.box()
             pending.label(
@@ -221,7 +226,7 @@ class XIVIE_PT_main(Panel):
             header.label(text="Export Target", icon="EXPORT")
             header.operator("xiv_ie.refresh_variant_targets", text="", icon="FILE_REFRESH")
             targets.label(
-                text="Choose In-place to overwrite the imported model, a group to create a new option, or an option to overwrite it.",
+                text="Choose In-place to overwrite the imported model, a group to create a new option, or save the visible model to a new mod.",
                 icon="INFO",
             )
             if props.variant_targets_context_id and props.variant_targets_context_id != getattr(ref, "context_id", ""):
@@ -252,6 +257,20 @@ class XIVIE_PT_main(Panel):
                 ).selection_id = MASHUP_TARGET
                 if not mashup_enabled and mashup_message:
                     targets.label(text=mashup_message, icon="ERROR")
+            else:
+                show_new_mod, new_mod_enabled, new_mod_message = save_new_mod_target_state(
+                    context, ref)
+                if show_new_mod:
+                    new_mod_row = targets.row(align=True)
+                    new_mod_row.enabled = new_mod_enabled
+                    new_mod_row.operator(
+                        "xiv_ie.select_variant_target",
+                        text="Save to new mod",
+                        depress=props.variant_target == SAVE_NEW_MOD_TARGET,
+                        icon="EXPORT",
+                    ).selection_id = SAVE_NEW_MOD_TARGET
+                    if not new_mod_enabled and new_mod_message:
+                        targets.label(text=new_mod_message, icon="ERROR")
             if not props.variant_targets:
                 targets.label(text="Refresh to load compatible groups and options.", icon="INFO")
             group_expanded = True
@@ -604,4 +623,5 @@ class XIVIE_PT_main(Panel):
         )
         header.label(text="Toolbox", icon="TOOL_SETTINGS")
         if expanded:
+            box.operator("xiv_ie.convert_mesh_names", text="Move Mesh IDs to Front", icon="SORTALPHA")
             box.operator("xiv_ie.clear_contexts", text="Clear Contexts", icon="TRASH")

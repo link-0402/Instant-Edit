@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import bpy
 
@@ -128,6 +129,76 @@ def assert_mesh_group_conflict_resolution(addon) -> None:
                 bpy.data.meshes.remove(mesh)
 
 
+def assert_mesh_name_conversion(addon) -> None:
+    objects = []
+
+    def create(name: str, hidden: bool = False):
+        mesh = bpy.data.meshes.new(f"{name} Data")
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        obj = bpy.data.objects.new(name, mesh)
+        bpy.context.collection.objects.link(obj)
+        if hidden:
+            obj.hide_set(True)
+        objects.append(obj)
+        return obj
+
+    try:
+        body = create("Body 0.0")
+        lod = create("Body 1.0 LOD1")
+        hidden = create("Hidden 2.0", hidden=True)
+        prefix = create("3.0 Already Prefix LOD2")
+        unrelated = create("Unrelated Mesh")
+
+        if bpy.ops.xiv_ie.convert_mesh_names() != {"FINISHED"}:
+            raise AssertionError("Mesh-name conversion operator did not finish")
+        expected = {
+            body: "0.0 Body",
+            lod: "1.0 Body LOD1",
+            hidden: "2.0 Hidden",
+            prefix: "3.0 Already Prefix LOD2",
+            unrelated: "Unrelated Mesh",
+        }
+        for obj, name in expected.items():
+            if obj.name != name:
+                raise AssertionError(f"Mesh-name conversion produced {obj.name!r}, expected {name!r}")
+
+        context_module = importlib.import_module(f"{addon.__name__}.instant_edit.context")
+        if context_module.mesh_ids_from_name(lod) != (1, 0, 1):
+            raise AssertionError("Suffix-form LOD mesh name was not parsed consistently")
+        print("[PASS] Toolbox mesh-name conversion handles suffix IDs, LODs, hidden meshes, and prefixes")
+    finally:
+        for obj in objects:
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+    collision_objects = []
+    try:
+        existing = create("4.0 Existing")
+        suffix = create("Existing 4.0")
+        collision_objects = [existing, suffix]
+        before = {obj.as_pointer(): obj.name for obj in collision_objects}
+        try:
+            bpy.ops.xiv_ie.convert_mesh_names()
+        except RuntimeError as error:
+            if "name collisions" not in str(error):
+                raise
+        else:
+            raise AssertionError("Mesh-name conversion did not abort on a target collision")
+        if any(obj.name != before[obj.as_pointer()] for obj in collision_objects):
+            raise AssertionError("Mesh-name conversion partially renamed objects after a collision")
+        print("[PASS] Toolbox mesh-name conversion aborts without changes on collisions")
+    finally:
+        for obj in collision_objects:
+            if obj.name not in bpy.data.objects:
+                continue
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+
 def run() -> None:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     root = Path(__file__).resolve().parents[1]
@@ -135,6 +206,7 @@ def run() -> None:
     try:
         assert_corner_aware_uv_export(addon)
         assert_mesh_group_conflict_resolution(addon)
+        assert_mesh_name_conversion(addon)
 
         if bpy.context.scene.xiv_ie_settings.create_backfaces:
             raise AssertionError("Create Backfaces should default to disabled")
@@ -221,6 +293,7 @@ def run() -> None:
         initial_instant_props = bpy.context.scene.xiv_ie_instant_edit_props
         initial_settings = bpy.context.scene.xiv_ie_settings
         initial_scope = initial_instant_props.export_scope
+        initial_excluded_mesh = initial_instant_props.export_excluded_mesh
         initial_export_directory = initial_settings.export_directory
         initial_export_name = initial_settings.export_name
         try:
@@ -322,10 +395,13 @@ def run() -> None:
             (context_id, assigned.casefold()): "/mt_c0101e0001_top_a.mtrl",
             (context_id, added_material.casefold()): "/mt_c0101e0001_top_b.mtrl",
         }
+        mashup_plan_payloads = []
+        mashup_export_payloads = []
 
         def fake_urlopen(request, timeout=0):
             if request.full_url.endswith("/mashup/plan"):
                 payload = json.loads(request.data.decode("utf-8"))
+                mashup_plan_payloads.append(payload)
                 assignments = []
                 incoming_slot = "c"
                 for contributor in payload["contributors"]:
@@ -348,6 +424,8 @@ def run() -> None:
                     "assignments": assignments,
                 }).encode("utf-8")
                 return FakeResponse(body)
+            if request.full_url.endswith("/mashup/export"):
+                mashup_export_payloads.append(json.loads(request.data.decode("utf-8")))
             return FakeResponse()
 
         plugin_http.urllib.request.urlopen = fake_urlopen
@@ -392,8 +470,9 @@ def run() -> None:
         context_module._set(mashup_collection, "resource_manifest_version", 1)
         context_module._set(mashup_collection, "resource_manifest_status", "ready")
         context_module._set(mashup_collection, "source_mod_directory", "SmokeMod")
-        if instant_ops.mashup_target_state(bpy.context)[0]:
-            raise AssertionError("Same-mod Contexts incorrectly offered Create Mashup")
+        show, enabled, message = instant_ops.mashup_target_state(bpy.context)
+        if not show or not enabled or message:
+            raise AssertionError(f"Same-mod Contexts did not enable Create Mashup: {message}")
         context_module._set(mashup_collection, "source_mod_directory", "OtherSmokeMod")
         show, enabled, message = instant_ops.mashup_target_state(bpy.context)
         if not show or not enabled or message:
@@ -468,8 +547,40 @@ def run() -> None:
         mashup_obj.hide_set(True)
         if instant_ops.mashup_target_state(bpy.context)[0]:
             raise AssertionError("Hidden second Context did not remove Create Mashup")
+        show, enabled, message = instant_ops.save_new_mod_target_state(bpy.context)
+        if not show or not enabled or message:
+            raise AssertionError(f"Single visible Context did not enable Save to new mod: {message}")
+        if bpy.ops.xiv_ie.select_variant_target(
+                selection_id=instant_ops.SAVE_NEW_MOD_TARGET) != {"FINISHED"} or \
+                instant_props.variant_target != instant_ops.SAVE_NEW_MOD_TARGET:
+            raise AssertionError("Save to new mod target could not be selected")
+        if instant_ops.SelectVariantTarget.description(
+                bpy.context,
+                SimpleNamespace(selection_id=instant_ops.SAVE_NEW_MOD_TARGET),
+        ) != "Saves the visible exported model as a self-contained new Penumbra mod.":
+            raise AssertionError("Save to new mod target hover text is incorrect")
+        context_module._set(context_collection, "resource_manifest_version", 0)
+        context_module._set(context_collection, "resource_manifest_status", "capture_failed")
+        show, enabled, message = instant_ops.save_new_mod_target_state(bpy.context)
+        if not show or enabled or "Dependency capture failed" not in message:
+            raise AssertionError("Missing single-context dependency capture did not disable Save to new mod")
+        context_module._set(context_collection, "resource_manifest_version", 1)
+        context_module._set(context_collection, "resource_manifest_status", "ready")
         bpy.data.objects.remove(mashup_obj, do_unlink=True)
         bpy.data.collections.remove(mashup_collection)
+        original_finish_job = instant_ops.finish_job
+        instant_ops.finish_job = lambda _job: None
+        try:
+            single_mod_target = instant_ops.perform_mashup_export(
+                bpy.context, "NEW_MOD", "Smoke Single Mod", allow_single_context=True)
+        finally:
+            instant_ops.finish_job = original_finish_job
+        if not mashup_plan_payloads or len(mashup_plan_payloads[-1]["contributors"]) != 1:
+            raise AssertionError("Save to new mod did not submit one contributor")
+        if not mashup_export_payloads or mashup_export_payloads[-1]["destination"] != "new_mod":
+            raise AssertionError("Save to new mod did not submit a new-mod export")
+        importlib.import_module(f"{addon.__name__}.instant_edit.cache").remove_job(
+            Path(single_mod_target).parent)
         instant_props.export_scope = original_scope_for_mashup
 
         scope_capture = []
@@ -497,8 +608,18 @@ def run() -> None:
                     raise AssertionError("Simple Export All Visible did not use every visible mesh")
 
                 instant_props.export_scope = "VISIBLE_NO_MANNEQUIN"
+                instant_props.export_excluded_mesh = mannequin
                 if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or mannequin in scope_capture[-1]:
-                    raise AssertionError("Simple Export did not exclude Mannequin")
+                    raise AssertionError("Simple Export did not exclude the explicitly selected mesh")
+
+                instant_props.export_scope = "VISIBLE"
+                if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or mannequin not in scope_capture[-1]:
+                    raise AssertionError("Simple Export incorrectly applied the exclusion outside All except...")
+
+                instant_props.export_scope = "VISIBLE_NO_MANNEQUIN"
+                instant_props.export_excluded_mesh = None
+                if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or mannequin not in scope_capture[-1]:
+                    raise AssertionError("Simple Export retained the removed Mannequin name fallback")
 
                 instant_props.export_scope = "CURRENT_COLLECTION"
                 if bpy.ops.xiv_ie.simple_export() != {"FINISHED"} or scope_capture[-1] != (obj,):
@@ -507,6 +628,7 @@ def run() -> None:
             operators.export_result = original_simple_export_result
             settings.model_format = original_model_format
             instant_props.export_scope = original_export_scope
+            instant_props.export_excluded_mesh = initial_excluded_mesh
             bpy.data.objects.remove(mannequin, do_unlink=True)
         print("[PASS] Simple Export honors every Export Parts mode and requires Context for its collection")
 

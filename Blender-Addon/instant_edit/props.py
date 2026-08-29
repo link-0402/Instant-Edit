@@ -1,8 +1,15 @@
 # Modified for XIV Instant Edit, 2026.
 import bpy
 
-from bpy.types import PropertyGroup
-from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty, CollectionProperty
+from bpy.types import Object, PropertyGroup
+from bpy.props import (
+    StringProperty,
+    IntProperty,
+    BoolProperty,
+    EnumProperty,
+    CollectionProperty,
+    PointerProperty,
+)
 
 
 _EXPORT_DESTINATION_ITEMS = []
@@ -102,8 +109,8 @@ class XIVIEInstantEditProps(PropertyGroup):
             ("VISIBLE", "All Visible", "Export every visible mesh object"),
             (
                 "VISIBLE_NO_MANNEQUIN",
-                "Visible Except Mannequin",
-                "Export every visible mesh object except the object named Mannequin",
+                "All except...",
+                "Export every visible mesh object except the explicitly selected mesh",
             ),
             (
                 "CURRENT_COLLECTION",
@@ -111,6 +118,13 @@ class XIVIEInstantEditProps(PropertyGroup):
                 "Export only visible mesh objects in the selected Context's XIV Instant Edit collection",
             ),
         ],
+    )  # type: ignore
+
+    export_excluded_mesh: PointerProperty(
+        type=Object,
+        name="Excluded Mesh",
+        description="Mesh object to exclude when Export Parts is set to All except...",
+        poll=lambda _self, obj: obj.type == "MESH",
     )  # type: ignore
 
     game_path: StringProperty(
