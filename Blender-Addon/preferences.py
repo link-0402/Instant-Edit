@@ -17,11 +17,6 @@ def _update_listen_port(self, _context) -> None:
     set_server_port(self.instant_edit_blender_port)
 
 
-def _update_callback_port(self, _context) -> None:
-    from .instant_edit.server import set_callback_port
-    set_callback_port(self.instant_edit_plugin_port)
-
-
 def _update_cache(self, _context) -> None:
     try:
         configure_cache(
@@ -63,11 +58,10 @@ class XIVIEPreferences(AddonPreferences):
 
     instant_edit_plugin_port: IntProperty(
         name="Plugin Callback Port",
-        description="Fallback callback port for legacy import requests",
+        description="Fallback callback port used to reconnect saved import contexts",
         default=42428,
         min=1,
         max=65535,
-        update=_update_callback_port,
     )  # type: ignore
 
     instant_edit_cache_directory: StringProperty(

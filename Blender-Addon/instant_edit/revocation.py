@@ -6,14 +6,14 @@ import json
 import os
 import queue
 import threading
-import urllib.request
 import uuid
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 
 import bpy
 
 from .cache import ensure_cache_root
 from .context import _value
+from .plugin_http import candidate_ports, post_json
 
 
 SCHEMA = "instant-edit.pending-revocations"
@@ -64,32 +64,14 @@ def _save_locked(records: list[dict]) -> None:
             pass
 
 
-def _ports_for_collection(collection) -> list[int]:
-    ports = []
-    stored = _value(collection, "callback_port", 0)
-    if isinstance(stored, int) and 1 <= stored <= 65535:
-        ports.append(stored)
-    try:
-        from ..preferences import get_prefs
-
-        configured = get_prefs().instant_edit_plugin_port
-        if isinstance(configured, int) and 1 <= configured <= 65535 and configured not in ports:
-            ports.append(configured)
-    except Exception:
-        pass
-    return ports
-
-
 def queue_context_revocations(collections) -> int:
     """Persist tombstones before callers remove the scene's local metadata."""
     additions = []
     for collection in collections:
-        if bool(_value(collection, "legacy", False)):
-            continue
         context_id = _value(collection, "context_id", "")
         import_id = _value(collection, "import_id", "")
         capability = _value(collection, "capability", "")
-        ports = _ports_for_collection(collection)
+        ports = candidate_ports(collection)
         if not all(isinstance(value, str) and value for value in (context_id, import_id, capability)) or not ports:
             raise ValueError(
                 f"context {context_id or '<unknown>'} has incomplete revocation metadata"
@@ -116,31 +98,25 @@ def queue_context_revocations(collections) -> int:
 
 
 def _send(record: dict) -> bool:
-    body = json.dumps({
+    payload = {
         "schema": "instant-edit.context-revoke",
         "version": 1,
         "contextId": record.get("contextId"),
         "importId": record.get("importId"),
         "capability": record.get("capability"),
-    }).encode("utf-8")
+    }
     for port in record.get("ports", []):
         if not isinstance(port, int) or not 1 <= port <= 65535:
             continue
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/context/revoke",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-                response_body = response.read(MAX_RESPONSE_SIZE + 1)
-                status = getattr(response, "status", None) or response.getcode()
-            if len(response_body) <= MAX_RESPONSE_SIZE and 200 <= status < 300:
+            status, response_body = post_json(
+                port, "/context/revoke", payload,
+                timeout=REQUEST_TIMEOUT_SECONDS, max_response_size=MAX_RESPONSE_SIZE)
+            if 200 <= status < 300:
                 result = json.loads(response_body.decode("utf-8"))
                 if isinstance(result, dict) and result.get("ok"):
                     return True
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError, UnicodeError):
+        except (URLError, TimeoutError, OSError, ValueError, UnicodeError):
             continue
     return False
 

@@ -99,7 +99,7 @@ def _unregister_for_test(addon, package_name: str) -> None:
 
 
 def run_staging_isolation_regression() -> None:
-    """Run the legacy-request containment regression in headless Blender."""
+    """Run the context-isolation regression in headless Blender."""
     addon_root = Path(__file__).resolve().parents[1]
     addon = None
     temp_path = None
@@ -136,6 +136,7 @@ def run_staging_isolation_regression() -> None:
         props = importlib.import_module(f"{package_name}.instant_edit.props")
         context_module = importlib.import_module(f"{package_name}.instant_edit.context")
         server = importlib.import_module(f"{package_name}.instant_edit.server")
+        plugin_http = importlib.import_module(f"{package_name}.instant_edit.plugin_http")
         ui = importlib.import_module(f"{package_name}.ui")
         material_preview = importlib.import_module(
             f"{package_name}.instant_edit.material_preview"
@@ -191,37 +192,41 @@ def run_staging_isolation_regression() -> None:
         export_streams.apply_mesh_options({1: texture_stream}, {"clear_uv2": True})
         _require(np.all(texture_stream["uv0"][:, 2:4] == 0), "UV2 can be cleared during export")
 
-        validated = server._ImportHandler._validate_import({
-            "schema": "instant-edit.import",
+        base_import = {
+            "schema": "instant-edit.context",
             "version": 1,
+            "pluginInstanceId": "plugin-instance",
+            "contextId": "context-id",
+            "importId": "import-id",
+            "capability": "capability",
             "filePath": r"C:\Temp\instant-edit-import.mdl",
-            "name": "Regression Model",
-            "context": {
-                "schema": "instant-edit.context",
-                "version": 1,
-                "pluginInstanceId": "plugin-instance",
-                "contextId": "context-id",
-                "importId": "import-id",
-                "capability": "capability",
-                "gamePath": "chara/equipment/e0001/model/c0101e0001_top.mdl",
-                "objectIndex": 0,
-                "modName": "SourceModDirectory",
-                "targetFilePath": r"D:\Penumbra\SourceMod\models\original.mdl",
-                "managedDestination": r"D:\Penumbra\SourceMod\models",
-                "sourceModDirectory": "SourceModDirectory",
-                "sourceModName": "Source Mod",
-                "sourceModRootPath": r"D:\Penumbra\SourceMod",
-                "targetRelativePath": "Files/models/original.mdl",
-                "callbackPort": 42428,
-            },
-        })
+            "sourceGamePath": "chara/equipment/e0001/model/c0101e0001_top.mdl",
+            "objectIndex": 0,
+            "displayName": "Regression Model",
+            "callbackPort": 42428,
+            "targetFilePath": r"D:\Penumbra\SourceMod\models\original.mdl",
+            "managedDestination": r"D:\Penumbra\SourceMod\models",
+            "sourceModDirectory": "SourceModDirectory",
+            "sourceModName": "Source Mod",
+            "sourceModRootPath": r"D:\Penumbra\SourceMod",
+            "targetRelativePath": "Files/models/original.mdl",
+            "resourceManifestVersion": 0,
+            "resourceManifestStatus": "capture_failed",
+        }
+        validated = server._ImportHandler._validate_import(base_import)
+        try:
+            server._ImportHandler._validate_import({**base_import, "schema": "instant-edit.import"})
+        except ValueError:
+            print("[PASS] transitional import envelopes are rejected")
+        else:
+            raise AssertionError("a transitional import envelope was accepted")
         _require(
             validated["targetFilePath"] == r"D:\Penumbra\SourceMod\models\original.mdl",
             "the original physical model target is preserved in Blender's import context",
         )
         _require(
             validated["managedDestination"] == r"D:\Penumbra\SourceMod\models",
-            "the original target folder is preserved as a legacy fallback",
+            "the original target folder is preserved",
         )
         _require(
             validated["targetRelativePath"] == "Files/models/original.mdl",
@@ -246,21 +251,20 @@ def run_staging_isolation_regression() -> None:
             ],
             "path info wraps at slash boundaries",
         )
-        legacy_display_ref = SimpleNamespace(
+        derived_display_ref = SimpleNamespace(
             target_relative_path="",
             target_file_path=validated["targetFilePath"],
             source_mod_root_path=r"D:\Penumbra\SourceMod",
         )
         _require(
-            ui._export_destination_display(legacy_display_ref) == "models/original.mdl",
-            "the export display derives a mod-relative legacy model path",
+            ui._export_destination_display(derived_display_ref) == "models/original.mdl",
+            "the export display derives a mod-relative model path",
         )
 
         validated_options = server._ImportHandler._validate_import({
-            "schema": "instant-edit.import",
-            "version": 1,
-            "filePath": r"C:\Temp\instant-edit-import.mdl",
-            "name": "Regression Model",
+            **base_import,
+            "contextId": "context-id-options",
+            "importId": "import-id-options",
             "importOptions": {
                 "armatureMode": "existing",
                 "targetObject": "  Skeleton  ",
@@ -268,22 +272,6 @@ def run_staging_isolation_regression() -> None:
                 "excludeBodyAndGeneralMaterials": True,
             },
             "previewManifestPath": r"C:\Temp\preview\materials.json",
-            "context": {
-                "schema": "instant-edit.context",
-                "version": 1,
-                "pluginInstanceId": "plugin-instance",
-                "contextId": "context-id-options",
-                "importId": "import-id-options",
-                "capability": "capability",
-                "gamePath": "chara/equipment/e0001/model/c0101e0001_top.mdl",
-                "objectIndex": 0,
-                "modName": "SourceModDirectory",
-                "targetFilePath": r"D:\Penumbra\SourceMod\models\original.mdl",
-                "managedDestination": r"D:\Penumbra\SourceMod\models",
-                "sourceModDirectory": "SourceModDirectory",
-                "sourceModName": "Source Mod",
-                "callbackPort": 42428,
-            },
         })
         _require(
             validated_options["importOptions"] == {
@@ -299,22 +287,23 @@ def run_staging_isolation_regression() -> None:
             "the material-preview manifest path is preserved in the import envelope",
         )
         _require(
-            server._ImportHandler._validate_import({})["importOptions"] == {
+            server._ImportHandler._validate_import({**base_import})["importOptions"] == {
                 "armatureMode": "generated",
                 "targetObject": "Skeleton",
                 "applyTexturesAndMaterials": False,
                 "excludeBodyAndGeneralMaterials": False,
             },
-            "material previews default to disabled for legacy imports",
+            "material previews default to disabled",
         )
         try:
-            server._ImportHandler._validate_import({"importOptions": {"armatureMode": "unknown"}})
+            server._ImportHandler._validate_import({**base_import, "importOptions": {"armatureMode": "unknown"}})
         except ValueError:
             print("[PASS] invalid import options are rejected")
         else:
             raise AssertionError("invalid import options were accepted")
         try:
             server._ImportHandler._validate_import({
+                **base_import,
                 "importOptions": {"applyTexturesAndMaterials": "yes"},
             })
         except ValueError:
@@ -323,6 +312,7 @@ def run_staging_isolation_regression() -> None:
             raise AssertionError("a non-boolean material-preview option was accepted")
         try:
             server._ImportHandler._validate_import({
+                **base_import,
                 "importOptions": {"excludeBodyAndGeneralMaterials": True},
             })
         except ValueError:
@@ -625,7 +615,7 @@ def run_staging_isolation_regression() -> None:
                 return self.payload
 
         request_counts = {"export": 0, "status": 0}
-        original_urlopen = ops.urllib.request.urlopen
+        original_urlopen = plugin_http.urllib.request.urlopen
 
         def timed_out_then_receipt(request, timeout=0):
             if request.full_url.endswith("/export"):
@@ -642,7 +632,7 @@ def run_staging_isolation_regression() -> None:
                 })
             raise AssertionError(f"unexpected request: {request.full_url}")
 
-        ops.urllib.request.urlopen = timed_out_then_receipt
+        plugin_http.urllib.request.urlopen = timed_out_then_receipt
         try:
             receipt = ops._send_plugin_export(
                 SimpleNamespace(
@@ -654,7 +644,7 @@ def run_staging_isolation_regression() -> None:
                 redraw_payload,
             )
         finally:
-            ops.urllib.request.urlopen = original_urlopen
+            plugin_http.urllib.request.urlopen = original_urlopen
         _require(
             receipt["warnings"] == ["Player-owned redraw warning"] and
             receipt["targetFilePath"].endswith("original.mdl"),
@@ -940,20 +930,35 @@ def run_staging_isolation_regression() -> None:
                 "EXEC_DEFAULT",
                 file_path=str(temp_path),
                 import_name="XIV Instant Edit Regression",
-                schema="",
-                version=0,
+                schema="instant-edit.context",
+                version=1,
+                plugin_instance_id="plugin-instance",
+                context_id="staging-isolation-context",
+                import_id="staging-isolation-import",
+                capability="capability",
+                source_game_path="chara/equipment/e0001/model/c0101e0001_top.mdl",
+                object_index=0,
+                callback_port=42428,
+                managed_destination=r"D:\Penumbra\SourceMod\models",
+                target_file_path=r"D:\Penumbra\SourceMod\models\original.mdl",
+                source_mod_directory="SourceModDirectory",
+                source_mod_name="Source Mod",
+                source_mod_root_path=r"D:\Penumbra\SourceMod",
+                target_relative_path="Files/models/original.mdl",
+                resource_manifest_version=0,
+                resource_manifest_status="capture_failed",
             )
         finally:
             ops.ModelImport.from_file = original_import
             ops.XIVModel.from_file = original_model_from_file
 
-        _require(result == {"FINISHED"}, "legacy XIV Instant Edit request completes")
+        _require(result == {"FINISHED"}, "versioned XIV Instant Edit request completes")
 
         staging = next(
             collection
             for collection in bpy.data.collections
             if collection.get("instant_edit_collection_kind") == "instant_edit"
-            and collection.get("legacy")
+            and collection.get("context_id") == "staging-isolation-context"
         )
         created_objects = tuple(staging.objects)
         assert_staging_isolated(staging, created_objects, (sentinel,))

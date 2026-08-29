@@ -181,7 +181,7 @@ def apply_authoritative_context(collection, payload: dict) -> None:
         "source_mod_root_path": payload.get("sourceModRootPath") or "",
         "target_relative_path": payload.get("targetRelativePath") or "",
         "resource_manifest_version": payload.get("resourceManifestVersion") or 0,
-        "resource_manifest_status": payload.get("resourceManifestStatus") or "legacy",
+        "resource_manifest_status": payload.get("resourceManifestStatus") or "capture_failed",
         "import_id": payload.get("importId"),
         "callback_port": payload.get("callbackPort"),
     }
@@ -266,7 +266,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
     source_mod_root_path = _value(collection, "source_mod_root_path", "")
     target_relative_path = _value(collection, "target_relative_path", "")
     resource_manifest_version = _value(collection, "resource_manifest_version", 0)
-    resource_manifest_status = _value(collection, "resource_manifest_status", "legacy")
+    resource_manifest_status = _value(collection, "resource_manifest_status", "capture_failed")
     import_id = _value(collection, "import_id", "")
     callback_port = _value(collection, "callback_port", 0)
     if not all(isinstance(value, str) and value for value in (
@@ -276,7 +276,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         raise ContextValidationError("context collection is missing immutable reference data")
     callback_port = _require_int(callback_port, "callback port", 1)
     resource_manifest_version = _require_int(resource_manifest_version, "resource manifest version")
-    if resource_manifest_status not in {"legacy", "capture_failed", "ready"}:
+    if resource_manifest_status not in {"capture_failed", "ready"}:
         raise ContextValidationError("context collection has an invalid resource manifest status")
     if callback_port > 65535:
         raise ContextValidationError("callback port is out of range")

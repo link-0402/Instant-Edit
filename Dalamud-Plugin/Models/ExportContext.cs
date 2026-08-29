@@ -64,17 +64,6 @@ public sealed record ResourceDependencyManifest
     public required IReadOnlyList<MaterialDependency> Materials { get; init; }
 }
 
-/// <summary> The actor identity captured when an import is started. </summary>
-public sealed record ActorIdentity
-{
-    [JsonPropertyName("objectIndex")]
-    public required ushort ObjectIndex { get; init; }
-
-    /// <summary> Native address at capture time; it is only an in-process identity token. </summary>
-    [JsonPropertyName("address")]
-    public required long Address { get; init; }
-}
-
 /// <summary> Versioned, plugin-owned context sent to the Blender add-on. </summary>
 public sealed record InstantEditImportContext
 {
@@ -96,17 +85,11 @@ public sealed record InstantEditImportContext
     [JsonPropertyName("capability")]
     public required string Capability { get; init; }
 
-    [JsonPropertyName("gamePath")]
+    [JsonPropertyName("sourceGamePath")]
     public required string GamePath { get; init; }
 
     [JsonPropertyName("objectIndex")]
     public required ushort ObjectIndex { get; init; }
-
-    [JsonPropertyName("actorIdentity")]
-    public ActorIdentity? ActorIdentity { get; init; }
-
-    [JsonPropertyName("modName")]
-    public required string ModName { get; init; }
 
     /// <summary>Original resolved model file inside the source Penumbra mod.</summary>
     [JsonPropertyName("targetFilePath")]
@@ -143,7 +126,7 @@ public sealed record InstantEditImportContext
     public int ResourceManifestVersion => ResourceManifest?.Version ?? 0;
 
     [JsonPropertyName("resourceManifestStatus")]
-    public string ResourceManifestStatus { get; init; } = "legacy";
+    public string ResourceManifestStatus { get; init; } = "capture_failed";
 
     [JsonIgnore]
     public ResourceDependencyManifest? ResourceManifest { get; init; }
@@ -170,9 +153,6 @@ public sealed record PersistedExportContext
     [JsonPropertyName("objectIndex")]
     public required ushort ObjectIndex { get; init; }
 
-    [JsonPropertyName("modName")]
-    public required string ModName { get; init; }
-
     [JsonPropertyName("targetFilePath")]
     public required string TargetFilePath { get; init; }
 
@@ -198,12 +178,9 @@ public sealed record PersistedExportContext
     public ResourceDependencyManifest? ResourceManifest { get; init; }
 
     [JsonPropertyName("resourceManifestStatus")]
-    public string ResourceManifestStatus { get; init; } = "legacy";
+    public string ResourceManifestStatus { get; init; } = "capture_failed";
 
-    [JsonPropertyName("expiresAt")]
-    public required DateTimeOffset ExpiresAt { get; init; }
-
-    public static PersistedExportContext FromContext(InstantEditImportContext context, DateTimeOffset expiresAt)
+    public static PersistedExportContext FromContext(InstantEditImportContext context)
         => new()
         {
             ContextId = context.ContextId,
@@ -211,7 +188,6 @@ public sealed record PersistedExportContext
             Capability = context.Capability,
             GamePath = context.GamePath,
             ObjectIndex = context.ObjectIndex,
-            ModName = context.ModName,
             TargetFilePath = context.TargetFilePath,
             TargetFolder = context.TargetFolder,
             SourceModDirectory = context.SourceModDirectory,
@@ -221,7 +197,6 @@ public sealed record PersistedExportContext
             CallbackPort = context.CallbackPort,
             ResourceManifest = context.ResourceManifest,
             ResourceManifestStatus = context.ResourceManifestStatus,
-            ExpiresAt = expiresAt,
         };
 }
 

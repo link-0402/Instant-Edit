@@ -60,14 +60,8 @@ public sealed class Plugin : IDalamudPlugin
                     _config.ExportContexts = contexts.ToList();
                     _pi.SavePluginConfig(_config);
                 }
-            },
-            _onScreen.GetActorIdentity);
-        _blender   = new BlenderClient(
-            log,
-            _config.ListenPort,
-            _config.ModName,
-            _contexts,
-            _onScreen.GetActorIdentity);
+            });
+        _blender   = new BlenderClient(log, _contexts);
         _exportServer = new ExportServer(_config, _penumbra, _contexts, log);
         _window    = new MainWindow(
             _config,

@@ -63,44 +63,6 @@ function Assert-DalamudPackage {
     Write-Host "Verified Dalamud package: $PackagePath"
 }
 
-function Assert-BlenderRepository {
-    param(
-        [string]$RepositoryPath,
-        [string]$ExpectedMinimum
-    )
-
-    $archivePath = Join-Path $RepositoryPath 'XIV-Instant-Edit.zip'
-    $indexPath = Join-Path $RepositoryPath 'index.json'
-    if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
-        throw "Blender extension package not found: $archivePath"
-    }
-    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
-        throw "Blender repository index not found: $indexPath"
-    }
-
-    $entry = (Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json).data |
-        Where-Object { $_.id -eq 'xiv_instant_edit' } |
-        Select-Object -First 1
-    if ($null -eq $entry) {
-        throw 'Blender repository index does not contain xiv_instant_edit.'
-    }
-    if ($entry.blender_version_min -ne $ExpectedMinimum) {
-        throw "Blender minimum mismatch: expected $ExpectedMinimum, found $($entry.blender_version_min)."
-    }
-
-    $archive = Get-Item -LiteralPath $archivePath
-    if ([int64]$entry.archive_size -ne $archive.Length) {
-        throw "Blender archive size mismatch: index=$($entry.archive_size), actual=$($archive.Length)."
-    }
-
-    $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if (([string]$entry.archive_hash).ToLowerInvariant() -ne "sha256:$actualHash") {
-        throw "Blender archive hash mismatch: index=$($entry.archive_hash), actual=sha256:$actualHash."
-    }
-
-    Write-Host "Verified Blender repository: $($archive.Length) bytes, sha256:$actualHash"
-}
-
 $pluginProject = Join-Path $repoRoot 'Dalamud-Plugin\InstantEdit.csproj'
 $pluginPackage = Join-Path $repoRoot 'Dalamud-Plugin\InstantEdit\latest.zip'
 $blenderRepository = Join-Path $repoRoot 'Blender-Addon\blender_repo'
@@ -121,7 +83,9 @@ if (-not $SkipBlender) {
     if ($LASTEXITCODE -ne 0) {
         throw "Blender repository generation failed with exit code $LASTEXITCODE."
     }
-    Assert-BlenderRepository $blenderRepository '4.5.3'
+    & (Join-Path $scriptRoot 'verify-blender-repository.ps1') `
+        -RepositoryPath $blenderRepository `
+        -ExpectedMinimum '4.5.3'
 }
 
 if (-not (Test-Path -LiteralPath $blenderManifest -PathType Leaf)) {

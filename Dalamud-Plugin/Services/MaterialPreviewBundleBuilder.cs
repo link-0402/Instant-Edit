@@ -21,6 +21,10 @@ public sealed record MaterialPreviewBundleResult(string? ManifestPath, IReadOnly
         => Warnings.Count == 0 ? string.Empty : string.Join("; ", Warnings.Take(3)) + (Warnings.Count > 3 ? $" (+{Warnings.Count - 3} more)" : string.Empty);
 }
 
+public sealed record MaterialImportBundleResult(
+    ResourceDependencyManifest? ResourceManifest,
+    MaterialPreviewBundleResult? Preview);
+
 /// <summary>
 /// Builds a display-only material package from the exact resources resolved by Penumbra.
 /// The HTTP bridge transports only the manifest path; all bundle paths are relative and
@@ -59,10 +63,31 @@ public sealed class MaterialPreviewBundleBuilder
         _sourceAttributor = sourceAttributor;
     }
 
-    public async Task<ResourceDependencyManifest?> BuildDependencyManifestAsync(
+    public async Task<MaterialImportBundleResult> BuildImportBundleAsync(
         byte[] modelBytes,
         string modelGamePath,
         IReadOnlyCollection<MaterialResourceCandidate> candidates,
+        string bundleDirectory,
+        bool buildPreview,
+        bool excludeBodyAndGeneralMaterials,
+        CancellationToken cancellationToken = default)
+    {
+        var resourceCache = new Dictionary<string, ResolvedResource?>(StringComparer.OrdinalIgnoreCase);
+        var dependencies = await BuildDependencyManifestAsync(
+            modelBytes, modelGamePath, candidates, resourceCache, cancellationToken).ConfigureAwait(false);
+        var preview = buildPreview
+            ? await BuildAsync(
+                modelBytes, modelGamePath, candidates, bundleDirectory,
+                excludeBodyAndGeneralMaterials, resourceCache, cancellationToken).ConfigureAwait(false)
+            : null;
+        return new MaterialImportBundleResult(dependencies, preview);
+    }
+
+    private async Task<ResourceDependencyManifest?> BuildDependencyManifestAsync(
+        byte[] modelBytes,
+        string modelGamePath,
+        IReadOnlyCollection<MaterialResourceCandidate> candidates,
+        Dictionary<string, ResolvedResource?> resourceCache,
         CancellationToken cancellationToken = default)
     {
         try
@@ -89,7 +114,7 @@ public sealed class MaterialPreviewBundleBuilder
                     return null;
                 }
                 var resolvedMaterial = await ResolveResourceAsync(
-                    materialPath, resources, MaxMaterialBytes, cancellationToken).ConfigureAwait(false);
+                    materialPath, resources, MaxMaterialBytes, resourceCache, cancellationToken).ConfigureAwait(false);
                 if (resolvedMaterial is null)
                     return null;
                 var mtrl = LooseLuminaFile.Load<MtrlFile>(resolvedMaterial.Value.Bytes);
@@ -106,13 +131,13 @@ public sealed class MaterialPreviewBundleBuilder
                     var effectivePath = Dx11TexturePath(storedPath, textureOffset.Flags);
                     var resourceGamePath = effectivePath;
                     var resolvedTexture = await ResolveResourceAsync(
-                        effectivePath, resources, MaxTextureBytes, cancellationToken).ConfigureAwait(false);
+                        effectivePath, resources, MaxTextureBytes, resourceCache, cancellationToken).ConfigureAwait(false);
                     if (resolvedTexture is null &&
                         !effectivePath.Equals(storedPath, StringComparison.OrdinalIgnoreCase) &&
                         !resources.ContainsKey(effectivePath))
                     {
                         resolvedTexture = await ResolveResourceAsync(
-                            storedPath, resources, MaxTextureBytes, cancellationToken).ConfigureAwait(false);
+                            storedPath, resources, MaxTextureBytes, resourceCache, cancellationToken).ConfigureAwait(false);
                         resourceGamePath = storedPath;
                     }
                     if (resolvedTexture is null)
@@ -147,12 +172,13 @@ public sealed class MaterialPreviewBundleBuilder
         }
     }
 
-    public async Task<MaterialPreviewBundleResult> BuildAsync(
+    private async Task<MaterialPreviewBundleResult> BuildAsync(
         byte[] modelBytes,
         string modelGamePath,
         IReadOnlyCollection<MaterialResourceCandidate> candidates,
         string bundleDirectory,
         bool excludeBodyAndGeneralMaterials = false,
+        Dictionary<string, ResolvedResource?>? resourceCache = null,
         CancellationToken cancellationToken = default)
     {
         var warnings = new List<string>();
@@ -189,7 +215,8 @@ public sealed class MaterialPreviewBundleBuilder
                 if (materialPath is null)
                     continue;
 
-                var materialBytes = await ReadResourceAsync(materialPath, resources, MaxMaterialBytes, cancellationToken).ConfigureAwait(false);
+                var materialBytes = await ReadResourceAsync(
+                    materialPath, resources, MaxMaterialBytes, resourceCache, cancellationToken).ConfigureAwait(false);
                 if (materialBytes is null)
                 {
                     warnings.Add($"Material not found: {FileName(modelMaterial)}");
@@ -228,10 +255,12 @@ public sealed class MaterialPreviewBundleBuilder
                         continue;
                     }
                     var resolvedTexturePath = Dx11TexturePath(logicalPath, textureOffset.Flags);
-                    var textureBytes = await ReadResourceAsync(resolvedTexturePath, resources, MaxTextureBytes, cancellationToken).ConfigureAwait(false)
+                    var textureBytes = await ReadResourceAsync(
+                            resolvedTexturePath, resources, MaxTextureBytes, resourceCache, cancellationToken).ConfigureAwait(false)
                         ?? (resolvedTexturePath.Equals(logicalPath, StringComparison.OrdinalIgnoreCase) || resources.ContainsKey(resolvedTexturePath)
                             ? null
-                            : await ReadResourceAsync(logicalPath, resources, MaxTextureBytes, cancellationToken).ConfigureAwait(false));
+                            : await ReadResourceAsync(
+                                logicalPath, resources, MaxTextureBytes, resourceCache, cancellationToken).ConfigureAwait(false));
                     if (textureBytes is null)
                     {
                         warnings.Add($"Texture not found: {FileName(logicalPath)}");
@@ -500,8 +529,9 @@ public sealed class MaterialPreviewBundleBuilder
         string gamePath,
         IReadOnlyDictionary<string, List<string>> resources,
         long maxBytes,
+        Dictionary<string, ResolvedResource?>? resourceCache,
         CancellationToken cancellationToken)
-        => (await ResolveResourceAsync(gamePath, resources, maxBytes, cancellationToken)
+        => (await ResolveResourceAsync(gamePath, resources, maxBytes, resourceCache, cancellationToken)
             .ConfigureAwait(false))?.Bytes;
 
     private readonly record struct ResolvedResource(byte[] Bytes, string? ActualPath);
@@ -510,9 +540,15 @@ public sealed class MaterialPreviewBundleBuilder
         string gamePath,
         IReadOnlyDictionary<string, List<string>> resources,
         long maxBytes,
+        Dictionary<string, ResolvedResource?>? resourceCache,
         CancellationToken cancellationToken)
     {
         gamePath = NormaliseGamePath(gamePath);
+        var cacheKey = $"{maxBytes}:{gamePath}";
+        if (resourceCache is not null && resourceCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
+        ResolvedResource? resolved = null;
         if (resources.TryGetValue(gamePath, out var actualPaths))
         {
             if (actualPaths.Count != 1)
@@ -523,27 +559,33 @@ public sealed class MaterialPreviewBundleBuilder
                 var info = new FileInfo(actual);
                 if (!info.Exists || info.Length <= 0 || info.Length > maxBytes)
                     return null;
-                return new ResolvedResource(
+                resolved = new ResolvedResource(
                     await File.ReadAllBytesAsync(info.FullName, cancellationToken).ConfigureAwait(false),
                     info.FullName);
             }
         }
 
-        try
+        if (resolved is null)
         {
-            var gameFile = await _data.GetFileAsync<FileResource>(gamePath, cancellationToken).ConfigureAwait(false);
-            return gameFile?.Data is { Length: > 0 } data && data.LongLength <= maxBytes
-                ? new ResolvedResource(data, null)
-                : null;
+            try
+            {
+                var gameFile = await _data.GetFileAsync<FileResource>(gamePath, cancellationToken).ConfigureAwait(false);
+                resolved = gameFile?.Data is { Length: > 0 } data && data.LongLength <= maxBytes
+                    ? new ResolvedResource(data, null)
+                    : null;
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // Missing or malformed game resources are expected for some custom
+                // model material names. Keep the failure local to that material so
+                // later materials can still contribute a preview.
+                _log.Debug(e, "Could not read preview resource {GamePath}.", gamePath);
+            }
         }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            // Missing or malformed game resources are expected for some custom
-            // model material names. Keep the failure local to that material so
-            // later materials can still contribute a preview.
-            _log.Debug(e, "Could not read preview resource {GamePath}.", gamePath);
-            return null;
-        }
+
+        if (resourceCache is not null)
+            resourceCache[cacheKey] = resolved;
+        return resolved;
     }
 
     private SourceResourceLocator? CreateLocator(string gamePath, ResolvedResource resource)
@@ -760,26 +802,13 @@ public sealed class MaterialPreviewBundleBuilder
         => samplerId is 0xDDB3E97F or 0x6CBB1F84 or 0x6968DF0A or 0xE5338C17 ? 1 : 0;
 
     private static string Dx11TexturePath(string path, ushort flags)
-    {
-        if ((flags & 0x8000) == 0)
-            return NormaliseGamePath(path);
-        var normalized = NormaliseGamePath(path);
-        var separator = normalized.LastIndexOf('/');
-        return separator < 0 ? "--" + normalized : normalized[..(separator + 1)] + "--" + normalized[(separator + 1)..];
-    }
+        => PathRules.Dx11TexturePath(path, flags);
 
     private static string ReadString(byte[] strings, int offset)
-    {
-        if (offset < 0 || offset >= strings.Length)
-            return string.Empty;
-        var end = Array.IndexOf(strings, (byte)0, offset);
-        if (end < 0)
-            end = strings.Length;
-        return Encoding.UTF8.GetString(strings, offset, end - offset);
-    }
+        => PathRules.ReadNullTerminated(strings, offset);
 
     private static string NormaliseGamePath(string path)
-        => (path ?? string.Empty).Replace('\\', '/').Trim().TrimStart('/');
+        => PathRules.NormalizeGamePath(path);
 
     private static string FileName(string path)
         => NormaliseGamePath(path).Split('/').LastOrDefault() ?? string.Empty;

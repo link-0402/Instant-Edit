@@ -15,7 +15,6 @@ public sealed class Configuration : IPluginConfiguration
     public int ListenPort { get; set; } = 42428;
 
     /// <summary>Legacy managed-mod setting retained for configuration compatibility.</summary>
-    public string ModName { get; set; } = "InstantEdit";
 
     /// <summary>Bind imported meshes to an existing Blender armature instead of creating one.</summary>
     public bool UseExistingSkeleton { get; set; }

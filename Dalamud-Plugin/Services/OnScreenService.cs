@@ -50,16 +50,6 @@ public sealed class OnScreenService
         get { lock (_lock) return _items; }
     }
 
-    /// <summary> Returns the captured native identity for an object in the current snapshot. </summary>
-    public ActorIdentity? GetActorIdentity(int objectIndex)
-    {
-        if (objectIndex is < 0 or > ushort.MaxValue)
-            return null;
-
-        lock (_lock)
-            return _items.FirstOrDefault(item => item.ObjectIndex == objectIndex)?.ActorIdentity;
-    }
-
     public void RequestRefresh()
     {
         lock (_lock)
@@ -200,17 +190,11 @@ public sealed class OnScreenService
         IReadOnlyList<ResourceNode> roots)
         => new()
         {
-            ActorIdentity = new ActorIdentity { ObjectIndex = objectIndex, Address = gameObject.Address.ToInt64() },
+            ObjectIndex = objectIndex,
+            Address = gameObject.Address,
             Name = gameObject.Name.TextValue ?? "Unknown",
-            Kind = gameObject.ObjectKind.ToString(),
             PresentationCategory = category,
             ResourceRoots = roots,
-            // Compatibility edit targets are sourced from the reconciled Penumbra
-            // snapshot; no filesystem model scan or path inference occurs.
-            Models = Flatten(roots)
-                .Where(node => node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
-                .Select(node => new MdlFile { GamePath = node.GamePath, LocalPath = node.ActualPath })
-                .ToArray(),
         };
 
     /// <summary>
@@ -260,7 +244,6 @@ public sealed class OnScreenService
                     GamePath = gamePath,
                     ActualPath = actualPath,
                     Children = Array.Empty<ResourceNode>(),
-                    SourceState = source.State,
                     SourceLabel = source.Label,
                     SourceModName = source.ModName,
                     SourceModDirectory = source.ModDirectory,
@@ -269,7 +252,6 @@ public sealed class OnScreenService
                     SlotLabel = presentation.SlotLabel,
                     ResourceSection = presentation.Section,
                     SortOrder = presentation.SortOrder,
-                    IsModdedSubtree = true,
                 });
             }
         }
@@ -306,8 +288,7 @@ public sealed class OnScreenService
             .ThenBy(child => child.SortOrder)
             .ToArray();
         var source = _sourceAttributor.AttributionFor(node.ActualPath);
-        var isModdedSubtree = source.State == ResourceSourceState.LoadedMod || children.Any(child => child.IsModdedSubtree);
-        if (!isModdedSubtree)
+        if (source.State != ResourceSourceState.LoadedMod && children.Length == 0)
             return null;
 
         var presentation = ResourcePresentation.For(node.Type.ToString(), node.Name ?? string.Empty, node.Icon.ToString(), node.GamePath ?? string.Empty);
@@ -319,7 +300,6 @@ public sealed class OnScreenService
             GamePath = node.GamePath ?? string.Empty,
             ActualPath = node.ActualPath ?? string.Empty,
             Children = children,
-            SourceState = source.State,
             SourceLabel = source.Label,
             SourceModName = source.ModName,
             SourceModDirectory = source.ModDirectory,
@@ -328,7 +308,6 @@ public sealed class OnScreenService
             SlotLabel = presentation.SlotLabel,
             ResourceSection = presentation.Section,
             SortOrder = presentation.SortOrder,
-            IsModdedSubtree = true,
         };
     }
 

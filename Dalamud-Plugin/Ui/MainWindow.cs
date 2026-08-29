@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Reflection;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -301,9 +299,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
-        var actorId = actor.Entity is not null
-            ? SafeId($"actor:{actor.Entity.Address:X}:{actor.Entity.ObjectIndex}")
-            : SafeId($"mod:{actor.Name}");
+        var actorId = SafeId($"actor:{actor.Entity.Address:X}:{actor.Entity.ObjectIndex}");
         ImGui.PushID(actorId); DrawOpaqueRow();
         var filteredView = IsFilteredResourceView;
         var expanded = filteredView
@@ -325,7 +321,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TableHeadersRow();
                 DrawSection(actor, ResourceSection.CharacterFeatures, "Character features", actorId + ":features");
                 DrawSection(actor, ResourceSection.Gear, "Gear", actorId + ":gear");
-                DrawSection(actor, ResourceSection.Other, actor.Entity is null ? "Resources" : "Other", actorId + ":other");
+                DrawSection(actor, ResourceSection.Other, "Other", actorId + ":other");
                 ImGui.EndTable();
             }
         }
@@ -335,7 +331,6 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawModResourceRows(ActorView actor)
     {
         var resources = actor.Roots
-            .Where(HasModdedContent)
             .Where(HasResourceTypeMatch)
             .OrderBy(resource => resource.GamePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -371,10 +366,8 @@ public sealed class MainWindow : Window, IDisposable
         var sectionValue = section.ToString();
         var searchActive = actor.Entity is not null && SearchActive;
         var filterBySearch = searchActive && !ActorIdentityMatches(actor);
-        var nodes = actor.Roots.Where(x => string.Equals(Safe(x.Section), sectionValue, StringComparison.OrdinalIgnoreCase) && HasModdedContent(x) && HasResourceTypeMatch(x) && (!filterBySearch || Matches(x)));
-        nodes = section == ResourceSection.Gear
-            ? nodes.OrderBy(x => GearRank(Safe(x.Slot))).ThenBy(x => x.Order)
-            : nodes.OrderBy(x => x.Order);
+        var nodes = actor.Roots.Where(x => string.Equals(Safe(x.Section), sectionValue, StringComparison.OrdinalIgnoreCase) && HasResourceTypeMatch(x) && (!filterBySearch || Matches(x)));
+        nodes = nodes.OrderBy(x => x.Order);
         var ordered = nodes.ToList();
         if (ordered.Count == 0) return;
         ImGui.PushID(SafeId(key));
@@ -440,17 +433,15 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawNode(ActorView actor, ResourceView node, string scope, int depth, bool filterBySearch, bool autoExpandSearch, bool showOptionMapping = false)
     {
-        // Resource JSON is intentionally treated as untrusted display data.  Do not
-        // pass any reflected value directly to an ImGui UTF-8 overload.
         var type = Safe(node.Type, "Resource");
         var name = Safe(node.Name, "Unnamed resource");
         var gamePath = Safe(node.GamePath);
         var actualPath = Safe(node.ActualPath);
-        var source = Safe(node.SourceLabel, node.Modded == true ? "Mod" : "Source unavailable");
+        var source = Safe(node.SourceLabel, "Source unavailable");
         var key = SafeId($"{scope}:{type}:{name}:{gamePath}:{actualPath}");
         ImGui.PushID(key);
         var presentation = Safe(node.Slot, KindLabel(type));
-        var children = node.Children ?? new List<ResourceView>();
+        var children = node.Children;
         var hasChildren = children.Count > 0;
         var model = IsModel(node);
         var expanded = autoExpandSearch || _expanded.Contains(key);
@@ -489,7 +480,7 @@ public sealed class MainWindow : Window, IDisposable
         if (expanded && hasChildren)
         {
             for (var i = 0; i < children.Count; i++)
-                if (children[i] is not null && HasModdedContent(children[i]) && (!filterBySearch || Matches(children[i])))
+                if (!filterBySearch || Matches(children[i]))
                     DrawNode(actor, children[i], $"{scope}:{i}", depth + 1, filterBySearch, autoExpandSearch, showOptionMapping);
         }
         ImGui.PopID();
@@ -542,7 +533,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             var filter = group == "Everything" ? string.Empty : group;
             var count = actors.SelectMany(x => x.Roots).SelectMany(Flatten)
-                .Count(node => HasModdedContent(node) && MatchesResourceType(node, filter));
+                .Count(node => MatchesResourceType(node, filter));
             ImGui.PushID($"resource-type-filter:{group}");
             var selected = _resourceTypeFilter == filter;
             if (selected) ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(.45f, .34f, .16f, 1));
@@ -650,7 +641,6 @@ public sealed class MainWindow : Window, IDisposable
                 ResourceSection.Other.ToString(),
                 ResourceType(resource.GamePath),
                 int.MaxValue,
-                true,
                 resource.OptionMapping,
                 new List<ResourceView>()))
             .ToList();
@@ -693,23 +683,10 @@ public sealed class MainWindow : Window, IDisposable
         var result = new List<ActorView>();
         foreach (var entity in _onScreen.Items)
         {
-            var prop = entity.GetType().GetProperty("ResourceRoots", BindingFlags.Public | BindingFlags.Instance);
-            if (prop?.GetValue(entity) is not IEnumerable roots) continue;
-            var parsed = new List<ResourceView>(); var index = 0;
-            foreach (var raw in roots) if (raw is not null) parsed.Add(ReadNode(raw, $"entity:{entity.Address:X}:{entity.ObjectIndex}:{index++}"));
-            result.Add(new ActorView(entity, ActorCategory(entity), Safe(entity.Name), parsed, entity.ObjectIndex));
+            var parsed = entity.ResourceRoots.Select(ReadNode).ToList();
+            result.Add(new ActorView(entity, entity.PresentationCategory.ToString(), Safe(entity.Name), parsed, entity.ObjectIndex));
         }
         return result;
-    }
-
-    private static string ActorCategory(OnScreenObject entity)
-    {
-        foreach (var name in new[] { "Category", "ActorCategory", "Type" })
-        {
-            var value = entity.GetType().GetProperty(name)?.GetValue(entity)?.ToString();
-            if (value is not null && new[] { "Player", "Minion", "Mount", "Summon" }.Contains(value, StringComparer.OrdinalIgnoreCase)) return value;
-        }
-        return "Player";
     }
 
     private bool SearchActive => !string.IsNullOrWhiteSpace(_filter);
@@ -759,35 +736,24 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
-    private static ResourceView ReadNode(object raw, string scope)
-    {
-        var type = raw.GetType(); var children = new List<ResourceView>();
-        if (type.GetProperty("Children")?.GetValue(raw) is IEnumerable list) { var i = 0; foreach (var child in list) if (child is not null) children.Add(ReadNode(child, $"{scope}:{i++}")); }
-        return new ResourceView(
-            String(type, raw, "Type"),
-            String(type, raw, "Icon"),
-            String(type, raw, "Name"),
-            String(type, raw, "GamePath"),
-            String(type, raw, "ActualPath"),
-            Source(type, raw),
-            String(type, raw, nameof(ResourceNode.SourceModName)),
-            String(type, raw, nameof(ResourceNode.SourceModDirectory)),
-            String(type, raw, nameof(ResourceNode.SourceModRootPath)),
-            String(type, raw, nameof(ResourceNode.SourceRelativePath)),
-            EnumString(type, raw, nameof(ResourceNode.ResourceSection)),
-            String(type, raw, nameof(ResourceNode.SlotLabel)),
-            Int(type, raw, nameof(ResourceNode.SortOrder)),
-            Bool(type, raw, nameof(ResourceNode.IsModdedSubtree)),
+    private static ResourceView ReadNode(ResourceNode node)
+        => new(
+            node.Type,
+            node.Icon,
+            node.Name,
+            node.GamePath,
+            node.ActualPath,
+            node.SourceLabel,
+            node.SourceModName ?? string.Empty,
+            node.SourceModDirectory ?? string.Empty,
+            node.SourceModRootPath ?? string.Empty,
+            node.SourceRelativePath ?? string.Empty,
+            node.ResourceSection.ToString(),
+            node.SlotLabel,
+            node.SortOrder,
             string.Empty,
-            children);
-    }
+            node.Children.Select(ReadNode).ToList());
 
-    private static string String(Type type, object value, string name) => type.GetProperty(name)?.GetValue(value) as string ?? string.Empty;
-    private static string EnumString(Type type, object value, string name) => type.GetProperty(name)?.GetValue(value)?.ToString() ?? string.Empty;
-    private static string Source(Type type, object value)
-    { foreach (var name in new[] { "SourceLabel", "Source", "SourceState", "State" }) { var valueText = String(type, value, name); if (!string.IsNullOrWhiteSpace(valueText)) return valueText; } return "Source unavailable"; }
-    private static int Int(Type type, object value, string name) => int.TryParse(type.GetProperty(name)?.GetValue(value)?.ToString(), out var result) ? result : int.MaxValue;
-    private static bool? Bool(Type type, object value, string name) { var raw = type.GetProperty(name)?.GetValue(value); return raw is bool valueBool ? valueBool : null; }
     private static string KindLabel(string type) => string.IsNullOrWhiteSpace(type) ? "Resource" : type;
     private static string DisplayName(string name, string actualPath)
     {
@@ -799,11 +765,10 @@ public sealed class MainWindow : Window, IDisposable
         => IsModel(node) && node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
            node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
            Path.IsPathRooted(node.ActualPath) && !string.IsNullOrWhiteSpace(node.SourceModDirectory);
-    private static bool HasModdedContent(ResourceView node) => node.Modded != false || node.Children.Any(HasModdedContent);
     private bool Matches(ResourceView node)
     {
         var filter = Safe(_filter);
-        var children = node.Children ?? new List<ResourceView>();
+        var children = node.Children;
         return string.IsNullOrWhiteSpace(filter)
             || Safe(node.Name).Contains(filter, StringComparison.OrdinalIgnoreCase)
             || Safe(node.Type).Contains(filter, StringComparison.OrdinalIgnoreCase)
@@ -814,16 +779,6 @@ public sealed class MainWindow : Window, IDisposable
             || Safe(node.ActualPath).Contains(filter, StringComparison.OrdinalIgnoreCase)
             || children.Any(Matches);
     }
-    private static int GearRank(string slot)
-    {
-        return slot.ToLowerInvariant() switch
-        {
-            "head" => 0, "body" => 1, "hands" => 2, "legs" => 3, "feet" => 4,
-            "earrings" or "ears" => 5, "necklace" or "neck" => 6, "bracelet" or "wrists" => 7,
-            "right ring" or "right finger" => 8, "left ring" or "left finger" => 9, _ => 100,
-        };
-    }
-
     private bool LoadSlotIcons(IUiBuilder uiBuilder, ITextureProvider textureProvider)
     {
         using var armoury = uiBuilder.LoadUld("ui/uld/ArmouryBoard.uld");
@@ -922,10 +877,7 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
-        var model = actor.Entity?.Models.FirstOrDefault(candidate =>
-            string.Equals(candidate.GamePath, node.GamePath, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(candidate.LocalPath, node.ActualPath, StringComparison.OrdinalIgnoreCase))
-            ?? new MdlFile { GamePath = node.GamePath, LocalPath = node.ActualPath };
+        var model = new MdlFile { GamePath = node.GamePath, LocalPath = node.ActualPath };
         EditModel(actor, model, node);
     }
 
@@ -992,26 +944,19 @@ public sealed class MainWindow : Window, IDisposable
             var dir = Path.Combine(handoffRoot, Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             handoffDirectory = dir;
-            MaterialPreviewBundleResult? preview = null;
-            ResourceDependencyManifest? resourceManifest = null;
             var file = Path.Combine(dir, $"{Sanitize(actor.Name)}-{actor.ImportObjectIndex}-{model.FileName}");
             await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
             var resources = await ResolvePreviewResourcesAsync(actor).ConfigureAwait(false);
-            resourceManifest = await _materialPreviews.BuildDependencyManifestAsync(
+            var materialBundle = await _materialPreviews.BuildImportBundleAsync(
                 bytes,
                 model.GamePath,
                 resources,
+                Path.Combine(dir, "preview"),
+                importOptions.ApplyTexturesAndMaterials,
+                importOptions.ExcludeBodyAndGeneralMaterials,
                 cancellationToken).ConfigureAwait(false);
-            if (importOptions.ApplyTexturesAndMaterials)
-            {
-                preview = await _materialPreviews.BuildAsync(
-                    bytes,
-                    model.GamePath,
-                    resources,
-                    Path.Combine(dir, "preview"),
-                    importOptions.ExcludeBodyAndGeneralMaterials,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            var preview = materialBundle.Preview;
+            var resourceManifest = materialBundle.ResourceManifest;
             handoffCached = await _blender.SendSourceImportAsync(
                 blenderPort,
                 file,
@@ -1026,9 +971,7 @@ public sealed class MainWindow : Window, IDisposable
                 previewManifestPath: preview?.ManifestPath,
                 sourceModRootPath: source.SourceModRootPath,
                 targetRelativePath: source.SourceRelativePath,
-                redrawActorIdentity: actor.Entity?.ActorIdentity,
                 resourceManifest: resourceManifest,
-                resourceManifestCaptureAttempted: true,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
             var mashupWarning = resourceManifest is null
@@ -1224,7 +1167,6 @@ public sealed class MainWindow : Window, IDisposable
         string Section,
         string Slot,
         int Order,
-        bool? Modded,
         string OptionMapping,
         List<ResourceView> Children);
 }

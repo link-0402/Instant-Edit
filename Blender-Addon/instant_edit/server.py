@@ -20,7 +20,6 @@ _import_queue: Queue = Queue(maxsize=MAX_IMPORT_QUEUE_SIZE)
 _server              = None
 _thread               = None
 _port                 = 42424
-_callback_port        = 42428
 _server_error         = ""
 
 
@@ -115,12 +114,9 @@ class _ImportHandler(BaseHTTPRequestHandler):
 
             data = json.loads(body)
             data = self._validate_import(data)
-            cached = False
-            if data.get("schema") == "instant-edit.context" and data.get("version") == 1:
-                from .cache import stage_import
+            from .cache import stage_import
 
-                data = stage_import(data)
-                cached = True
+            data = stage_import(data)
         except (socket.timeout, TimeoutError):
             self._respond(408, {"ok": False, "error": "request body timed out"})
             return
@@ -137,138 +133,72 @@ class _ImportHandler(BaseHTTPRequestHandler):
                 remove_job(cache_job)
             self._respond(503, {"ok": False, "error": "import queue is full"})
             return
-        self._respond(200, {"ok": True, "queued": True, "cached": cached})
+        self._respond(200, {"ok": True, "queued": True, "cached": True})
 
     @staticmethod
     def _validate_import(data) -> dict:
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
 
-        # Transitional compatibility for the first v1 plugin build, which
-        # wrapped the context in an instant-edit.import command envelope.
         import_options = _normalise_import_options(data.get("importOptions"))
-        if data.get("schema") == "instant-edit.import" and isinstance(data.get("context"), dict):
-            nested = data["context"]
-            if nested.get("schema") != "instant-edit.context" or nested.get("version") != 1:
-                raise ValueError("nested context must use instant-edit.context v1")
-            data = {
-                **nested,
-                "schema": "instant-edit.context",
-                "version": 1,
-                "filePath": data.get("filePath", ""),
-                "displayName": data.get("name", ""),
-                "targetFilePath": nested.get("targetFilePath", ""),
-                "targetRelativePath": nested.get("targetRelativePath", ""),
-                "managedDestination": nested.get(
-                    "managedDestination", nested.get("targetFolder", nested.get("modName", ""))
-                ),
-                "sourceModDirectory": nested.get("sourceModDirectory", nested.get("modName", "")),
-                "sourceModName": nested.get("sourceModName", nested.get("modName", "")),
-                "resourceManifestVersion": nested.get("resourceManifestVersion", 0),
-                "resourceManifestStatus": nested.get("resourceManifestStatus", "legacy"),
-                "previewManifestPath": data.get("previewManifestPath", ""),
-                "importOptions": import_options,
-            }
-        elif data.get("schema") == "instant-edit.import" and data.get("context") is None:
-            # Older plugin builds used the command envelope without a context.
-            data = {key: value for key, value in data.items()
-                    if key not in {"schema", "version", "command", "context"}}
-            data["importOptions"] = import_options
+        if data.get("schema") != "instant-edit.context":
+            raise ValueError("schema must be instant-edit.context")
+        if isinstance(data.get("version"), bool) or data.get("version") != 1:
+            raise ValueError("version must be 1")
 
-        # v1 is the authoritative protocol. Legacy is intentionally limited
-        # to the old flat fields below and is never treated as a safe context.
-        versioned = any(field in data for field in ("schema", "version", "contextId", "pluginInstanceId"))
-        if versioned:
-            if data.get("schema") != "instant-edit.context":
-                raise ValueError("schema must be instant-edit.context")
-            if isinstance(data.get("version"), bool) or data.get("version") != 1:
-                raise ValueError("version must be 1")
-
-            plugin_instance_id = _string(data, "pluginInstanceId", required=True, max_length=256)
-            context_id = _string(data, "contextId", required=True, max_length=256)
-            capability = _string(data, "capability", required=True, max_length=1024)
-            file_path = _string(data, "filePath", required=True, max_length=4096)
-            source_game_path = _string(data, "sourceGamePath", "gamePath", required=True, max_length=4096)
-            managed_destination = _string(
-                data, "managedDestination", "targetFolder", required=True, max_length=4096
-            )
-            target_file_path = _string(data, "targetFilePath", required=True, max_length=4096)
-            source_mod_directory = _string(
-                data, "sourceModDirectory", "modName", required=True, max_length=256
-            )
-            source_mod_name = _string(
-                data, "sourceModName", "modName", required=True, max_length=512
-            )
-            source_mod_root_path = _string(
-                data, "sourceModRootPath", max_length=4096
-            )
-            target_relative_path = _string(
-                data, "targetRelativePath", max_length=4096
-            )
-            preview_manifest_path = _string(
-                data, "previewManifestPath", max_length=4096
-            )
-            callback_port = data.get("callbackPort", data.get("pluginPort", 0)) or _callback_port
-            if isinstance(callback_port, bool) or not isinstance(callback_port, int) or not 1 <= callback_port <= 65535:
-                raise ValueError("callbackPort must be between 1 and 65535")
-            object_index = data.get("objectIndex", -1)
-            if isinstance(object_index, bool) or not isinstance(object_index, int):
-                raise ValueError("objectIndex must be an integer")
-            resource_manifest_version = data.get("resourceManifestVersion", 0)
-            if isinstance(resource_manifest_version, bool) or not isinstance(resource_manifest_version, int) or resource_manifest_version < 0:
-                raise ValueError("resourceManifestVersion must be a non-negative integer")
-            resource_manifest_status = data.get("resourceManifestStatus", "legacy")
-            if resource_manifest_status not in {"legacy", "capture_failed", "ready"}:
-                raise ValueError("resourceManifestStatus must be legacy, capture_failed, or ready")
-
-            return {
-                **data,
-                "schema": "instant-edit.context",
-                "version": 1,
-                "pluginInstanceId": plugin_instance_id,
-                "contextId": context_id,
-                "capability": capability,
-                "filePath": file_path,
-                "sourceGamePath": source_game_path,
-                "managedDestination": managed_destination,
-                "targetFilePath": target_file_path,
-                "sourceModDirectory": source_mod_directory,
-                "sourceModName": source_mod_name,
-                "sourceModRootPath": source_mod_root_path,
-                "targetRelativePath": target_relative_path,
-                "resourceManifestVersion": resource_manifest_version,
-                "resourceManifestStatus": resource_manifest_status,
-                "previewManifestPath": preview_manifest_path,
-                "callbackPort": callback_port,
-                "name": _string(data, "displayName", "name", max_length=255),
-                "importOptions": import_options,
-            }
-
-        # Legacy /import compatibility. This branch deliberately produces no
-        # context reference and cannot be used by the safe exporter.
-        for field in ("filePath", "gamePath", "name", "modName"):
-            if field in data and not isinstance(data[field], str):
-                raise ValueError(f"{field} must be a string")
-
-        if "filePath" in data and not data["filePath"]:
-            raise ValueError("filePath must not be empty")
-
-        for field in ("objectIndex", "callbackPort"):
-            value = data.get(field)
-            if field in data and (
-                value is None or isinstance(value, bool) or not isinstance(value, int)
-            ):
-                raise ValueError(f"{field} must be an integer")
+        plugin_instance_id = _string(data, "pluginInstanceId", required=True, max_length=256)
+        context_id = _string(data, "contextId", required=True, max_length=256)
+        import_id = _string(data, "importId", required=True, max_length=256)
+        capability = _string(data, "capability", required=True, max_length=1024)
+        file_path = _string(data, "filePath", required=True, max_length=4096)
+        source_game_path = _string(data, "sourceGamePath", required=True, max_length=4096)
+        managed_destination = _string(data, "managedDestination", required=True, max_length=4096)
+        target_file_path = _string(data, "targetFilePath", required=True, max_length=4096)
+        source_mod_directory = _string(data, "sourceModDirectory", required=True, max_length=256)
+        source_mod_name = _string(data, "sourceModName", required=True, max_length=512)
+        source_mod_root_path = _string(data, "sourceModRootPath", max_length=4096)
+        target_relative_path = _string(data, "targetRelativePath", max_length=4096)
+        preview_manifest_path = _string(data, "previewManifestPath", max_length=4096)
+        display_name = _string(data, "displayName", max_length=255)
 
         callback_port = data.get("callbackPort")
-        if callback_port is not None and not 1 <= callback_port <= 65535:
+        if isinstance(callback_port, bool) or not isinstance(callback_port, int) or not 1 <= callback_port <= 65535:
             raise ValueError("callbackPort must be between 1 and 65535")
+        object_index = data.get("objectIndex")
+        if isinstance(object_index, bool) or not isinstance(object_index, int) or not 0 <= object_index <= 65535:
+            raise ValueError("objectIndex must be between 0 and 65535")
+        resource_manifest_version = data.get("resourceManifestVersion")
+        if isinstance(resource_manifest_version, bool) or not isinstance(resource_manifest_version, int):
+            raise ValueError("resourceManifestVersion must be an integer")
+        resource_manifest_status = data.get("resourceManifestStatus")
+        if resource_manifest_status not in {"capture_failed", "ready"}:
+            raise ValueError("resourceManifestStatus must be capture_failed or ready")
+        expected_manifest_version = 1 if resource_manifest_status == "ready" else 0
+        if resource_manifest_version != expected_manifest_version:
+            raise ValueError("resource manifest version and status do not agree")
 
-        if len(data.get("modName", "")) > 64:
-            raise ValueError("modName is too long")
-
-        data["importOptions"] = import_options
-        return data
+        return {
+            **data,
+            "pluginInstanceId": plugin_instance_id,
+            "contextId": context_id,
+            "importId": import_id,
+            "capability": capability,
+            "filePath": file_path,
+            "sourceGamePath": source_game_path,
+            "managedDestination": managed_destination,
+            "targetFilePath": target_file_path,
+            "sourceModDirectory": source_mod_directory,
+            "sourceModName": source_mod_name,
+            "sourceModRootPath": source_mod_root_path,
+            "targetRelativePath": target_relative_path,
+            "resourceManifestVersion": resource_manifest_version,
+            "resourceManifestStatus": resource_manifest_status,
+            "previewManifestPath": preview_manifest_path,
+            "callbackPort": callback_port,
+            "objectIndex": object_index,
+            "name": display_name,
+            "importOptions": import_options,
+        }
 
 
     def _respond(self, status: int, payload: dict) -> None:
@@ -314,13 +244,6 @@ def set_server_port(port: int) -> bool:
     return start_server(port)
 
 
-def set_callback_port(port: int) -> None:
-    global _callback_port
-    if not 1 <= port <= 65535:
-        raise ValueError("callback port must be between 1 and 65535")
-    _callback_port = port
-
-
 def get_server_error() -> str:
     return _server_error
 
@@ -354,17 +277,15 @@ def poll_import_queue() -> float:
                 bpy.ops.xiv_ie.instant_import(
                     "EXEC_DEFAULT",
                     file_path=data.get("filePath", ""),
-                    game_path=data.get("gamePath", ""),
                     object_index=int(data.get("objectIndex", -1)),
                     import_name=data.get("name", ""),
                     callback_port=data.get("callbackPort", 0),
-                    mod_name=data.get("modName", ""),
                     schema=data.get("schema", ""),
                     version=int(data.get("version", 0)),
                     plugin_instance_id=data.get("pluginInstanceId", ""),
                     context_id=data.get("contextId", ""),
                     capability=data.get("capability", ""),
-                    source_game_path=data.get("sourceGamePath", data.get("gamePath", "")),
+                    source_game_path=data.get("sourceGamePath", ""),
                     managed_destination=data.get("managedDestination", ""),
                     target_file_path=data.get("targetFilePath", ""),
                     source_mod_directory=data.get("sourceModDirectory", ""),
@@ -372,7 +293,7 @@ def poll_import_queue() -> float:
                     source_mod_root_path=data.get("sourceModRootPath", ""),
                     target_relative_path=data.get("targetRelativePath", ""),
                     resource_manifest_version=int(data.get("resourceManifestVersion", 0)),
-                    resource_manifest_status=data.get("resourceManifestStatus", "legacy"),
+                    resource_manifest_status=data.get("resourceManifestStatus", "capture_failed"),
                     import_id=data.get("importId", ""),
                     armature_mode=data.get("importOptions", {}).get("armatureMode", "generated"),
                     armature_target=data.get("importOptions", {}).get("targetObject", "Skeleton"),

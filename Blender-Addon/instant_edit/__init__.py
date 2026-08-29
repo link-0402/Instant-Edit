@@ -3,7 +3,7 @@ import bpy
 from bpy.app.handlers import persistent
 
 from .props  import set_addon_properties, remove_addon_properties, get_instant_edit_props
-from .server import get_server_error, set_callback_port, start_server, stop_server, poll_import_queue
+from .server import get_server_error, start_server, stop_server, poll_import_queue
 from .recovery import cancel_recovery, schedule_recovery
 from .revocation import cancel_revocations, schedule_revocations
 from .cache import STALE_SECONDS, clean_cache, configure_cache
@@ -23,7 +23,6 @@ def register() -> None:
         from ..preferences import get_prefs
         prefs = get_prefs()
         port = prefs.instant_edit_blender_port
-        set_callback_port(prefs.instant_edit_plugin_port)
         configure_cache(
             bpy.path.abspath(prefs.instant_edit_cache_directory),
             prefs.instant_edit_auto_cleanup,

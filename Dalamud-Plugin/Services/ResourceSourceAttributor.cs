@@ -138,15 +138,7 @@ public sealed class ResourceSourceAttributor
     }
 
     private static bool IsPathWithin(string path, string root)
-    {
-        if (string.Equals(path, root, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        var prefix = root.EndsWith(Path.DirectorySeparatorChar) || root.EndsWith(Path.AltDirectorySeparatorChar)
-            ? root
-            : root + Path.DirectorySeparatorChar;
-        return path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
-    }
+        => PathRules.IsPathWithin(path, root);
 
     private sealed record ModRoot(string Path, string Directory, string Name);
 }

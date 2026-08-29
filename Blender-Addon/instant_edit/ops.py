@@ -5,9 +5,8 @@ import json
 import hashlib
 import re
 import uuid
-import urllib.request
 import time
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 
 from pathlib   import Path
 from bpy.types import Operator, Context
@@ -23,6 +22,7 @@ from .context        import (SCHEMA, VERSION, ContextValidationError,
                              _value, clear_context_metadata,
                              context_collections, context_id_for_object, create_collection, tag_object,
                              validate_context)
+from .plugin_http    import post_json
 from .material_preview import (cleanup_preview_bundle, discard_preview_data,
                                load_preview_manifest)
 from .cache import create_job, finish_job
@@ -92,17 +92,10 @@ def mashup_export_selection(context: Context, ref=None):
         raise ContextValidationError("Create Mashup requires Contexts from at least two different Penumbra mods.")
     incomplete = [refs[context_id] for context_id in materials
                   if refs[context_id].resource_manifest_version != 1]
-    failed = [item.source_mod_name for item in incomplete
-              if item.resource_manifest_status == "capture_failed"]
-    legacy = [item.source_mod_name for item in incomplete
-              if item.resource_manifest_status != "capture_failed"]
-    if failed:
+    if incomplete:
         raise ContextValidationError(
             "Dependency capture failed; re-import after resolving the missing resources: "
-            + ", ".join(sorted(set(failed))))
-    if legacy:
-        raise ContextValidationError(
-            "Reload/update the Dalamud plugin, then re-import: " + ", ".join(sorted(set(legacy))))
+            + ", ".join(sorted({item.source_mod_name for item in incomplete})))
 
     ordered_refs = [refs[key] for key in context_order if key in materials]
     return objects, ordered_refs, materials, object_contexts
@@ -179,22 +172,14 @@ def _request_variant_targets(ref) -> list[dict]:
         "contextId": ref.context_id,
         "capability": ref.capability,
     }
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{ref.callback_port}/variant-targets",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=3) as response:
-            status = getattr(response, "status", None) or response.getcode()
-            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
-    except HTTPError as error:
-        raise _plugin_error_from_body(error.read(MAX_PLUGIN_RESPONSE_SIZE + 1), error.code) from error
+        status, body = post_json(
+            ref.callback_port, "/variant-targets", payload,
+            timeout=3, max_response_size=MAX_PLUGIN_RESPONSE_SIZE)
     except (URLError, TimeoutError, OSError) as error:
         raise ValueError(f"Could not fetch Penumbra variant targets: {error}") from error
     if not 200 <= status < 300:
-        raise ValueError(f"plugin returned HTTP {status} while fetching Penumbra variant targets")
+        raise _plugin_error_from_body(body, status)
     result = _decode_plugin_response(body, status)
     groups = result.get("groups", [])
     if not isinstance(groups, list):
@@ -349,11 +334,9 @@ class InstantImport(Operator):
     bl_options     = {"UNDO"}
 
     file_path: bpy.props.StringProperty(options={'HIDDEN'})  # type: ignore
-    game_path: bpy.props.StringProperty(options={'HIDDEN'})  # type: ignore
     object_index: bpy.props.IntProperty(default=-1, options={'HIDDEN'})  # type: ignore
     import_name: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     callback_port: bpy.props.IntProperty(default=0, options={'HIDDEN'})  # type: ignore
-    mod_name: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     schema: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     version: bpy.props.IntProperty(default=0, options={'HIDDEN'})  # type: ignore
     plugin_instance_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
@@ -367,7 +350,7 @@ class InstantImport(Operator):
     source_mod_root_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     target_relative_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     resource_manifest_version: bpy.props.IntProperty(default=0, options={'HIDDEN'})  # type: ignore
-    resource_manifest_status: bpy.props.StringProperty(default="legacy", options={'HIDDEN'})  # type: ignore
+    resource_manifest_status: bpy.props.StringProperty(default="capture_failed", options={'HIDDEN'})  # type: ignore
     import_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     armature_mode: bpy.props.EnumProperty(
         items=[
@@ -400,41 +383,30 @@ class InstantImport(Operator):
             return {"CANCELLED"}
 
         try:
-            is_v1 = self.schema == SCHEMA and self.version == VERSION
-            if is_v1:
-                context_metadata = {
-                    "context_id": self.context_id,
-                    "schema": self.schema,
-                    "version": self.version,
-                }
-                collection_metadata = {
-                    **context_metadata,
-                    "plugin_instance_id": self.plugin_instance_id,
-                    "capability": self.capability,
-                    "source_game_path": self.source_game_path or self.game_path,
-                    "managed_destination": self.managed_destination,
-                    "target_file_path": self.target_file_path,
-                    "source_mod_directory": self.source_mod_directory,
-                    "source_mod_name": self.source_mod_name,
-                    "source_mod_root_path": self.source_mod_root_path,
-                    "target_relative_path": self.target_relative_path,
-                    "resource_manifest_version": self.resource_manifest_version,
-                    "resource_manifest_status": self.resource_manifest_status,
-                    "import_id": self.import_id,
-                    "callback_port": self.callback_port,
-                    "import_file_name": file_path.name,
-                }
-            else:
-                # Legacy requests are accepted only inside a generated,
-                # tagged context. They must never use the ambient collection.
-                legacy_id = f"legacy-{uuid.uuid4().hex}"
-                context_metadata = {
-                    "context_id": legacy_id,
-                    "schema": SCHEMA,
-                    "version": VERSION,
-                    "legacy": True,
-                }
-                collection_metadata = dict(context_metadata)
+            if self.schema != SCHEMA or self.version != VERSION:
+                raise ValueError("Import context has an unsupported schema or version")
+            context_metadata = {
+                "context_id": self.context_id,
+                "schema": self.schema,
+                "version": self.version,
+            }
+            collection_metadata = {
+                **context_metadata,
+                "plugin_instance_id": self.plugin_instance_id,
+                "capability": self.capability,
+                "source_game_path": self.source_game_path,
+                "managed_destination": self.managed_destination,
+                "target_file_path": self.target_file_path,
+                "source_mod_directory": self.source_mod_directory,
+                "source_mod_name": self.source_mod_name,
+                "source_mod_root_path": self.source_mod_root_path,
+                "target_relative_path": self.target_relative_path,
+                "resource_manifest_version": self.resource_manifest_version,
+                "resource_manifest_status": self.resource_manifest_status,
+                "import_id": self.import_id,
+                "callback_port": self.callback_port,
+                "import_file_name": file_path.name,
+            }
 
             collection_metadata["import_file_name"] = file_path.name
 
@@ -480,15 +452,15 @@ class InstantImport(Operator):
             for obj in imported_meshes:
                 tag_object(obj, context_metadata)
 
-            props.game_path    = self.source_game_path or self.game_path
+            props.game_path    = self.source_game_path
             props.object_index = self.object_index
             props.display_name = file_path.name
-            props.context_id = self.context_id if is_v1 else ""
-            props.context_schema = self.schema if is_v1 else ""
-            props.context_version = self.version if is_v1 else 0
-            props.plugin_instance_id = self.plugin_instance_id if is_v1 else ""
-            props.capability = self.capability if is_v1 else ""
-            props.managed_destination = self.managed_destination if is_v1 else ""
+            props.context_id = self.context_id
+            props.context_schema = self.schema
+            props.context_version = self.version
+            props.plugin_instance_id = self.plugin_instance_id
+            props.capability = self.capability
+            props.managed_destination = self.managed_destination
             preview_warnings = [] if preview_package is None else preview_package.warnings
             warning_text = preview_validation_warning
             if preview_warnings:
@@ -499,8 +471,7 @@ class InstantImport(Operator):
                 f"Imported {file_path.name} with preview warnings: {warning_text}"
                 if warning_text else f"Imported {file_path.name}"
             )
-            if is_v1:
-                _preselect_sole_export_context(props, context, self.context_id)
+            _preselect_sole_export_context(props, context, self.context_id)
         except Exception as e:
             _remove_staging_objects(created_objects, collection)
             discard_preview_data(preview_package)
@@ -956,27 +927,19 @@ def _request_export_status(ref, export_id: str) -> tuple[dict | None, bool]:
         "exportId": export_id,
         "capability": ref.capability,
     }
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{ref.callback_port}/export/status",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=2) as response:
-            status = getattr(response, "status", None) or response.getcode()
-            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+        status, body = post_json(
+            ref.callback_port, "/export/status", payload,
+            timeout=2, max_response_size=MAX_PLUGIN_RESPONSE_SIZE)
         if status == 202:
             result = _decode_plugin_response(body, status)
             return None, result.get("code") == "export_pending"
         if 200 <= status < 300:
             return _decode_plugin_response(body, status), False
-    except HTTPError as error:
-        # 404 means the original request never registered. Other response
-        # errors are authoritative and should be surfaced when possible.
-        if error.code != 404:
-            body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
-            raise _plugin_error_from_body(body, error.code) from error
+        if status != 404:
+            raise _plugin_error_from_body(body, status)
+    except PluginResponseError:
+        raise
     except (URLError, TimeoutError, OSError, ValueError, UnicodeError):
         pass
     return None, False
@@ -999,22 +962,13 @@ def _send_plugin_export(ref, payload: dict) -> dict:
 
 
 def _send_plugin_export_to(ref, payload: dict, endpoint: str) -> dict:
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{ref.callback_port}{endpoint}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            status = getattr(response, "status", None) or response.getcode()
-            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
+        status, body = post_json(
+            ref.callback_port, endpoint, payload,
+            timeout=15, max_response_size=MAX_PLUGIN_RESPONSE_SIZE)
         if not 200 <= status < 300:
             raise _plugin_error_from_body(body, status)
         return _decode_plugin_response(body, status)
-    except HTTPError as error:
-        body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
-        raise _plugin_error_from_body(body, error.code) from error
     except (URLError, TimeoutError, OSError) as error:
         export_id = str(payload.get("exportId", ""))
         if export_id:
@@ -1097,24 +1051,13 @@ def _send_plugin_restore(ref, backup_name: str) -> dict:
         "capability": ref.capability,
         "backupName": backup_name,
     }
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{ref.callback_port}/backup/restore",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            status = getattr(response, "status", None) or response.getcode()
-            body = response.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
-        if len(body) > MAX_PLUGIN_RESPONSE_SIZE:
-            raise ValueError("plugin response is too large")
+        status, body = post_json(
+            ref.callback_port, "/backup/restore", payload,
+            timeout=15, max_response_size=MAX_PLUGIN_RESPONSE_SIZE)
         if not 200 <= status < 300:
             raise _plugin_error_from_body(body, status)
         return _decode_plugin_response(body, status)
-    except HTTPError as error:
-        body = error.read(MAX_PLUGIN_RESPONSE_SIZE + 1)
-        raise _plugin_error_from_body(body, error.code) from error
     except (URLError, TimeoutError, OSError) as error:
         raise ValueError(str(error) or "invalid plugin response") from error
 

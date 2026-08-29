@@ -3,7 +3,7 @@
     "Author": "Luci",
     "Name": "XIV Instant Edit",
     "InternalName": "InstantEdit",
-    "AssemblyVersion": "1.1.0.0",
+    "AssemblyVersion": "1.1.1.0",
     "Description": "Enables easy importing of Penumbra model files in Blender and exporting them back to the game with just a single click. Provides various utilities and settings to make mod creation and editing easier and faster.",
     "Punchline": "Send Penumbra model files to Blender and back with a single click.",
     "ApplicableVersion": "any",

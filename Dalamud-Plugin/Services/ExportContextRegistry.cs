@@ -53,9 +53,7 @@ public sealed class ExportContextRegistry : IDisposable
     public ExportContextRegistry(
         string pluginInstanceId,
         IEnumerable<PersistedExportContext>? persisted = null,
-        Action<IReadOnlyList<PersistedExportContext>>? persist = null,
-        Func<int, ActorIdentity?>? actorIdentityProvider = null,
-        TimeSpan? lifetime = null)
+        Action<IReadOnlyList<PersistedExportContext>>? persist = null)
     {
         if (string.IsNullOrWhiteSpace(pluginInstanceId))
             throw new ArgumentException("A plugin instance id is required.", nameof(pluginInstanceId));
@@ -63,39 +61,23 @@ public sealed class ExportContextRegistry : IDisposable
         PluginInstanceId = pluginInstanceId;
         _persist = persist;
 
-        var migrationRequired = false;
         if (persisted is not null)
         {
             foreach (var saved in persisted)
             {
-                // ExpiresAt is retained only for configuration compatibility.
-                // Possession of the capability remains authorized until the
-                // context is explicitly revoked.
                 if (saved is null || !IsSafePersistedContext(saved))
                     continue;
 
-                var context = RuntimeContext(saved, null);
-                migrationRequired |= saved.ExpiresAt != DateTimeOffset.MaxValue ||
-                                     !string.Equals(saved.TargetRelativePath, context.TargetRelativePath, StringComparison.Ordinal);
+                var context = RuntimeContext(saved);
                 _contexts[context.ContextId] = new ContextEntry
                 {
                     Context = context,
                 };
             }
         }
-        if (migrationRequired)
-            Persist();
     }
 
     public string PluginInstanceId { get; }
-
-    public InstantEditImportContext CreateContext(
-        string gamePath,
-        int objectIndex,
-        string modName,
-        int callbackPort,
-        ActorIdentity? actorIdentity)
-        => CreateContext(gamePath, objectIndex, modName, string.Empty, modName, callbackPort, actorIdentity);
 
     public InstantEditImportContext CreateContext(
         string gamePath,
@@ -104,39 +86,24 @@ public sealed class ExportContextRegistry : IDisposable
         string targetFilePath,
         string sourceModName,
         int callbackPort,
-        ActorIdentity? actorIdentity,
         string? sourceModRootPath = null,
         string? targetRelativePath = null,
-        ResourceDependencyManifest? resourceManifest = null,
-        bool resourceManifestCaptureAttempted = false)
+        ResourceDependencyManifest? resourceManifest = null)
     {
         if (!PenumbraService.IsSafeGamePath(gamePath) || objectIndex is < 0 or > ushort.MaxValue ||
             !PenumbraService.IsSafeModName(sourceModDirectory) || callbackPort is < 1 or > 65535)
             throw new ArgumentException("The import target is not safe.");
 
-        string targetFolder;
-        if (string.IsNullOrEmpty(targetFilePath))
-        {
-            // Compatibility contexts can still import, but the server will not
-            // authorize Quick Export without an original physical destination.
-            targetFolder = sourceModDirectory;
-        }
-        else
-        {
-            if (!PenumbraService.IsSafeLocalModelPath(targetFilePath))
-                throw new ArgumentException("The original model path is not a safe local .mdl file.");
-            targetFilePath = Path.GetFullPath(targetFilePath);
-            targetFolder = Path.GetDirectoryName(targetFilePath)
-                ?? throw new ArgumentException("The original model has no parent directory.");
-            sourceModRootPath = NormalizeRoot(sourceModRootPath);
-            targetRelativePath = ResolveTargetRelativePath(
-                targetFilePath,
-                sourceModRootPath,
-                targetRelativePath);
-        }
-
-        if (actorIdentity is not null && actorIdentity.ObjectIndex != objectIndex)
-            throw new ArgumentException("The actor identity does not match the object index.");
+        if (!PenumbraService.IsSafeLocalModelPath(targetFilePath))
+            throw new ArgumentException("The original model path is not a safe local .mdl file.");
+        targetFilePath = Path.GetFullPath(targetFilePath);
+        var targetFolder = Path.GetDirectoryName(targetFilePath)
+            ?? throw new ArgumentException("The original model has no parent directory.");
+        sourceModRootPath = NormalizeRoot(sourceModRootPath);
+        targetRelativePath = ResolveTargetRelativePath(
+            targetFilePath,
+            sourceModRootPath,
+            targetRelativePath);
 
         var safeManifest = IsSafeResourceManifest(resourceManifest) ? resourceManifest : null;
         var context = new InstantEditImportContext
@@ -147,8 +114,6 @@ public sealed class ExportContextRegistry : IDisposable
             Capability = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
             GamePath = gamePath,
             ObjectIndex = (ushort)objectIndex,
-            ActorIdentity = actorIdentity,
-            ModName = sourceModDirectory,
             TargetFilePath = targetFilePath,
             TargetFolder = targetFolder,
             SourceModDirectory = sourceModDirectory,
@@ -159,7 +124,7 @@ public sealed class ExportContextRegistry : IDisposable
             ResourceManifest = safeManifest,
             ResourceManifestStatus = safeManifest is not null
                 ? "ready"
-                : resourceManifestCaptureAttempted ? "capture_failed" : "legacy",
+                : "capture_failed",
         };
 
         lock (_lock)
@@ -225,7 +190,6 @@ public sealed class ExportContextRegistry : IDisposable
                 // Native actor addresses are process-local redraw hints. Never
                 // attach a saved context to whichever actor now occupies the
                 // previous object-table index.
-                ActorIdentity = null,
                 CallbackPort = callbackPort,
             };
             entry.Context = refreshed;
@@ -374,25 +338,10 @@ public sealed class ExportContextRegistry : IDisposable
     }
 
     private static bool TryNormalizeRelativePath(string? path, out string normalized)
-    {
-        normalized = (path ?? string.Empty).Replace('\\', '/').Trim();
-        while (normalized.StartsWith("./", StringComparison.Ordinal))
-            normalized = normalized[2..];
-        normalized = normalized.TrimStart('/');
-        if (normalized.Length == 0 || normalized.Length > 4096 || normalized.Contains('\0') ||
-            Path.IsPathRooted(normalized))
-            return false;
-        return normalized.Split('/').All(segment => segment.Length > 0 && segment is not ("." or ".."));
-    }
+        => PathRules.TryNormalizeRelativePath(path, out normalized);
 
     private static bool IsPathWithin(string path, string root)
-    {
-        var fullPath = Path.GetFullPath(path);
-        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase) ||
-               fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-               fullPath.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-    }
+        => PathRules.IsPathWithin(path, root);
 
     public bool TryBeginExport(
         string pluginInstanceId,
@@ -701,27 +650,8 @@ public sealed class ExportContextRegistry : IDisposable
         }
     }
 
-    private InstantEditImportContext RuntimeContext(PersistedExportContext saved, ActorIdentity? actorIdentity)
+    private InstantEditImportContext RuntimeContext(PersistedExportContext saved)
     {
-        var relative = saved.TargetRelativePath;
-        if (string.IsNullOrWhiteSpace(relative) && !string.IsNullOrWhiteSpace(saved.SourceModRootPath))
-        {
-            try
-            {
-                relative = ResolveTargetRelativePath(
-                    Path.GetFullPath(saved.TargetFilePath),
-                    NormalizeRoot(saved.SourceModRootPath),
-                    null);
-            }
-            catch (Exception)
-            {
-                // Legacy contexts without a provable relative destination may
-                // reconnect for display, but export authorization will reject
-                // them until the model is imported again.
-                relative = null;
-            }
-        }
-
         var safeManifest = IsSafeResourceManifest(saved.ResourceManifest)
             ? saved.ResourceManifest
             : null;
@@ -733,21 +663,15 @@ public sealed class ExportContextRegistry : IDisposable
             Capability = saved.Capability,
             GamePath = saved.GamePath,
             ObjectIndex = saved.ObjectIndex,
-            ActorIdentity = actorIdentity,
-            ModName = saved.ModName,
             TargetFilePath = saved.TargetFilePath,
             TargetFolder = saved.TargetFolder,
             SourceModDirectory = saved.SourceModDirectory,
             SourceModName = saved.SourceModName,
             SourceModRootPath = saved.SourceModRootPath,
-            TargetRelativePath = relative,
+            TargetRelativePath = saved.TargetRelativePath,
             CallbackPort = saved.CallbackPort,
             ResourceManifest = safeManifest,
-            ResourceManifestStatus = safeManifest is not null
-                ? "ready"
-                : string.Equals(saved.ResourceManifestStatus, "capture_failed", StringComparison.Ordinal)
-                    ? "capture_failed"
-                    : "legacy",
+            ResourceManifestStatus = safeManifest is not null ? "ready" : "capture_failed",
         };
     }
 
@@ -758,8 +682,7 @@ public sealed class ExportContextRegistry : IDisposable
             !PenumbraService.IsSafeGamePath(saved.GamePath) ||
             !PenumbraService.IsSafeModName(saved.SourceModDirectory) ||
             !PenumbraService.IsSafeLocalModelPath(saved.TargetFilePath) ||
-            (saved.TargetRelativePath is not null &&
-             !PenumbraService.IsSafeRelativeModelPath(saved.TargetRelativePath)) ||
+            !PenumbraService.IsSafeRelativeModelPath(saved.TargetRelativePath) ||
             saved.CallbackPort is < 1 or > 65535 ||
             string.IsNullOrWhiteSpace(saved.SourceModName) || string.IsNullOrWhiteSpace(saved.TargetFolder))
             return false;
@@ -815,7 +738,7 @@ public sealed class ExportContextRegistry : IDisposable
             lock (_lock)
             {
                 snapshot = _contexts.Values
-                    .Select(entry => PersistedExportContext.FromContext(entry.Context, DateTimeOffset.MaxValue))
+                    .Select(entry => PersistedExportContext.FromContext(entry.Context))
                     .ToList();
             }
 

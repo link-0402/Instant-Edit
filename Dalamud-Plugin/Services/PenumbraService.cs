@@ -68,11 +68,7 @@ public sealed class PenumbraService
     internal sealed record SourceTargetResolution(SourceModTarget? Target, string Code, string? Error);
 
     private const string OwnershipMarkerFile = ".instant-edit-owner.json";
-    private const string OwnershipSchema = "instant-edit.owner";
-    private const string OwnershipOwner = "Luci";
     private const string VariantGroupDescriptionPrefix = "Managed by XIV Instant Edit variant group: ";
-    private const string ManagedModDescription = "Managed by the XIV Instant Edit plugin.";
-    private const string LegacyManagedModDescription = "Managed by the Instant Edit plugin.";
 
     private readonly IDalamudPluginInterface  _pi;
     private readonly GetGameObjectResourcePaths _getPaths;
@@ -227,132 +223,6 @@ public sealed class PenumbraService
         {
             _log.Debug($"Could not retrieve Penumbra mod list: {e.Message}");
             return new Dictionary<string, string>();
-        }
-    }
-
-    /// <summary>
-    /// Write the exported mdl into the persistent XIV Instant Edit mod and reload + redraw so it applies in-game.
-    /// </summary>
-    /// <param name="modName">Directory name of the mod used for exports.</param>
-    /// <param name="gamePath">The game path the model was imported from (e.g. chara/weapon/.../x.mdl).</param>
-    /// <param name="exportedFile">The mdl file produced by Blender.</param>
-    /// <param name="objectIndex">Index of the game object the model came from.</param>
-    public ExportResult ApplyExport(string modName, string gamePath, string exportedFile, int objectIndex)
-        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex).GetAwaiter().GetResult();
-
-    /// <summary>
-    /// Applies an export without blocking the caller while Penumbra IPC is marshalled
-    /// onto the framework thread. The synchronous overload remains for old callers.
-    /// </summary>
-    public Task<ExportResult> ApplyExportAsync(
-        string modName,
-        string gamePath,
-        string exportedFile,
-        int objectIndex)
-        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, gamePath);
-
-    public Task<ExportResult> ApplyExportAsync(
-        string modName,
-        string gamePath,
-        string exportedFile,
-        int objectIndex,
-        ActorIdentity? actorIdentity)
-        => ApplyExportAsync(modName, gamePath, exportedFile, objectIndex, gamePath);
-
-    /// <summary>
-    /// Writes to <paramref name="gamePath"/> after revalidating the resolved source
-    /// path against <paramref name="sourceGamePath"/>. This permits a server-derived
-    /// sibling variant without allowing the client to choose an arbitrary validation path.
-    /// </summary>
-    public async Task<ExportResult> ApplyExportAsync(
-        string modName,
-        string gamePath,
-        string exportedFile,
-        int objectIndex,
-        string sourceGamePath,
-        string? penumbraVariantName = null,
-        string? penumbraVariantGroupName = null)
-    {
-        if (objectIndex is < 0 or > ushort.MaxValue)
-            return new ExportResult(false, "Invalid object index.");
-
-        var validationError = ValidateExportRequest(modName, gamePath, exportedFile);
-        if (validationError is not null)
-            return new ExportResult(false, validationError);
-        if (!IsSafeGamePath(sourceGamePath))
-            return new ExportResult(false, "Invalid source game path.");
-        var resolvedVariantGroupName = penumbraVariantGroupName ?? "XIV Instant Edit Variants";
-        if (penumbraVariantName is not null &&
-            (!IsSafeVariantName(penumbraVariantName) || !IsSafeVariantGroupName(resolvedVariantGroupName)))
-            return new ExportResult(false, "Invalid Penumbra variant or option group name.");
-
-        await _exportGate.WaitAsync().ConfigureAwait(false);
-
-        try
-        {
-            // Even read-only Penumbra IPC is kept on the framework thread. This
-            // also makes a disconnected/reloading Penumbra a normal failed result.
-            var targetError = await _framework.RunOnFrameworkThread(
-                () => ValidateTargetPathOnFramework(sourceGamePath, objectIndex)).ConfigureAwait(false);
-            if (targetError is not null)
-                return new ExportResult(false, targetError);
-
-            var root = await _framework.RunOnFrameworkThread(GetModDirectory).ConfigureAwait(false);
-            if (root is null)
-                return new ExportResult(false, "Couldn't retrieve the Penumbra mod directory.");
-
-            var modFolder = Path.Combine(root, modName);
-            var ownershipError = EnsureOwnedModFolder(modFolder, modName);
-            if (ownershipError is not null)
-                return new ExportResult(false, ownershipError);
-            var writeError = WriteModel(modFolder, gamePath, exportedFile);
-            if (writeError is not null)
-                return new ExportResult(false, writeError);
-
-            if (penumbraVariantName is not null)
-            {
-                var groupError = WriteVariantGroup(
-                    modFolder,
-                    sourceGamePath,
-                    "Files/" + gamePath,
-                    penumbraVariantName,
-                    resolvedVariantGroupName);
-                if (groupError is not null)
-                    return new ExportResult(false, groupError);
-            }
-
-            var modState = await _framework.RunOnFrameworkThread(
-                () => GetModStateOnFramework(modName)).ConfigureAwait(false);
-            if (!modState.Success)
-                return new ExportResult(false, "Could not retrieve the Penumbra mod list.");
-
-            if (modState.Exists)
-            {
-                var reloadError = await _framework.RunOnFrameworkThread(
-                    () => ReloadModOnFramework(modName)).ConfigureAwait(false);
-                if (reloadError is not null)
-                    return reloadError;
-            }
-            else
-            {
-                var addError = await AddNewModAsync(modName).ConfigureAwait(false);
-                if (addError is not null)
-                    return addError;
-            }
-
-            // The add event is awaited outside the framework callback. Only after
-            // it fires do we re-enter the framework to configure and redraw.
-            return await _framework.RunOnFrameworkThread(
-                () => ConfigureModOnFramework(modName, objectIndex)).ConfigureAwait(false);
-        }
-        catch (Exception e)
-        {
-            _log.Error(e, "Failed to apply export to Penumbra.");
-            return new ExportResult(false, $"Failed to apply export: {e.Message}");
-        }
-        finally
-        {
-            _exportGate.Release();
         }
     }
 
@@ -1666,14 +1536,6 @@ public sealed class PenumbraService
         return originalName.Length <= 255 && originalName is not ".mdl" and not "." and not "..";
     }
 
-    private (bool Success, bool Exists) GetModStateOnFramework(string modName)
-    {
-        if (!TryGetModList(out var modList))
-            return (false, false);
-
-        return (true, modList.ContainsKey(modName));
-    }
-
     private ExportResult? ReloadModOnFramework(string modName)
     {
         PenumbraApiEc modResult;
@@ -1852,178 +1714,6 @@ public sealed class PenumbraService
         }
     }
 
-
-    private string? ValidateTargetPathOnFramework(
-        string gamePath,
-        int objectIndex,
-        string? expectedResolvedPath = null)
-    {
-        if (_objects is null)
-            return null;
-
-        try
-        {
-            var paths = _getPaths.Invoke((ushort)objectIndex);
-            if (paths is null || paths.Length == 0 ||
-                !paths.Any(dictionary => dictionary is not null && dictionary.Any(resource =>
-                    (expectedResolvedPath is null || PathsEqual(resource.Key, expectedResolvedPath)) &&
-                    resource.Value.Any(path => string.Equals(path, gamePath, StringComparison.OrdinalIgnoreCase)))))
-                return "target_path_changed";
-        }
-        catch (Exception e)
-        {
-            _log.Debug($"Could not revalidate export target: {e.Message}");
-            return "target_revalidation_failed";
-        }
-
-        return null;
-    }
-
-    private static bool PathsEqual(string left, string right)
-    {
-        try
-        {
-            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-    }
-
-    private static string? EnsureOwnedModFolder(string modFolder, string modName)
-    {
-        if (Directory.Exists(modFolder))
-        {
-            try
-            {
-                if ((File.GetAttributes(modFolder) & FileAttributes.ReparsePoint) != 0)
-                    return "destination_mod_unsafe";
-            }
-            catch (Exception e)
-            {
-                return $"destination_mod_unreadable: {e.Message}";
-            }
-        }
-        else
-        {
-            Directory.CreateDirectory(modFolder);
-        }
-
-        var markerPath = Path.Combine(modFolder, OwnershipMarkerFile);
-        if (File.Exists(markerPath))
-        {
-            try
-            {
-                var marker = LoadJsonObject(markerPath);
-                if (!string.Equals(marker["schema"]?.GetValue<string>(), OwnershipSchema, StringComparison.Ordinal) ||
-                    !string.Equals(marker["owner"]?.GetValue<string>(), OwnershipOwner, StringComparison.Ordinal) ||
-                    !string.Equals(marker["modName"]?.GetValue<string>(), modName, StringComparison.Ordinal))
-                    return "destination_mod_not_owned";
-            }
-            catch
-            {
-                return "destination_mod_not_owned";
-            }
-        }
-        else if (DirectoryHasLegacyOwnership(modFolder, modName))
-        {
-            // Existing releases did not write a marker. Migrate only the exact
-            // metadata signature that this plugin itself used.
-            WriteOwnershipMarker(markerPath, modName);
-        }
-        else if (Directory.EnumerateFileSystemEntries(modFolder).Any())
-        {
-            return "destination_mod_not_owned";
-        }
-        else
-        {
-            WriteOwnershipMarker(markerPath, modName);
-        }
-
-        var metaPath = Path.Combine(modFolder, "meta.json");
-        var meta = LoadJsonObject(metaPath);
-        meta["FileVersion"] = 3;
-        meta["Name"] = modName;
-        meta["Author"] = "Luci";
-        meta["Description"] = ManagedModDescription;
-        meta["Image"] = "";
-        meta["Version"] = "";
-        meta["Website"] = "";
-        meta["ModTags"] = new JsonArray();
-        WriteJsonAtomic(metaPath, meta);
-
-        var defaultPath = Path.Combine(modFolder, "default_mod.json");
-        var defaultMod = LoadDefaultMod(defaultPath);
-        defaultMod["Version"] ??= 0;
-        defaultMod["Files"] ??= new JsonObject();
-        defaultMod["FileSwaps"] ??= new JsonObject();
-        // Older releases wrote an object here. It is not a valid
-        // Penumbra container, and there is no safe object-to-manipulation mapping.
-        if (defaultMod["Manipulations"] is not JsonArray)
-            defaultMod["Manipulations"] = new JsonArray();
-        WriteJsonAtomic(defaultPath, defaultMod);
-
-        return null;
-    }
-
-    private static bool DirectoryHasLegacyOwnership(string modFolder, string modName)
-    {
-        try
-        {
-            var meta = LoadJsonObject(Path.Combine(modFolder, "meta.json"));
-            return string.Equals(meta["Name"]?.GetValue<string>(), modName, StringComparison.Ordinal) &&
-                   string.Equals(meta["Author"]?.GetValue<string>(), OwnershipOwner, StringComparison.Ordinal) &&
-                   (string.Equals(meta["Description"]?.GetValue<string>(), ManagedModDescription, StringComparison.Ordinal) ||
-                    string.Equals(meta["Description"]?.GetValue<string>(), LegacyManagedModDescription, StringComparison.Ordinal));
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static void WriteOwnershipMarker(string path, string modName)
-    {
-        var marker = new JsonObject
-        {
-            ["schema"] = OwnershipSchema,
-            ["version"] = 1,
-            ["owner"] = OwnershipOwner,
-            ["modName"] = modName,
-        };
-        WriteJsonAtomic(path, marker);
-    }
-
-    private static string? WriteModel(string modFolder, string gamePath, string exportedFile)
-    {
-        var filesRoot = Path.Combine(modFolder, "Files");
-        var relativePath = "Files/" + gamePath;
-        var target       = Path.Combine(modFolder, relativePath.Replace('/', Path.DirectorySeparatorChar));
-        if (HasReparsePointInPath(modFolder, Path.GetDirectoryName(target)!) ||
-            (File.Exists(target) && (File.GetAttributes(target) & FileAttributes.ReparsePoint) != 0))
-            return "destination_mod_unsafe";
-
-        Directory.CreateDirectory(filesRoot);
-        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        File.Copy(exportedFile, target, true);
-
-        var defaultPath = Path.Combine(modFolder, "default_mod.json");
-        var defaultMod = LoadDefaultMod(defaultPath);
-        if (!defaultMod.ContainsKey("Version"))
-            defaultMod["Version"] = 0;
-
-        var files = defaultMod["Files"] as JsonObject ?? new JsonObject();
-        files[gamePath] = relativePath;
-        defaultMod["Files"] = files;
-
-        if (defaultMod["FileSwaps"] is not (JsonObject or null))
-            defaultMod["FileSwaps"] = new JsonObject();
-        if (defaultMod["Manipulations"] is not JsonArray)
-            defaultMod["Manipulations"] = new JsonArray();
-        WriteJsonAtomic(defaultPath, defaultMod);
-        return null;
-    }
 
     private sealed record VariantOptionResolution(string? FilePath, string Code, string? Error);
 
@@ -3135,13 +2825,7 @@ public sealed class PenumbraService
     }
 
     private static bool IsSafeVariantName(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value) || value.Length > 120 || value is "." or ".." ||
-            value.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
-            value.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || value.Contains('/') || value.Contains('\\'))
-            return false;
-        return value.All(c => !char.IsControl(c));
-    }
+        => PathRules.IsSafeVariantName(value);
 
     internal static bool IsSafeVariantGroupName(string? value)
     {
@@ -3694,26 +3378,13 @@ public sealed class PenumbraService
     }
 
     internal static string Dx11TexturePath(string path, ushort flags)
-    {
-        var normalized = NormalizeGamePath(path);
-        if ((flags & 0x8000) == 0)
-            return normalized;
-        var separator = normalized.LastIndexOf('/');
-        return separator < 0 ? "--" + normalized : normalized[..(separator + 1)] + "--" + normalized[(separator + 1)..];
-    }
+        => PathRules.Dx11TexturePath(path, flags);
 
     private static string ReadNullTerminated(byte[] strings, int offset)
-    {
-        if (offset < 0 || offset >= strings.Length)
-            return string.Empty;
-        var end = Array.IndexOf(strings, (byte)0, offset);
-        if (end < 0)
-            end = strings.Length;
-        return Encoding.UTF8.GetString(strings, offset, end - offset);
-    }
+        => PathRules.ReadNullTerminated(strings, offset);
 
     private static string NormalizeGamePath(string value)
-        => (value ?? string.Empty).Replace('\\', '/').Trim().TrimStart('/');
+        => PathRules.NormalizeGamePath(value);
 
     internal static bool IsSafeRelativeModelPath(string? path)
         => path is not null && IsSafeRelativeModPath(path);
@@ -3771,14 +3442,7 @@ public sealed class PenumbraService
     }
 
     private static bool IsPathWithin(string path, string root)
-    {
-        var fullPath = Path.GetFullPath(path);
-        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase))
-            return true;
-        return fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-               fullPath.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-    }
+        => PathRules.IsPathWithin(path, root);
 
     internal static bool IsSafeModName(string? modName)
     {

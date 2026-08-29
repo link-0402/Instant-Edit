@@ -439,29 +439,10 @@ public sealed class ExportServer : IDisposable
 
         if (method == "POST" && path.TrimEnd('/') == "/context/reattach")
         {
-            string body;
-            try
-            {
-                body = new UTF8Encoding(false, true).GetString(request.Body);
-            }
-            catch (DecoderFallbackException)
-            {
-                return Error(400, "invalid_utf8", "request body is not valid UTF-8");
-            }
-
-            ReattachRequest? reattach;
-            try
-            {
-                reattach = JsonSerializer.Deserialize<ReattachRequest>(body, JsonOpts);
-            }
-            catch (Exception e)
-            {
-                _log.Error(e, "Failed to parse context reattach request.");
-                return Error(400, "invalid_json", "request body is not valid JSON");
-            }
-
-            if (reattach is null)
-                return Error(400, "malformed_request", "request must be a JSON object");
+            var parsed = DeserializeRequest<ReattachRequest>(request.Body, "context reattach", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var reattach = parsed!;
 
             var reattachError = ValidateReattachEnvelope(reattach);
             if (reattachError is not null)
@@ -557,28 +538,10 @@ public sealed class ExportServer : IDisposable
 
         if (method == "POST" && path.TrimEnd('/') == "/backup/restore")
         {
-            string body;
-            try
-            {
-                body = new UTF8Encoding(false, true).GetString(request.Body);
-            }
-            catch (DecoderFallbackException)
-            {
-                return Error(400, "invalid_utf8", "request body is not valid UTF-8");
-            }
-
-            BackupRestoreRequest? restore;
-            try
-            {
-                restore = JsonSerializer.Deserialize<BackupRestoreRequest>(body, JsonOpts);
-            }
-            catch (Exception e)
-            {
-                _log.Error(e, "Failed to parse backup restore request.");
-                return Error(400, "invalid_json", "request body is not valid JSON");
-            }
-            if (restore is null)
-                return Error(400, "malformed_request", "request must be a JSON object");
+            var parsed = DeserializeRequest<BackupRestoreRequest>(request.Body, "backup restore", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var restore = parsed!;
             var restoreError = ValidateBackupRestoreEnvelope(restore);
             if (restoreError is not null)
                 return Error(StatusForCode(restoreError), restoreError, "unsupported or malformed backup restore envelope");
@@ -754,29 +717,10 @@ public sealed class ExportServer : IDisposable
 
         if (method == "POST" && path.TrimEnd('/') == "/export")
         {
-            string body;
-            try
-            {
-                body = new UTF8Encoding(false, true).GetString(request.Body);
-            }
-            catch (DecoderFallbackException)
-            {
-                return Error(400, "invalid_utf8", "request body is not valid UTF-8");
-            }
-
-            ExportRequest? export;
-            try
-            {
-                export = JsonSerializer.Deserialize<ExportRequest>(body, JsonOpts);
-            }
-            catch (Exception e)
-            {
-                _log.Error(e, "Failed to parse export request.");
-                return Error(400, "invalid_json", "request body is not valid JSON");
-            }
-
-            if (export is null)
-                return Error(400, "malformed_request", "request must be a JSON object");
+            var parsed = DeserializeRequest<ExportRequest>(request.Body, "export", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var export = parsed!;
 
             var envelopeError = ValidateEnvelope(export);
             if (envelopeError is not null)
@@ -1032,13 +976,7 @@ public sealed class ExportServer : IDisposable
     }
 
     private static bool IsSafeVariantName(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value) || value.Length > 120 || value is "." or ".." ||
-            value.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
-            value.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || value.Contains('/') || value.Contains('\\'))
-            return false;
-        return value.All(c => !char.IsControl(c));
-    }
+        => PathRules.IsSafeVariantName(value);
 
     private static bool IsSafeId(string? value)
         => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&

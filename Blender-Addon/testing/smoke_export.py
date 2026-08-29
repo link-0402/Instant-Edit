@@ -295,6 +295,7 @@ def run() -> None:
         print("[PASS] XIV Instant Edit discovers new visible parts and groups outside its collection")
 
         instant_ops = importlib.import_module(f"{addon.__name__}.instant_edit.ops")
+        plugin_http = importlib.import_module(f"{addon.__name__}.instant_edit.plugin_http")
         export_module = importlib.import_module(f"{addon.__name__}.mesh.export")
 
         class FakeResponse:
@@ -315,7 +316,7 @@ def run() -> None:
             def read(self, _size=-1):
                 return self.body
 
-        original_urlopen = instant_ops.urllib.request.urlopen
+        original_urlopen = plugin_http.urllib.request.urlopen
 
         planned_aliases = {
             (context_id, assigned.casefold()): "/mt_c0101e0001_top_a.mtrl",
@@ -349,7 +350,7 @@ def run() -> None:
                 return FakeResponse(body)
             return FakeResponse()
 
-        instant_ops.urllib.request.urlopen = fake_urlopen
+        plugin_http.urllib.request.urlopen = fake_urlopen
         instant_props = bpy.context.scene.xiv_ie_instant_edit_props
         instant_props.export_destination = context_id
         instant_props.variant_target = "NEW_GROUP"
@@ -369,7 +370,7 @@ def run() -> None:
             "source_mod_directory": "OtherSmokeMod",
             "source_mod_name": "Other Smoke Mod",
             "resource_manifest_version": 0,
-            "resource_manifest_status": "legacy",
+            "resource_manifest_status": "capture_failed",
             "callback_port": 42428,
         })
         mashup_obj = added_group.copy()
@@ -385,13 +386,8 @@ def run() -> None:
         original_scope_for_mashup = instant_props.export_scope
         instant_props.export_scope = "VISIBLE"
         show, enabled, message = instant_ops.mashup_target_state(bpy.context)
-        if not show or enabled or "Reload/update" not in message:
-            raise AssertionError("Legacy mashup Context did not request a plugin update and re-import")
-
-        context_module._set(mashup_collection, "resource_manifest_status", "capture_failed")
-        show, enabled, message = instant_ops.mashup_target_state(bpy.context)
         if not show or enabled or "Dependency capture failed" not in message:
-            raise AssertionError("Failed mashup capture was not distinguished from a legacy Context")
+            raise AssertionError("Failed mashup capture did not request a re-import")
 
         context_module._set(mashup_collection, "resource_manifest_version", 1)
         context_module._set(mashup_collection, "resource_manifest_status", "ready")
@@ -618,7 +614,7 @@ def run() -> None:
         try:
             quick_target = instant_ops.perform_instant_export(bpy.context)
         finally:
-            instant_ops.urllib.request.urlopen = original_urlopen
+            plugin_http.urllib.request.urlopen = original_urlopen
 
         if tuple(armature.scale) != tuple(original_armature_scale):
             raise AssertionError(

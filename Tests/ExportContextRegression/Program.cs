@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using InstantEdit.Models;
 using InstantEdit.Services;
@@ -59,24 +60,20 @@ try
         Capability = capability,
         GamePath = "chara/equipment/e0001/model/c0101e0001_top.mdl",
         ObjectIndex = 7,
-        ModName = "registered-mod",
         TargetFilePath = originalTarget,
         TargetFolder = originalParent,
         SourceModDirectory = "registered-mod",
         SourceModName = "Registered Mod",
         SourceModRootPath = originalRoot,
-        TargetRelativePath = null,
+        TargetRelativePath = relative,
         CallbackPort = 42428,
-        ExpiresAt = DateTimeOffset.UtcNow.AddYears(-2),
     };
 
     IReadOnlyList<PersistedExportContext> persisted = [];
     using var registry = new ExportContextRegistry(
         "current-plugin",
         [saved],
-        contexts => persisted = contexts,
-        _ => new ActorIdentity { ObjectIndex = 7, Address = 999 },
-        TimeSpan.FromDays(30));
+        contexts => persisted = contexts);
 
     Require(registry.TryReattach(
         saved.ContextId, saved.ImportId, saved.Capability, 42428,
@@ -84,10 +81,8 @@ try
         "contexts older than 30 days remain authorized");
     Require(reattachCode == "context_reattached" && reattached is not null,
         "reattach returns the authoritative context");
-    Require(reattached!.ActorIdentity is null,
-        "reattach never binds the context to the current object-table occupant");
-    Require(reattached.TargetRelativePath == relative,
-        "legacy contexts derive their durable target-relative path");
+    Require(reattached?.TargetRelativePath == relative,
+        "persisted contexts retain their durable target-relative path");
 
     var exportFile = Path.Combine(testRoot, "export.mdl");
     File.WriteAllBytes(exportFile, [4, 5, 6]);
@@ -264,22 +259,21 @@ try
         "manifest-plugin", persist: contexts => manifestPersistence = contexts);
     var manifestContext = manifestRegistry.CreateContext(
         effectiveHairPath, 7, "registered-mod", originalTarget, "Registered Mod", 42428,
-        null, originalRoot, relative, manifest);
+        originalRoot, relative, manifest);
     Require(manifestContext.ResourceManifestVersion == 1 &&
             manifestContext.ResourceManifestStatus == "ready" &&
             manifestPersistence.Single().ResourceManifest?.Materials.Count == 1 &&
             manifestPersistence.Single().ResourceManifestStatus == "ready",
         "new contexts persist an exact mashup dependency manifest");
+    var serializedContext = JsonNode.Parse(JsonSerializer.Serialize(manifestContext))!.AsObject();
+    Require(serializedContext["sourceGamePath"]?.GetValue<string>() == effectiveHairPath &&
+            !serializedContext.ContainsKey("gamePath"),
+        "reattach contexts use the synchronized sourceGamePath protocol field");
     var failedManifestContext = manifestRegistry.CreateContext(
         effectiveHairPath, 7, "registered-mod", originalTarget, "Registered Mod", 42428,
-        null, originalRoot, relative, null, resourceManifestCaptureAttempted: true);
+        originalRoot, relative, null);
     Require(failedManifestContext.ResourceManifestStatus == "capture_failed",
-        "new imports distinguish a failed dependency capture from legacy contexts");
-    var legacyManifestContext = manifestRegistry.CreateContext(
-        effectiveHairPath, 7, "registered-mod", originalTarget, "Registered Mod", 42428,
-        null, originalRoot, relative);
-    Require(legacyManifestContext.ResourceManifestStatus == "legacy",
-        "contexts without a dependency capture attempt remain marked legacy");
+        "new imports record failed dependency capture explicitly");
 
     const string swappedMaterial = "chara/human/c0201/obj/hair/h0179/material/v0001/mt_c0201h0179_hir_b_c0801.mtrl";
     var swappedResources = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
@@ -337,7 +331,7 @@ try
     };
     var modManifestContext = manifestRegistry.CreateContext(
         effectiveHairPath, 7, "registered-mod", originalTarget, "Registered Mod", 42428,
-        null, originalRoot, relative, modManifest);
+        originalRoot, relative, modManifest);
     var normalizedModelRelative = "Files/normalized/item.mdl";
     var normalizedMaterialRelative = "Files/normalized/mt_test.mtrl";
     Require(manifestRegistry.RemapModPaths(
@@ -404,10 +398,10 @@ try
     };
     var galianContext = manifestRegistry.CreateContext(
         "chara/human/c0801/obj/hair/h0154/model/c0801h0154_hir.mdl", 8,
-        "galian-mod", originalTarget, "Galian", 42428, null, originalRoot, relative, galianManifest);
+        "galian-mod", originalTarget, "Galian", 42428, originalRoot, relative, galianManifest);
     var bucklerContext = manifestRegistry.CreateContext(
         "chara/human/c0801/obj/hair/h0179/model/c0801h0179_hir.mdl", 9,
-        "buckler-mod", originalTarget, "Buckler", 42428, null, originalRoot, relative, bucklerManifest);
+        "buckler-mod", originalTarget, "Buckler", 42428, originalRoot, relative, bucklerManifest);
     var canonicalPlan = PenumbraService.BuildMashupPlan(galianContext,
     [
         new MashupContributor(galianContext, ["/mt_c0801h0154_hir_b_c0801.mtrl"]),
@@ -449,10 +443,10 @@ try
     };
     var customTopContext = manifestRegistry.CreateContext(
         "chara/equipment/e0118/model/c0201e0118_top.mdl", 10,
-        "custom-top", originalTarget, "Custom Top", 42428, null, originalRoot, relative, customTopManifest);
+        "custom-top", originalTarget, "Custom Top", 42428, originalRoot, relative, customTopManifest);
     var incomingTopContext = manifestRegistry.CreateContext(
         "chara/equipment/e9999/model/c0201e9999_top.mdl", 11,
-        "incoming-top", originalTarget, "Incoming Top", 42428, null, originalRoot, relative, incomingTopManifest);
+        "incoming-top", originalTarget, "Incoming Top", 42428, originalRoot, relative, incomingTopManifest);
     var customPlan = PenumbraService.BuildMashupPlan(customTopContext,
     [
         new MashupContributor(customTopContext, ["/bloodspiller.mtrl"]),
@@ -474,7 +468,7 @@ try
     };
     var customHairContext = manifestRegistry.CreateContext(
         "chara/human/c0801/obj/hair/h0154/model/c0801h0154_hir.mdl", 13,
-        "custom-hair", originalTarget, "Custom Hair", 42428, null, originalRoot, relative, customHairManifest);
+        "custom-hair", originalTarget, "Custom Hair", 42428, originalRoot, relative, customHairManifest);
     var customHairPlan = PenumbraService.BuildMashupPlan(customHairContext,
     [
         new MashupContributor(customHairContext, ["/customhair.mtrl"]),
@@ -595,7 +589,7 @@ try
     var overflowManifest = new ResourceDependencyManifest { Materials = overflowMaterials };
     var overflowContext = manifestRegistry.CreateContext(
         "chara/equipment/e9998/model/c0201e9998_top.mdl", 12,
-        "overflow-top", originalTarget, "Overflow Top", 42428, null, originalRoot, relative, overflowManifest);
+        "overflow-top", originalTarget, "Overflow Top", 42428, originalRoot, relative, overflowManifest);
     var overflowPlan = PenumbraService.BuildMashupPlan(customTopContext,
     [
         new MashupContributor(customTopContext, ["/bloodspiller.mtrl"]),

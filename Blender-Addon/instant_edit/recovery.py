@@ -3,8 +3,7 @@
 import json
 import queue
 import threading
-import urllib.request
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 
 import bpy
 
@@ -15,6 +14,7 @@ from .context import (
     context_collections,
     validate_context,
 )
+from .plugin_http import candidate_ports, post_json
 
 
 MAX_RESPONSE_SIZE = 64 * 1024
@@ -25,22 +25,6 @@ _recovery_results = queue.Queue()
 _recovery_counts = {}
 
 
-def _candidate_ports(collection) -> list[int]:
-    ports = []
-    stored = _value(collection, "callback_port", 0)
-    if isinstance(stored, int) and 1 <= stored <= 65535:
-        ports.append(stored)
-    try:
-        from ..preferences import get_prefs
-
-        current = get_prefs().instant_edit_plugin_port
-        if isinstance(current, int) and 1 <= current <= 65535 and current not in ports:
-            ports.append(current)
-    except Exception:
-        pass
-    return ports
-
-
 def reattach_collection(collection, scene=None) -> bool:
     """Reattach one saved collection and replace only its routing metadata."""
     context_id = _value(collection, "context_id", "")
@@ -49,7 +33,7 @@ def reattach_collection(collection, scene=None) -> bool:
     if not all(isinstance(value, str) and value for value in (context_id, import_id, capability)):
         return False
 
-    payload = _request_reattach(context_id, import_id, capability, _candidate_ports(collection))
+    payload = _request_reattach(context_id, import_id, capability, candidate_ports(collection))
     if payload is None:
         return False
     try:
@@ -68,35 +52,26 @@ def _request_reattach(
     ports: list[int],
 ) -> dict | None:
     """Perform only HTTP/JSON work so this function is safe on a worker thread."""
-    request_body = json.dumps({
+    request_payload = {
         "schema": "instant-edit.reattach",
         "version": 1,
         "contextId": context_id,
         "importId": import_id,
         "capability": capability,
-    }).encode("utf-8")
+    }
 
     for port in ports:
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/context/reattach",
-            data=request_body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-                body = response.read(MAX_RESPONSE_SIZE + 1)
-            if len(body) > MAX_RESPONSE_SIZE:
+            status, body = post_json(
+                port, "/context/reattach", request_payload,
+                timeout=REQUEST_TIMEOUT_SECONDS, max_response_size=MAX_RESPONSE_SIZE)
+            if not 200 <= status < 300:
                 continue
             result = json.loads(body.decode("utf-8"))
             payload = result.get("context") if isinstance(result, dict) and result.get("ok") else None
             if not isinstance(payload, dict):
                 continue
             return payload
-        except HTTPError:
-            # Try the configured fallback port as well. This handles a port
-            # change between the original import and the Blender restart.
-            continue
         except (URLError, TimeoutError, OSError, ValueError, UnicodeError):
             continue
 
@@ -122,7 +97,7 @@ def recover_saved_contexts() -> None:
             _value(collection, "capability", ""),
         )
         if all(isinstance(value, str) and value for value in values):
-            requests.append((*values, _candidate_ports(collection)))
+            requests.append((*values, candidate_ports(collection)))
     if not requests:
         return
 
