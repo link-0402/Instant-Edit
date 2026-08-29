@@ -385,7 +385,7 @@ public sealed class MainWindow : Window, IDisposable
             if (filteredView)
                 DrawFlatSection(actor, ordered, key, filterBySearch);
             else
-                for (var i = 0; i < ordered.Count; i++) DrawNode(actor, ordered[i], $"{key}:{i}", 2, filterBySearch, searchActive);
+                for (var i = 0; i < ordered.Count; i++) DrawNode(actor, ordered[i], $"{key}:{i}", 3, filterBySearch, searchActive);
         }
         ImGui.PopID();
     }

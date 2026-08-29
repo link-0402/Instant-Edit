@@ -7,9 +7,10 @@ using Penumbra.Api.Helpers;
 namespace InstantEdit.Services;
 
 /// <summary>
-/// Captures only the local player's Penumbra resource trees. Penumbra selects the
-/// candidate indices; each is then joined to the object table and fail-closed ownership
-/// rules before its immutable, pruned snapshot is published.
+/// Captures the local player's and their currently spawned owned-object Penumbra resource
+/// trees. Penumbra selects the candidate indices; missing owned-object trees are recovered
+/// explicitly, then each is joined to the object table and admitted by supported object-kind
+/// checks before its immutable, pruned snapshot is published.
 /// </summary>
 public sealed class OnScreenService
 {
@@ -92,18 +93,12 @@ public sealed class OnScreenService
         if (!_clientState.IsLoggedIn || _objects.LocalPlayer is not { Address: not 0 } localPlayer)
             return [];
 
-        if (localPlayer.GameObjectId > uint.MaxValue)
-        {
-            ReportAmbiguityOnce("local-owner-id", "Local player owner ID is not representable; omitting owned resource trees.");
-            return [];
-        }
-
-        var localOwnerId = (uint)localPlayer.GameObjectId;
         var trees = _penumbra.GetPlayerResourceTrees();
-        var treeEntries = trees.ToArray();
+        var treeEntries = trees.ToList();
+        AddMissingOwnedTrees(treeEntries, localPlayer);
         var resolvedPaths = _penumbra.GetResourcePaths(treeEntries.Select(entry => entry.Key).ToArray());
         var result = new List<OnScreenObject>(trees.Count);
-        for (var treeIndex = 0; treeIndex < treeEntries.Length; treeIndex++)
+        for (var treeIndex = 0; treeIndex < treeEntries.Count; treeIndex++)
         {
             var (index, tree) = treeEntries[treeIndex];
             try
@@ -115,7 +110,7 @@ public sealed class OnScreenService
                     continue;
                 }
 
-                if (!TryClassifyCandidate(candidate, localPlayer, localOwnerId, out var category))
+                if (!TryClassifyCandidate(candidate, localPlayer, out var category))
                     continue;
 
                 IReadOnlyList<ResourceNode> roots = (tree.Nodes ?? [])
@@ -146,10 +141,53 @@ public sealed class OnScreenService
         return result;
     }
 
+    private void AddMissingOwnedTrees(List<KeyValuePair<ushort, ResourceTreeDto>> treeEntries, IGameObject localPlayer)
+    {
+        var existing = treeEntries.Select(entry => entry.Key).ToHashSet();
+        var missing = new List<ushort>();
+        try
+        {
+            foreach (var candidate in _objects)
+            {
+                if (candidate is null || candidate.Address == nint.Zero ||
+                    existing.Contains(candidate.ObjectIndex) ||
+                    !IsSupportedOwnedObject(candidate) ||
+                    !IsOwnedByLocalPlayer(candidate, localPlayer))
+                    continue;
+
+                missing.Add(candidate.ObjectIndex);
+                existing.Add(candidate.ObjectIndex);
+            }
+        }
+        catch (Exception e)
+        {
+            _log.Debug($"Could not enumerate owned objects for resource-tree fallback: {e.Message}");
+            return;
+        }
+
+        if (missing.Count == 0)
+            return;
+
+        var recovered = _penumbra.GetResourceTrees(missing.ToArray());
+        for (var i = 0; i < missing.Count && i < recovered.Length; i++)
+        {
+            var recoveredTree = recovered[i];
+            if (recoveredTree is not null)
+                treeEntries.Add(new KeyValuePair<ushort, ResourceTreeDto>(missing[i], recoveredTree));
+        }
+    }
+
+    private static bool IsSupportedOwnedObject(IGameObject candidate)
+        => candidate.ObjectKind is ObjectKind.Companion or ObjectKind.Mount or ObjectKind.FollowMount ||
+           candidate is IBattleNpc { BattleNpcKind: BattleNpcSubKind.Pet };
+
+    private static bool IsOwnedByLocalPlayer(IGameObject candidate, IGameObject localPlayer)
+        => candidate.OwnerId == localPlayer.EntityId ||
+           (localPlayer.GameObjectId <= uint.MaxValue && candidate.OwnerId == (uint)localPlayer.GameObjectId);
+
     private bool TryClassifyCandidate(
         IGameObject candidate,
         IGameObject localPlayer,
-        uint localOwnerId,
         out ActorPresentationCategory category)
     {
         if (candidate.ObjectIndex == localPlayer.ObjectIndex && candidate.Address == localPlayer.Address)
@@ -158,19 +196,17 @@ public sealed class OnScreenService
             return true;
         }
 
-        if (candidate.OwnerId != localOwnerId)
-        {
-            ReportAmbiguityOnce($"owner-mismatch:{candidate.ObjectKind}", $"Omitting {candidate.ObjectKind} player-tree candidate with a non-local owner ID.");
-            category = default;
-            return false;
-        }
-
+        // GetPlayerResourceTrees is already scoped by Penumbra to the player and their
+        // owned objects. Do not apply a second OwnerId filter here: minion and mount
+        // entries can expose an owner representation that differs from the local
+        // player's object-table identity even though Penumbra returned their tree.
         switch (candidate.ObjectKind)
         {
             case ObjectKind.Companion:
                 category = ActorPresentationCategory.Minion;
                 return true;
             case ObjectKind.Mount:
+            case ObjectKind.FollowMount:
                 category = ActorPresentationCategory.Mount;
                 return true;
             case ObjectKind.BattleNpc when candidate is IBattleNpc { BattleNpcKind: BattleNpcSubKind.Pet }:

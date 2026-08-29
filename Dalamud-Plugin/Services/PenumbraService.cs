@@ -72,6 +72,7 @@ public sealed class PenumbraService
 
     private readonly IDalamudPluginInterface  _pi;
     private readonly GetGameObjectResourcePaths _getPaths;
+    private readonly GetGameObjectResourceTrees _getObjectTrees;
     private readonly GetPlayerResourceTrees _getPlayerTrees;
     private readonly GetModDirectory           _getModDirectory;
     private readonly GetModList                 _getModList;
@@ -101,6 +102,7 @@ public sealed class PenumbraService
         _objects         = objects;
         _data            = data;
         _getPaths        = new GetGameObjectResourcePaths(pi);
+        _getObjectTrees  = new GetGameObjectResourceTrees(pi);
         _getPlayerTrees  = new GetPlayerResourceTrees(pi);
         _getModDirectory = new GetModDirectory(pi);
         _getModList      = new GetModList(pi);
@@ -389,6 +391,26 @@ public sealed class PenumbraService
         finally
         {
             _exportGate.Release();
+        }
+    }
+
+    /// <summary>Get resource trees for explicit object-table indices.</summary>
+    public ResourceTreeDto?[] GetResourceTrees(ushort[] gameObjectIndices)
+    {
+        if (gameObjectIndices.Length == 0)
+            return Array.Empty<ResourceTreeDto?>();
+
+        try
+        {
+            if (!Available)
+                return Array.Empty<ResourceTreeDto?>();
+
+            return _getObjectTrees.Invoke(withUiData: true, gameObjectIndices) ?? Array.Empty<ResourceTreeDto?>();
+        }
+        catch (Exception e)
+        {
+            _log.Debug($"Could not retrieve explicit resource trees: {e.Message}");
+            return Array.Empty<ResourceTreeDto?>();
         }
     }
 
@@ -1151,9 +1173,9 @@ public sealed class PenumbraService
         var warnings = new List<string>();
         try
         {
-            if (localPlayer.GameObjectId <= uint.MaxValue)
+            if (localPlayer.EntityId != 0)
             {
-                var localOwnerId = (uint)localPlayer.GameObjectId;
+                var localOwnerId = localPlayer.EntityId;
                 foreach (var candidate in _objects)
                 {
                     if (candidate is null || candidate.Address == nint.Zero ||
@@ -1161,14 +1183,14 @@ public sealed class PenumbraService
                         candidate.OwnerId != localOwnerId)
                         continue;
 
-                    if (candidate.ObjectKind is ObjectKind.Companion or ObjectKind.Mount ||
+                    if (candidate.ObjectKind is ObjectKind.Companion or ObjectKind.Mount or ObjectKind.FollowMount ||
                         candidate is IBattleNpc { BattleNpcKind: BattleNpcSubKind.Pet })
                         targets.Add(candidate.ObjectIndex);
                 }
             }
             else
             {
-                warnings.Add("The local player owner ID could not be represented; only the player was redrawn.");
+                warnings.Add("The local player entity ID was unavailable; only the player was redrawn.");
             }
         }
         catch (Exception e)
