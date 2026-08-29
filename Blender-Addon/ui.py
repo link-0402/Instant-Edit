@@ -8,7 +8,7 @@ from bpy.types import Context, Panel
 from .instant_edit.context import ContextValidationError, mesh_ids_from_name
 from .instant_edit.ops import (MASHUP_TARGET, export_destination_context,
                                mashup_target_state, normalise_variant_name)
-from .instant_edit.props import get_instant_edit_props
+from .instant_edit.props import IN_PLACE_TARGET, get_instant_edit_props
 from .materials import (
     attribute_display_name,
     material_paths,
@@ -70,7 +70,7 @@ def _export_destination_display(ref, props=None) -> str:
     if props is None:
         return destination
 
-    if getattr(props, "variant_target", "") == MASHUP_TARGET:
+    if getattr(props, "variant_target", "") in {IN_PLACE_TARGET, MASHUP_TARGET}:
         return destination
 
     selected_target = next(
@@ -205,14 +205,21 @@ class XIVIE_PT_main(Panel):
         if ref is not None:
             targets = box.box()
             header = targets.row(align=True)
-            header.label(text="Penumbra Group Target", icon="OUTLINER_COLLECTION")
+            header.label(text="Export Target", icon="EXPORT")
             header.operator("xiv_ie.refresh_variant_targets", text="", icon="FILE_REFRESH")
             targets.label(
-                text="Choose a group to create a new option, or an option to overwrite it.",
+                text="Choose In-place to overwrite the imported model, a group to create a new option, or an option to overwrite it.",
                 icon="INFO",
             )
             if props.variant_targets_context_id and props.variant_targets_context_id != getattr(ref, "context_id", ""):
                 targets.label(text="Refresh targets for this Context.", icon="INFO")
+            in_place = targets.row(align=True)
+            in_place.operator(
+                "xiv_ie.select_variant_target",
+                text="In-place",
+                depress=props.variant_target == IN_PLACE_TARGET,
+                icon="FILE_TICK",
+            ).selection_id = IN_PLACE_TARGET
             new_group = targets.row(align=True)
             new_group.operator(
                 "xiv_ie.select_variant_target",
@@ -265,7 +272,10 @@ class XIVIE_PT_main(Panel):
                 (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
             if props.variant_target == "NEW_GROUP":
                 _draw_named_text_input(box, props, "variant_group_name", "New Group Name")
-            if props.variant_target != MASHUP_TARGET and (selected_target is None or selected_target.kind != "OPTION"):
+            if (
+                props.variant_target not in {IN_PLACE_TARGET, MASHUP_TARGET}
+                and (selected_target is None or selected_target.kind != "OPTION")
+            ):
                 _draw_named_text_input(box, props, "variant_name", "New Option Name")
             box.operator("xiv_ie.instant_export", text="Quick Export", icon="EXPORT")
         status_row = box.row(align=True)

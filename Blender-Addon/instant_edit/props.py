@@ -7,6 +7,7 @@ from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty, C
 
 _EXPORT_DESTINATION_ITEMS = []
 NO_EXPORT_CONTEXT = "NONE"
+IN_PLACE_TARGET = "IN_PLACE"
 
 
 def _export_destination_items(_self, context):

@@ -748,6 +748,31 @@ def run_staging_isolation_regression() -> None:
             "variantName" not in option_payload,
             "option selection overwrites its mapped model without creating a sibling name",
         )
+        instant_props.variant_target = props.IN_PLACE_TARGET
+        instant_props.variant_name = "stale-variant-name"
+        in_place_payload = ops.build_export_payload(
+            SimpleNamespace(plugin_instance_id="plugin-instance", context_id="context-id", capability="capability"),
+            "export-id", Path(tempfile.gettempdir()) / "in-place-test.mdl", 1, "0" * 64,
+            instant_props, "stale-variant-name", "stale-group-name", None, setup_in_penumbra=False,
+        )
+        _require(
+            ui._export_destination_display(display_ref, instant_props) == "Files/models/original.mdl",
+            "In-place selection displays the imported model path",
+        )
+        _require(
+            not in_place_payload["setupInPenumbra"] and
+            all(field not in in_place_payload for field in (
+                "variantName", "variantGroupName", "variantTarget", "variantTargetId"
+            )),
+            "In-place export disables Penumbra setup and omits variant metadata",
+        )
+        _require(
+            ops.SelectVariantTarget.description(
+                bpy.context,
+                SimpleNamespace(selection_id=props.IN_PLACE_TARGET),
+            ) == "Overwrites the imported model at its original path without changing Penumbra option groups.",
+            "In-place target hover text explains the original-path overwrite",
+        )
         variant_group_id = variant_group.selection_id
         variant_option_id = variant_option.selection_id
         variant_option_path = variant_option.model_path
@@ -820,6 +845,12 @@ def run_staging_isolation_regression() -> None:
                 ],
             }]
 
+        ops._request_variant_targets = lambda _ref: []
+        empty_target_count = ops.refresh_variant_targets(bpy.context)
+        _require(
+            empty_target_count == 0 and instant_props.variant_target == props.IN_PLACE_TARGET,
+            "a context with no Penumbra groups defaults to the In-place target",
+        )
         ops._request_variant_targets = fake_variant_request
         try:
             instant_props.export_destination = props.NO_EXPORT_CONTEXT

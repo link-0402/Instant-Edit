@@ -18,7 +18,7 @@ from ..mesh.export   import export_result, get_export_stats, check_triangulation
 from ..mesh.objects  import visible_meshobj
 from ..properties    import get_settings
 from ..xivpy.model   import XIVModel
-from .props          import NO_EXPORT_CONTEXT, get_instant_edit_props
+from .props          import IN_PLACE_TARGET, NO_EXPORT_CONTEXT, get_instant_edit_props
 from .context        import (SCHEMA, VERSION, ContextValidationError,
                              _value, clear_context_metadata,
                              context_collections, context_id_for_object, create_collection, tag_object,
@@ -165,7 +165,7 @@ def normalise_variant_group_name(value: str) -> str:
 def selected_variant_target(props):
     """Return the cached Penumbra target selected in the sidebar, if any."""
     selection = getattr(props, "variant_target", "NEW_GROUP")
-    if selection == "NEW_GROUP":
+    if selection in {"NEW_GROUP", IN_PLACE_TARGET}:
         return None
     return next((item for item in props.variant_targets if item.selection_id == selection), None)
 
@@ -270,7 +270,9 @@ def refresh_variant_targets(
             )
     if selected_option is not None:
         props.variant_target = selected_option.selection_id
-    elif props.variant_target != "NEW_GROUP" and not any(
+    elif previous_targets_context_id != ref.context_id and not groups:
+        props.variant_target = IN_PLACE_TARGET
+    elif props.variant_target not in {"NEW_GROUP", IN_PLACE_TARGET} and not any(
             item.selection_id == props.variant_target for item in props.variant_targets
     ):
         props.variant_target = "NEW_GROUP"
@@ -661,7 +663,7 @@ class RefreshVariantTargets(Operator):
 class SelectVariantTarget(Operator):
     bl_idname = "xiv_ie.select_variant_target"
     bl_label = "Select Penumbra Target"
-    bl_description = "Use this Penumbra group or option for the next Quick Export"
+    bl_description = "Use this export target for the next Quick Export"
     bl_options = {"INTERNAL"}
 
     selection_id: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
@@ -671,6 +673,8 @@ class SelectVariantTarget(Operator):
         selection_id = getattr(properties, "selection_id", "")
         if selection_id == "NEW_GROUP":
             return "Creates a new Group on Export. Define group and option names below."
+        if selection_id == IN_PLACE_TARGET:
+            return "Overwrites the imported model at its original path without changing Penumbra option groups."
         if selection_id == MASHUP_TARGET:
             return "Combines the visible exported meshes and their material and texture dependencies."
         try:
@@ -867,7 +871,8 @@ class CopyInstantEditStatus(Operator):
 def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
                          sha256: str, props, variant_name: str | None,
                          variant_group_name: str | None = None, variant_target=None,
-                         backup_existing: bool | None = None) -> dict:
+                         backup_existing: bool | None = None, *,
+                         setup_in_penumbra: bool = True) -> dict:
     """Build the versioned Dalamud export envelope."""
     payload = {
         "schema": "instant-edit.export",
@@ -884,15 +889,16 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
             if backup_existing is None else backup_existing
         ),
     }
-    if variant_name is not None:
-        payload["variantName"] = variant_name
-    payload["setupInPenumbra"] = True
-    payload["variantGroupName"] = variant_group_name
-    payload["variantTarget"] = "option" if variant_target and variant_target.kind == "OPTION" else (
-        "group" if variant_target and variant_target.kind == "GROUP" else "new_group"
-    )
-    if variant_target:
-        payload["variantTargetId"] = variant_target.selection_id
+    payload["setupInPenumbra"] = setup_in_penumbra
+    if setup_in_penumbra:
+        if variant_name is not None:
+            payload["variantName"] = variant_name
+        payload["variantGroupName"] = variant_group_name
+        payload["variantTarget"] = "option" if variant_target and variant_target.kind == "OPTION" else (
+            "group" if variant_target and variant_target.kind == "GROUP" else "new_group"
+        )
+        if variant_target:
+            payload["variantTargetId"] = variant_target.selection_id
     return payload
 
 
@@ -1306,19 +1312,20 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
     props = get_instant_edit_props()
     if props.variant_target == MASHUP_TARGET:
         raise ValueError("Use Quick Export to choose the mashup destination and name.")
-    variant_target = selected_variant_target(props)
+    in_place = props.variant_target == IN_PLACE_TARGET
+    variant_target = None if in_place else selected_variant_target(props)
     if variant_target is not None and props.variant_targets_context_id != ref.context_id:
         raise ValueError("Refresh Penumbra targets after changing Context.")
     overwrite_existing_option = variant_target is not None and variant_target.kind == "OPTION"
     variant_name = (
         validate_variant_name(ref.source_game_path, props.variant_name)
-        if not overwrite_existing_option else None
+        if not in_place and not overwrite_existing_option else None
     )
     variant_group_name = (
         normalise_variant_group_name(
             variant_target.group_name if variant_target is not None and variant_target.kind == "GROUP"
             else props.variant_group_name)
-        if not overwrite_existing_option
+        if not in_place and not overwrite_existing_option
         else None
     )
     export_objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
@@ -1363,6 +1370,7 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
             variant_name,
             variant_group_name,
             variant_target,
+            setup_in_penumbra=not in_place,
         )
         try:
             result = _send_plugin_export(ref, payload)
@@ -1392,6 +1400,7 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
                 variant_name,
                 variant_group_name,
                 variant_target,
+                setup_in_penumbra=not in_place,
             )
             result = _send_plugin_export(ref, payload)
 
