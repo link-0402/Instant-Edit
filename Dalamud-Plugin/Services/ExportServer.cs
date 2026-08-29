@@ -61,6 +61,9 @@ public sealed class ExportServer : IDisposable
 
         [JsonPropertyName("backupExisting")]
         public bool BackupExisting { get; set; }
+
+        [JsonPropertyName("newModName")]
+        public string? NewModName { get; set; }
     }
 
     private sealed class ReattachRequest
@@ -513,9 +516,11 @@ public sealed class ExportServer : IDisposable
                     targetsRequest.PluginInstanceId!, targetsRequest.ContextId!, targetsRequest.Capability!,
                     out var target, out var registryCode) || target is null)
                 return Error(StatusForCode(registryCode), registryCode, "export context was rejected");
+            if (target.DestinationState != InstantEditImportContext.ReadyDestination)
+                return Error(409, "destination_not_ready", "create the Penumbra mod before loading variant targets");
 
             var result = await _penumbra.GetVariantTargetsAsync(
-                target.SourceModDirectory, target.TargetFilePath, target.SourceModRootPath,
+                target.SourceModDirectory!, target.TargetFilePath!, target.SourceModRootPath,
                 target.TargetRelativePath, target.GamePath).ConfigureAwait(false);
             if (!result.Success)
                 return Error(400, result.Code, result.Message);
@@ -549,10 +554,12 @@ public sealed class ExportServer : IDisposable
                     restore.PluginInstanceId!, restore.ContextId!, restore.Capability!,
                     out var target, out var registryCode) || target is null)
                 return Error(StatusForCode(registryCode), registryCode, "export context was rejected");
+            if (target.DestinationState != InstantEditImportContext.ReadyDestination)
+                return Error(409, "destination_not_ready", "the import has no Penumbra mod backup destination yet");
 
             var result = await _penumbra.RestoreSourceBackupAsync(
-                target.SourceModDirectory,
-                target.TargetFilePath,
+                target.SourceModDirectory!,
+                target.TargetFilePath!,
                 target.SourceModRootPath,
                 target.TargetRelativePath,
                 target.GamePath,
@@ -578,6 +585,8 @@ public sealed class ExportServer : IDisposable
                     requestPlan.PluginInstanceId!, requestPlan.ContextId!, requestPlan.Capability!,
                     out var activeContext, out var activeCode) || activeContext is null)
                 return Error(StatusForCode(activeCode), activeCode, "active export context was rejected");
+            if (activeContext.DestinationState != InstantEditImportContext.ReadyDestination)
+                return Error(409, "destination_not_ready", "create the Penumbra mod before creating a mashup");
 
             var contributors = new List<MashupContributor>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -589,6 +598,8 @@ public sealed class ExportServer : IDisposable
                         requestPlan.PluginInstanceId!, contributor.ContextId!, contributor.Capability!,
                         out var contributorContext, out var contributorCode) || contributorContext is null)
                     return Error(StatusForCode(contributorCode), contributorCode, "a contributor context was rejected");
+                if (contributorContext.DestinationState != InstantEditImportContext.ReadyDestination)
+                    return Error(409, "destination_not_ready", "create every contributor's Penumbra mod before making a mashup");
                 contributors.Add(new MashupContributor(contributorContext, contributor.Materials!));
             }
 
@@ -626,6 +637,8 @@ public sealed class ExportServer : IDisposable
                     mashup.PluginInstanceId!, mashup.ContextId!, mashup.Capability!,
                     out var activeContext, out var activeCode) || activeContext is null)
                 return Error(StatusForCode(activeCode), activeCode, "active export context was rejected");
+            if (activeContext.DestinationState != InstantEditImportContext.ReadyDestination)
+                return Error(409, "destination_not_ready", "create the Penumbra mod before creating a mashup");
 
             var contributors = new List<MashupContributor>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -637,6 +650,8 @@ public sealed class ExportServer : IDisposable
                         mashup.PluginInstanceId!, contributor.ContextId!, contributor.Capability!,
                         out var contributorContext, out var contributorCode) || contributorContext is null)
                     return Error(StatusForCode(contributorCode), contributorCode, "a contributor context was rejected");
+                if (contributorContext.DestinationState != InstantEditImportContext.ReadyDestination)
+                    return Error(409, "destination_not_ready", "create every contributor's Penumbra mod before making a mashup");
                 contributors.Add(new MashupContributor(contributorContext, contributor.Materials!));
             }
 
@@ -726,6 +741,9 @@ public sealed class ExportServer : IDisposable
             if (envelopeError is not null)
                 return Error(StatusForCode(envelopeError), envelopeError, "unsupported or malformed export envelope");
 
+            var requestFingerprint = export.Version >= 2 && export.NewModName is not null
+                ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(export.NewModName)))
+                : null;
             if (!_contexts.TryBeginExport(
                     export.PluginInstanceId!,
                     export.ContextId!,
@@ -735,7 +753,8 @@ public sealed class ExportServer : IDisposable
                     export.Size,
                     export.Sha256!,
                     out var reservation,
-                    out var registryCode))
+                    out var registryCode,
+                    requestFingerprint))
                 return Error(StatusForCode(registryCode), registryCode, "export context was rejected");
 
             if (reservation is null)
@@ -774,7 +793,8 @@ public sealed class ExportServer : IDisposable
                         export.VariantTarget,
                         export.VariantTargetId,
                         export.SetupInPenumbra,
-                        export.BackupExisting).ConfigureAwait(false);
+                        export.BackupExisting,
+                        export.NewModName).ConfigureAwait(false);
                 }
             }
             catch (Exception e)
@@ -802,15 +822,51 @@ public sealed class ExportServer : IDisposable
             string? variantTarget,
             string? variantTargetId,
             bool setupVariantInPenumbra,
-            bool backupExisting)
+            bool backupExisting,
+            string? newModName)
         {
+            if (target.DestinationState == InstantEditImportContext.NewModRequiredDestination)
+            {
+                if (string.IsNullOrWhiteSpace(newModName))
+                    return new ExportReceipt(false, "missing_new_mod_name", "enter a name for the new Penumbra mod");
+                if (setupVariantInPenumbra || variantName is not null || variantTarget is not null || backupExisting)
+                    return new ExportReceipt(false, "invalid_pending_export", "a first vanilla export cannot target variants or backups");
+                var created = await _penumbra.CreateGameModelModAsync(target, filePath, newModName).ConfigureAwait(false);
+                if (!created.Result.Success)
+                    return new ExportReceipt(false, created.Result.Code, created.Result.Message, created.Result.WarningList);
+                if (created.ModRoot is null || created.TargetRelativePath is null ||
+                    !_contexts.PromoteGameContext(
+                        target.ContextId,
+                        newModName,
+                        newModName,
+                        created.ModRoot,
+                        created.TargetRelativePath,
+                        out var promoted) || promoted is null)
+                    return new ExportReceipt(
+                        true,
+                        "vanilla_mod_created_with_warnings",
+                        created.Result.Message,
+                        created.Result.WarningList.Concat(["The mod was created, but the Blender export context could not be promoted."]).ToArray(),
+                        created.Result.TargetFilePath,
+                        created.Result.DestinationName);
+                return new ExportReceipt(
+                    true,
+                    created.Result.Code,
+                    created.Result.Message,
+                    created.Result.WarningList,
+                    created.Result.TargetFilePath,
+                    created.Result.DestinationName,
+                    promoted);
+            }
+            if (newModName is not null)
+                return new ExportReceipt(false, "unexpected_new_mod_name", "this import already has a Penumbra destination");
             if (string.IsNullOrWhiteSpace(target.TargetFilePath) ||
                 string.IsNullOrWhiteSpace(target.SourceModDirectory))
                 return new ExportReceipt(false, "missing_source_target", "the import has no original Penumbra mod destination");
 
             var result = await _penumbra.ApplySourceExportAsync(
-                target.SourceModDirectory,
-                target.TargetFilePath,
+                target.SourceModDirectory!,
+                target.TargetFilePath!,
                 target.SourceModRootPath,
                 target.TargetRelativePath,
                 target.GamePath,
@@ -866,8 +922,8 @@ public sealed class ExportServer : IDisposable
     private static string? ValidateEnvelope(ExportRequest request)
     {
         if (!string.Equals(request.Schema, "instant-edit.export", StringComparison.Ordinal))
-            return request.Version == 1 ? "unsupported_schema" : "unsupported_version";
-        if (request.Version != 1)
+            return request.Version is 1 or 2 ? "unsupported_schema" : "unsupported_version";
+        if (request.Version is not (1 or 2))
             return "unsupported_version";
         if (string.IsNullOrWhiteSpace(request.PluginInstanceId) ||
             string.IsNullOrWhiteSpace(request.ContextId) ||
@@ -880,6 +936,10 @@ public sealed class ExportServer : IDisposable
             return "invalid_size";
         if (request.Sha256.Length != 64 || request.Sha256.Any(c => !Uri.IsHexDigit(c)))
             return "invalid_sha256";
+        if (request.Version == 1 && request.NewModName is not null)
+            return "unsupported_field";
+        if (request.NewModName is not null && !PenumbraService.IsSafeNewModName(request.NewModName))
+            return "invalid_mod_name";
         if (request.VariantName is not null && !IsSafeVariantName(request.VariantName))
             return "invalid_variant_name";
         if (request.SetupInPenumbra && request.VariantName is null)
@@ -1150,6 +1210,7 @@ public sealed class ExportServer : IDisposable
                 warnings = receipt.Warnings ?? Array.Empty<string>(),
                 targetFilePath = receipt.TargetFilePath,
                 destinationName = receipt.DestinationName,
+                context = receipt.Context,
             }))
             : Error(StatusForCode(receipt.Code), receipt.Code, receipt.Message);
 
@@ -1160,6 +1221,7 @@ public sealed class ExportServer : IDisposable
             "invalid_capability" or "plugin_instance_mismatch" => 401,
             "duplicate_export_id" => 409,
             "mashup_plan_mismatch" => 409,
+            "vanilla_mod_exists" or "destination_not_ready" => 409,
             "export_not_found" => 404,
             "server_stopped" or "internal_error" => 500,
             _ => 400,

@@ -232,6 +232,109 @@ def run_staging_isolation_regression() -> None:
             validated["targetRelativePath"] == "Files/models/original.mdl",
             "the durable target-relative path survives the import envelope",
         )
+        pending_import = server._ImportHandler._validate_import({
+            **base_import,
+            "version": 2,
+            "contextId": "vanilla-context",
+            "importId": "vanilla-import",
+            "sourceKind": "game",
+            "sourceGamePath": "chara/equipment/e0002/model/c0101e0002_top.mdl",
+            "resolvedGamePath": "chara/equipment/e0003/model/c0101e0003_top.mdl",
+            "destinationState": "new_mod_required",
+            "targetFilePath": None,
+            "managedDestination": None,
+            "sourceModDirectory": None,
+            "sourceModName": None,
+            "sourceModRootPath": None,
+            "targetRelativePath": None,
+            "targetCollectionId": "11111111-1111-1111-1111-111111111111",
+            "targetCollectionName": "Player Collection",
+        })
+        _require(
+            pending_import["destinationState"] == "new_mod_required" and
+            pending_import["managedDestination"] == "" and
+            pending_import["sourceGamePath"].endswith("e0002_top.mdl") and
+            pending_import["resolvedGamePath"].endswith("e0003_top.mdl"),
+            "v2 pending game contexts accept empty destinations and retain consumer and resolved paths",
+        )
+        try:
+            server._ImportHandler._validate_import({
+                **pending_import,
+                "resolvedGamePath": r"C:\Game\rooted.mdl",
+            })
+        except ValueError:
+            print("[PASS] pending game contexts reject rooted resolved paths")
+        else:
+            raise AssertionError("a pending game context accepted a rooted resolved path")
+        pending_collection = context_module.create_collection(
+            bpy.context.scene,
+            {
+                "context_id": "pending-collection-context",
+                "schema": context_module.SCHEMA,
+                "version": 2,
+                "plugin_instance_id": "plugin-instance",
+                "capability": "capability",
+                "source_game_path": pending_import["sourceGamePath"],
+                "source_kind": "game",
+                "resolved_game_path": pending_import["resolvedGamePath"],
+                "destination_state": "new_mod_required",
+                "managed_destination": "",
+                "target_file_path": "",
+                "source_mod_directory": "",
+                "source_mod_name": "",
+                "source_mod_root_path": "",
+                "target_relative_path": "",
+                "target_collection_id": pending_import["targetCollectionId"],
+                "target_collection_name": pending_import["targetCollectionName"],
+                "resource_manifest_version": 0,
+                "resource_manifest_status": "capture_failed",
+                "import_id": "pending-collection-import",
+                "callback_port": 42428,
+                "import_file_name": "vanilla.mdl",
+            },
+        )
+        pending_mesh_data = bpy.data.meshes.new("PendingContextMeshData")
+        pending_mesh_data.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        pending_mesh = bpy.data.objects.new("0.0 Pending Context", pending_mesh_data)
+        pending_collection.objects.link(pending_mesh)
+        pending_ref = context_module.validate_context("pending-collection-context", bpy.context.scene)
+        _require(
+            pending_ref.destination_state == "new_mod_required" and
+            ui._import_file_display(pending_ref) == pending_import["resolvedGamePath"],
+            "pending collection validation displays the resolved game-data model path",
+        )
+        context_module.apply_authoritative_context(pending_collection, {
+            "schema": context_module.SCHEMA,
+            "version": 2,
+            "pluginInstanceId": "plugin-instance",
+            "contextId": "pending-collection-context",
+            "importId": "pending-collection-import",
+            "capability": "promoted-capability",
+            "sourceGamePath": pending_import["sourceGamePath"],
+            "sourceKind": "game",
+            "resolvedGamePath": pending_import["resolvedGamePath"],
+            "destinationState": "ready",
+            "managedDestination": r"D:\Penumbra\Vanilla Edit\Files\chara\equipment\e0002\model",
+            "targetFilePath": r"D:\Penumbra\Vanilla Edit\Files\chara\equipment\e0002\model\c0101e0002_top.mdl",
+            "sourceModDirectory": "Vanilla Edit",
+            "sourceModName": "Vanilla Edit",
+            "sourceModRootPath": r"D:\Penumbra\Vanilla Edit",
+            "targetRelativePath": "Files/chara/equipment/e0002/model/c0101e0002_top.mdl",
+            "targetCollectionId": pending_import["targetCollectionId"],
+            "targetCollectionName": pending_import["targetCollectionName"],
+            "resourceManifestVersion": 0,
+            "resourceManifestStatus": "capture_failed",
+            "callbackPort": 42428,
+        })
+        promoted_ref = context_module.validate_context("pending-collection-context", bpy.context.scene)
+        _require(
+            promoted_ref.destination_state == "ready" and
+            promoted_ref.source_mod_directory == "Vanilla Edit" and
+            promoted_ref.target_relative_path.startswith("Files/chara/"),
+            "an authoritative export receipt promotes pending collection metadata to a normal destination",
+        )
+        bpy.data.objects.remove(pending_mesh, do_unlink=True)
+        bpy.data.collections.remove(pending_collection, do_unlink=True)
         display_ref = SimpleNamespace(
             target_relative_path=validated["targetRelativePath"],
             target_file_path=validated["targetFilePath"],
@@ -755,6 +858,23 @@ def run_staging_isolation_regression() -> None:
                 "variantName", "variantGroupName", "variantTarget", "variantTargetId"
             )),
             "In-place export disables Penumbra setup and omits variant metadata",
+        )
+        pending_payload = ops.build_export_payload(
+            SimpleNamespace(plugin_instance_id="plugin-instance", context_id="vanilla-context", capability="capability"),
+            "vanilla-export-id", Path(tempfile.gettempdir()) / "vanilla-test.mdl", 1, "0" * 64,
+            instant_props, None, None, None,
+            backup_existing=False,
+            setup_in_penumbra=False,
+            new_mod_name="Vanilla Edit",
+        )
+        _require(
+            pending_payload["version"] == 2 and
+            pending_payload["newModName"] == "Vanilla Edit" and
+            not pending_payload["backupExisting"] and
+            all(field not in pending_payload for field in (
+                "variantName", "variantGroupName", "variantTarget", "variantTargetId"
+            )),
+            "pending Quick Export sends only the create-mod v2 envelope",
         )
         _require(
             ops.SelectVariantTarget.description(

@@ -58,8 +58,11 @@ def _export_destination_changed(self, context) -> None:
     try:
         # Import locally to keep property registration independent from the
         # operator module's Blender imports.
+        from .context import validate_context
         from .ops import refresh_variant_targets
 
+        if validate_context(self.export_destination, context.scene).destination_state != "ready":
+            return
         refresh_variant_targets(context)
     except Exception as error:
         self.last_status = f"Could not load Penumbra targets: {error}"

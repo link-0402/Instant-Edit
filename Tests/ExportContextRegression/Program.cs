@@ -83,6 +83,10 @@ try
         "reattach returns the authoritative context");
     Require(reattached?.TargetRelativePath == relative,
         "persisted contexts retain their durable target-relative path");
+    Require(reattached is { Version: 2, SourceKind: InstantEditImportContext.ModSource,
+            DestinationState: InstantEditImportContext.ReadyDestination } &&
+            reattached.ResolvedGamePath == saved.GamePath,
+        "persisted v1 contexts normalize to ready v2 mod contexts");
 
     var exportFile = Path.Combine(testRoot, "export.mdl");
     File.WriteAllBytes(exportFile, [4, 5, 6]);
@@ -123,6 +127,55 @@ try
         "current-plugin", saved.ContextId, capability, out _, out var revokedCode) && revokedCode == "stale_context",
         "a revoked context cannot authorize another write");
     Require(persisted.Count == 0, "revocation is persisted");
+
+    const string vanillaConsumer = "chara/equipment/e0002/model/c0101e0002_top.mdl";
+    const string vanillaResolved = "chara/equipment/e0003/model/c0101e0003_top.mdl";
+    var collectionId = Guid.NewGuid();
+    var vanillaContext = registry.CreateGameContext(
+        vanillaConsumer, vanillaResolved, 7, 42428, collectionId, "Player Collection");
+    Require(vanillaContext is
+        {
+            Version: 2,
+            SourceKind: InstantEditImportContext.GameSource,
+            DestinationState: InstantEditImportContext.NewModRequiredDestination,
+            TargetFilePath: null,
+            SourceModDirectory: null,
+        } && vanillaContext.GamePath == vanillaConsumer &&
+        vanillaContext.ResolvedGamePath == vanillaResolved &&
+        vanillaContext.TargetCollectionId == collectionId,
+        "vanilla imports retain resolved and consumer paths in a pending v2 context");
+    var vanillaModRoot = Path.Combine(testRoot, "Vanilla Edit");
+    var vanillaRelative = "Files/" + vanillaConsumer;
+    var vanillaTarget = Path.Combine(vanillaModRoot, vanillaRelative.Replace('/', Path.DirectorySeparatorChar));
+    Directory.CreateDirectory(Path.GetDirectoryName(vanillaTarget)!);
+    File.WriteAllBytes(vanillaTarget, [7, 8, 9]);
+    Require(registry.PromoteGameContext(
+            vanillaContext.ContextId, "Vanilla Edit", "Vanilla Edit", vanillaModRoot,
+            vanillaRelative, out var promotedVanilla) &&
+            promotedVanilla is { DestinationState: InstantEditImportContext.ReadyDestination } &&
+            promotedVanilla.TargetFilePath == vanillaTarget && persisted.Single().DestinationState ==
+            InstantEditImportContext.ReadyDestination,
+        "a committed vanilla mod atomically promotes and persists its writable destination");
+    using (var reloadedVanillaRegistry = new ExportContextRegistry("reloaded-plugin", persisted))
+    {
+        Require(reloadedVanillaRegistry.TryReattach(
+                vanillaContext.ContextId, vanillaContext.ImportId, vanillaContext.Capability, 42428,
+                out var reloadedVanilla, out _) &&
+                reloadedVanilla?.TargetFilePath == vanillaTarget &&
+                reloadedVanilla.DestinationState == InstantEditImportContext.ReadyDestination,
+            "a promoted vanilla context remains writable after plugin restart");
+    }
+    var malformedGame = PersistedExportContext.FromContext(vanillaContext) with
+    {
+        ResolvedGamePath = Path.Combine(testRoot, "rooted.mdl"),
+    };
+    using (var malformedRegistry = new ExportContextRegistry("malformed-plugin", [malformedGame]))
+    {
+        Require(!malformedRegistry.TryReattach(
+                malformedGame.ContextId, malformedGame.ImportId, malformedGame.Capability, 42428,
+                out _, out var malformedCode) && malformedCode == "stale_context",
+            "malformed v2 game contexts with rooted resolved paths are rejected on restore");
+    }
 
     var movedRoot = Path.Combine(testRoot, "MovedCustomRoot");
     var movedParent = Path.Combine(movedRoot, "Files", "models");
@@ -218,6 +271,7 @@ try
             SlotLabel: "Hair",
             GamePath: effectiveHairPath,
             ActualPath: galianModel,
+            SourceState: ResourceSourceState.LoadedMod,
             SourceModDirectory: "Galian Hair",
         }
     ], "EST-swapped Galian Hair is restored to the Character features model list");
@@ -235,6 +289,54 @@ try
         path => new ResourceSource(ResourceSourceState.ExternalResolvedFile, "External resolved file", null, null, null, path));
     Require(unattributedHair.Count == 0,
         "resource-path reconciliation does not admit models outside registered Penumbra mods");
+
+    const string vanillaActualModel = "chara/human/c0101/obj/hair/h0001/model/c0101h0001_hir.mdl";
+    const string vanillaMappedModel = "chara/human/c0201/obj/hair/h0001/model/c0201h0001_hir.mdl";
+    var vanillaResolvedPaths = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
+    {
+        [vanillaActualModel] = new(StringComparer.OrdinalIgnoreCase) { vanillaMappedModel },
+    };
+    var vanillaSource = new ResourceSource(
+        ResourceSourceState.GameData, "Game Data", null, null, null, vanillaActualModel);
+    var supplementedVanilla = OnScreenService.AddMissingResolvedModels(
+        Array.Empty<ResourceNode>(), vanillaResolvedPaths, _ => vanillaSource);
+    Require(supplementedVanilla is
+        [{ ActualPath: vanillaActualModel, GamePath: vanillaMappedModel,
+           SourceState: ResourceSourceState.GameData }],
+        "omitted vanilla models retain their resolved and consumer paths with authoritative game-data state");
+    Require(OnScreenService.AddMissingResolvedModels(
+            supplementedVanilla, vanillaResolvedPaths, _ => vanillaSource).Count == 1,
+        "vanilla resource supplementation deduplicates the resolved and consumer path pair");
+
+    var vanillaBranch = new ResourceNode
+    {
+        Type = "Container", Icon = "", Name = "Vanilla Branch", GamePath = "", ActualPath = "",
+        SourceState = ResourceSourceState.SourceUnavailable, SourceLabel = "",
+        SlotLabel = "Other", ResourceSection = ResourceSection.Other, SortOrder = 0,
+        Children = supplementedVanilla,
+    };
+    var mixedBranch = vanillaBranch with
+    {
+        Name = "Mixed Branch",
+        Children =
+        [
+            supplementedVanilla[0],
+            supplementedHair[0],
+        ],
+    };
+    var projectedVanilla = OnScreenService.ProjectVisibleResourceNodes([vanillaBranch], false);
+    var projectedMixed = OnScreenService.ProjectVisibleResourceNodes([mixedBranch], false);
+    Require(projectedVanilla.Count == 0 &&
+            OnScreenService.ProjectVisibleResourceNodes([vanillaBranch], true).Count == 1 &&
+            projectedMixed is [{ Children: [{ SourceState: ResourceSourceState.LoadedMod }] }] &&
+            !projectedMixed.SelectMany(node => node.Children.Prepend(node))
+                .Any(node => node.SourceState == ResourceSourceState.GameData),
+        "the disabled visibility projection removes vanilla rows while retaining modded descendants");
+    Require(OnScreenService.NormalizeActualPath(
+            @"chara\human\c0101\obj\hair\h0001\model\c0101h0001_hir.mdl",
+            ResourceSourceState.GameData) == vanillaActualModel &&
+            PenumbraService.IsSafeGamePath(vanillaActualModel),
+        "Penumbra tree game-data paths normalize from FullPath backslashes into editable game paths");
 
     var manifest = new ResourceDependencyManifest
     {
@@ -651,6 +753,38 @@ try
     Require(markerlessValidation &&
             !File.Exists(Path.Combine(markerlessMashupRoot, ".instant-edit-owner.json")),
         "new mashup staging validates without creating an ownership marker");
+
+    var vanillaStageRoot = Path.Combine(testRoot, "VanillaStage");
+    Directory.CreateDirectory(vanillaStageRoot);
+    var stagedVanillaRelative = PenumbraService.StageGameModelMod(
+        vanillaStageRoot, "Vanilla Model Edit", vanillaConsumer, [10, 11, 12]);
+    var stagedVanillaMeta = JsonNode.Parse(
+        File.ReadAllText(Path.Combine(vanillaStageRoot, "meta.json")))!.AsObject();
+    var stagedVanillaDefault = JsonNode.Parse(
+        File.ReadAllText(Path.Combine(vanillaStageRoot, "default_mod.json")))!.AsObject();
+    Require(stagedVanillaRelative == "Files/" + vanillaConsumer &&
+            stagedVanillaMeta["FileVersion"]!.GetValue<int>() == 3 &&
+            stagedVanillaMeta["Author"]!.GetValue<string>() == "XIV Instant Edit" &&
+            stagedVanillaDefault["Files"]!.AsObject().Count == 1 &&
+            stagedVanillaDefault["Files"]![vanillaConsumer]!.GetValue<string>() == stagedVanillaRelative &&
+            File.ReadAllBytes(Path.Combine(
+                vanillaStageRoot, stagedVanillaRelative.Replace('/', Path.DirectorySeparatorChar)))
+                .SequenceEqual(new byte[] { 10, 11, 12 }) &&
+            !File.Exists(Path.Combine(vanillaStageRoot, ".instant-edit-owner.json")) &&
+            Directory.GetFiles(vanillaStageRoot, "*.mtrl", SearchOption.AllDirectories).Length == 0 &&
+            Directory.GetFiles(vanillaStageRoot, "*.tex", SearchOption.AllDirectories).Length == 0,
+        "first vanilla export stages one v3 model mapping without ownership or copied dependencies");
+    var unsafeVanillaStageRejected = false;
+    try
+    {
+        PenumbraService.StageGameModelMod(vanillaStageRoot, "Unsafe Edit", "../outside.mdl", [1]);
+    }
+    catch (InvalidDataException)
+    {
+        unsafeVanillaStageRejected = true;
+    }
+    Require(unsafeVanillaStageRejected,
+        "vanilla mod staging rejects consumer-path traversal before writing files");
 
     var v3Root = Path.Combine(testRoot, "MashupV3");
     Directory.CreateDirectory(v3Root);

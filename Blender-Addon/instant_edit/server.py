@@ -2,11 +2,14 @@
 import json
 import socket
 import threading
+import uuid
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue       import Empty, Full, Queue
 
 import bpy
+
+from .context import is_safe_game_model_path
 
 
 MAX_IMPORT_BODY_SIZE = 1024 * 1024
@@ -15,6 +18,7 @@ REQUEST_TIMEOUT_SECONDS = 5
 IMPORT_OPTIONS_CAPABILITY = "instant-edit.import-options.v1"
 MATERIAL_PREVIEW_CAPABILITY = "instant-edit.material-preview.v1"
 CACHE_HANDOFF_CAPABILITY = "instant-edit.cache-handoff.v1"
+VANILLA_CONTEXT_CAPABILITY = "instant-edit.vanilla-context.v1"
 
 _import_queue: Queue = Queue(maxsize=MAX_IMPORT_QUEUE_SIZE)
 _server              = None
@@ -84,6 +88,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
                     IMPORT_OPTIONS_CAPABILITY,
                     MATERIAL_PREVIEW_CAPABILITY,
                     CACHE_HANDOFF_CAPABILITY,
+                    VANILLA_CONTEXT_CAPABILITY,
                 ],
             })
         else:
@@ -143,8 +148,9 @@ class _ImportHandler(BaseHTTPRequestHandler):
         import_options = _normalise_import_options(data.get("importOptions"))
         if data.get("schema") != "instant-edit.context":
             raise ValueError("schema must be instant-edit.context")
-        if isinstance(data.get("version"), bool) or data.get("version") != 1:
-            raise ValueError("version must be 1")
+        version = data.get("version")
+        if isinstance(version, bool) or version not in {1, 2}:
+            raise ValueError("version must be 1 or 2")
 
         plugin_instance_id = _string(data, "pluginInstanceId", required=True, max_length=256)
         context_id = _string(data, "contextId", required=True, max_length=256)
@@ -152,14 +158,43 @@ class _ImportHandler(BaseHTTPRequestHandler):
         capability = _string(data, "capability", required=True, max_length=1024)
         file_path = _string(data, "filePath", required=True, max_length=4096)
         source_game_path = _string(data, "sourceGamePath", required=True, max_length=4096)
-        managed_destination = _string(data, "managedDestination", required=True, max_length=4096)
-        target_file_path = _string(data, "targetFilePath", required=True, max_length=4096)
-        source_mod_directory = _string(data, "sourceModDirectory", required=True, max_length=256)
-        source_mod_name = _string(data, "sourceModName", required=True, max_length=512)
+        source_kind = _string(data, "sourceKind", max_length=16) or "mod"
+        resolved_game_path = _string(data, "resolvedGamePath", max_length=4096) or source_game_path
+        destination_state = _string(data, "destinationState", max_length=32) or "ready"
+        managed_destination = _string(data, "managedDestination", max_length=4096)
+        target_file_path = _string(data, "targetFilePath", max_length=4096)
+        source_mod_directory = _string(data, "sourceModDirectory", max_length=256)
+        source_mod_name = _string(data, "sourceModName", max_length=512)
         source_mod_root_path = _string(data, "sourceModRootPath", max_length=4096)
         target_relative_path = _string(data, "targetRelativePath", max_length=4096)
+        target_collection_id = _string(data, "targetCollectionId", max_length=64)
+        target_collection_name = _string(data, "targetCollectionName", max_length=512)
         preview_manifest_path = _string(data, "previewManifestPath", max_length=4096)
         display_name = _string(data, "displayName", max_length=255)
+        if source_kind not in {"mod", "game"} or destination_state not in {"ready", "new_mod_required"}:
+            raise ValueError("sourceKind or destinationState is invalid")
+        if version == 1 and (source_kind != "mod" or destination_state != "ready"):
+            raise ValueError("version 1 contexts must be ready mod contexts")
+        if source_kind == "game" and (
+            not is_safe_game_model_path(source_game_path) or
+            not is_safe_game_model_path(resolved_game_path)
+        ):
+            raise ValueError("game context contains an unsafe model path")
+        if destination_state == "ready" and not all((managed_destination, target_file_path,
+                                                       source_mod_directory, source_mod_name)):
+            raise ValueError("ready context is missing Penumbra destination data")
+        if destination_state == "new_mod_required" and (
+            source_kind != "game" or any((managed_destination, target_file_path,
+                                          source_mod_directory, source_mod_name,
+                                          source_mod_root_path, target_relative_path))
+        ):
+            raise ValueError("pending game context contains unexpected destination data")
+        if target_collection_id:
+            try:
+                if uuid.UUID(target_collection_id).int == 0:
+                    raise ValueError
+            except (ValueError, AttributeError) as error:
+                raise ValueError("targetCollectionId must be a non-empty UUID") from error
 
         callback_port = data.get("callbackPort")
         if isinstance(callback_port, bool) or not isinstance(callback_port, int) or not 1 <= callback_port <= 65535:
@@ -185,12 +220,17 @@ class _ImportHandler(BaseHTTPRequestHandler):
             "capability": capability,
             "filePath": file_path,
             "sourceGamePath": source_game_path,
+            "sourceKind": source_kind,
+            "resolvedGamePath": resolved_game_path,
+            "destinationState": destination_state,
             "managedDestination": managed_destination,
             "targetFilePath": target_file_path,
             "sourceModDirectory": source_mod_directory,
             "sourceModName": source_mod_name,
             "sourceModRootPath": source_mod_root_path,
             "targetRelativePath": target_relative_path,
+            "targetCollectionId": target_collection_id,
+            "targetCollectionName": target_collection_name,
             "resourceManifestVersion": resource_manifest_version,
             "resourceManifestStatus": resource_manifest_status,
             "previewManifestPath": preview_manifest_path,
@@ -286,12 +326,17 @@ def poll_import_queue() -> float:
                     context_id=data.get("contextId", ""),
                     capability=data.get("capability", ""),
                     source_game_path=data.get("sourceGamePath", ""),
+                    source_kind=data.get("sourceKind", "mod"),
+                    resolved_game_path=data.get("resolvedGamePath", data.get("sourceGamePath", "")),
+                    destination_state=data.get("destinationState", "ready"),
                     managed_destination=data.get("managedDestination", ""),
                     target_file_path=data.get("targetFilePath", ""),
                     source_mod_directory=data.get("sourceModDirectory", ""),
                     source_mod_name=data.get("sourceModName", ""),
                     source_mod_root_path=data.get("sourceModRootPath", ""),
                     target_relative_path=data.get("targetRelativePath", ""),
+                    target_collection_id=data.get("targetCollectionId", ""),
+                    target_collection_name=data.get("targetCollectionName", ""),
                     resource_manifest_version=int(data.get("resourceManifestVersion", 0)),
                     resource_manifest_status=data.get("resourceManifestStatus", "capture_failed"),
                     import_id=data.get("importId", ""),

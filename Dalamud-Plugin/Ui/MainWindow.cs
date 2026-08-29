@@ -32,7 +32,7 @@ public sealed class MainWindow : Window, IDisposable
     private bool _blenderOk, _blenderChecking; private int _editing;
     private DateTime _lastBlenderCheck = DateTime.MinValue;
     private DateTime _lastModListRefresh = DateTime.MinValue;
-    private string _filter = string.Empty, _modFilter = string.Empty, _resourceTypeFilter = string.Empty, _status = string.Empty;
+    private string _filter = string.Empty, _modFilter = string.Empty, _resourceTypeFilter = "Models", _status = string.Empty;
     private string? _selectedModDirectory, _loadedModDirectory;
     private IReadOnlyList<PenumbraMod> _mods = Array.Empty<PenumbraMod>();
     private ActorView? _loadedModView;
@@ -148,6 +148,13 @@ public sealed class MainWindow : Window, IDisposable
     {
         ImGui.Spacing();
         ImGui.SetNextItemWidth(-1); ImGui.InputTextWithHint("##resource-filter", "Search", ref _filter, 256);
+        var includeVanilla = _config.IncludeVanillaResources;
+        if (ImGui.Checkbox("Include Vanilla", ref includeVanilla))
+        {
+            _config.IncludeVanillaResources = includeVanilla;
+            _saveConfig();
+        }
+        ImGuiComponents.HelpMarker("Show resources loaded directly from game data alongside Penumbra-modified resources.");
         var actors = ReadActors();
         DrawResourceTypeFilters(actors);
         ImGui.Spacing();
@@ -512,6 +519,11 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextColored(new Vector4(.3f, .9f, .35f, 1), $"[{node.SourceModName}]");
             ImGui.SameLine(0, 5);
         }
+        else if (node.SourceState == ResourceSourceState.GameData)
+        {
+            ImGui.TextColored(new Vector4(.45f, .7f, .95f, 1), "[Game Data]");
+            ImGui.SameLine(0, 5);
+        }
         else if (!string.IsNullOrWhiteSpace(source))
         {
             ImGui.TextColored(new Vector4(.55f, .57f, .63f, 1), $"[{source}]");
@@ -657,6 +669,7 @@ public sealed class MainWindow : Window, IDisposable
                 snapshot.Directory,
                 snapshot.RootPath,
                 resource.RelativePath,
+                ResourceSourceState.LoadedMod,
                 ResourceSection.Other.ToString(),
                 ResourceType(resource.GamePath),
                 int.MaxValue,
@@ -702,7 +715,11 @@ public sealed class MainWindow : Window, IDisposable
         var result = new List<ActorView>();
         foreach (var entity in _onScreen.Items)
         {
-            var parsed = entity.ResourceRoots.Select(ReadNode).ToList();
+            var parsed = OnScreenService.ProjectVisibleResourceNodes(
+                    entity.ResourceRoots,
+                    _config.IncludeVanillaResources)
+                .Select(ReadNode)
+                .ToList();
             result.Add(new ActorView(entity, entity.PresentationCategory.ToString(), Safe(entity.Name), parsed, entity.ObjectIndex));
         }
         return result;
@@ -756,7 +773,11 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private static ResourceView ReadNode(ResourceNode node)
-        => new(
+    {
+        var children = node.Children
+            .Select(ReadNode)
+            .ToList();
+        return new ResourceView(
             node.Type,
             node.Icon,
             node.Name,
@@ -767,11 +788,13 @@ public sealed class MainWindow : Window, IDisposable
             node.SourceModDirectory ?? string.Empty,
             node.SourceModRootPath ?? string.Empty,
             node.SourceRelativePath ?? string.Empty,
+            node.SourceState,
             node.ResourceSection.ToString(),
             node.SlotLabel,
             node.SortOrder,
             string.Empty,
-            node.Children.Select(ReadNode).ToList());
+            children);
+    }
 
     private static string KindLabel(string type) => string.IsNullOrWhiteSpace(type) ? "Resource" : type;
     private static string DisplayName(string name, string actualPath)
@@ -781,9 +804,20 @@ public sealed class MainWindow : Window, IDisposable
     }
     private static bool IsModel(ResourceView node) => node.Type.Contains("model", StringComparison.OrdinalIgnoreCase) || node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) || node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase);
     private static bool IsSafeModel(ResourceView node)
-        => IsModel(node) && node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
-           node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
-           Path.IsPathRooted(node.ActualPath) && !string.IsNullOrWhiteSpace(node.SourceModDirectory);
+    {
+        if (!IsModel(node) || !PenumbraService.IsSafeGamePath(node.GamePath) ||
+            !node.GamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
+            !node.ActualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return node.SourceState switch
+        {
+            ResourceSourceState.LoadedMod => Path.IsPathRooted(node.ActualPath) &&
+                                             !string.IsNullOrWhiteSpace(node.SourceModDirectory),
+            ResourceSourceState.GameData => !Path.IsPathRooted(node.ActualPath) &&
+                                            PenumbraService.IsSafeGamePath(node.ActualPath),
+            _ => false,
+        };
+    }
     private bool Matches(ResourceView node)
     {
         var filter = Safe(_filter);
@@ -952,6 +986,9 @@ public sealed class MainWindow : Window, IDisposable
             if (importOptions.ApplyTexturesAndMaterials &&
                 !await _blender.SupportsMaterialPreviewAsync(blenderPort, cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException("The XIV Instant Edit add-on is too old for texture and material previews. Update the add-on and restart Blender.");
+            if (source.SourceState == ResourceSourceState.GameData &&
+                !await _blender.SupportsVanillaContextAsync(blenderPort, cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException("The XIV Instant Edit add-on is too old for vanilla model contexts. Update the add-on and restart Blender.");
 
             var bytes = model.IsFilePath
                 ? await File.ReadAllBytesAsync(model.LocalPath, cancellationToken).ConfigureAwait(false)
@@ -965,10 +1002,15 @@ public sealed class MainWindow : Window, IDisposable
             handoffDirectory = dir;
             var file = Path.Combine(dir, $"{Sanitize(actor.Name)}-{actor.ImportObjectIndex}-{model.FileName}");
             await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
-            var resources = await ResolvePreviewResourcesAsync(actor).ConfigureAwait(false);
+            var resources = source.SourceState == ResourceSourceState.GameData
+                ? Array.Empty<MaterialResourceCandidate>()
+                : await ResolvePreviewResourcesAsync(actor).ConfigureAwait(false);
+            var previewModelPath = source.SourceState == ResourceSourceState.GameData
+                ? model.LocalPath
+                : model.GamePath;
             var materialBundle = await _materialPreviews.BuildImportBundleAsync(
                 bytes,
-                model.GamePath,
+                previewModelPath,
                 resources,
                 Path.Combine(dir, "preview"),
                 importOptions.ApplyTexturesAndMaterials,
@@ -976,22 +1018,43 @@ public sealed class MainWindow : Window, IDisposable
                 cancellationToken).ConfigureAwait(false);
             var preview = materialBundle.Preview;
             var resourceManifest = materialBundle.ResourceManifest;
-            handoffCached = await _blender.SendSourceImportAsync(
-                blenderPort,
-                file,
-                model.GamePath,
-                actor.ImportObjectIndex,
-                $"{actor.Name} {model.FileName}",
-                listenPort,
-                source.ActualPath,
-                source.SourceModDirectory,
-                source.SourceModName,
-                importOptions: importOptions,
-                previewManifestPath: preview?.ManifestPath,
-                sourceModRootPath: source.SourceModRootPath,
-                targetRelativePath: source.SourceRelativePath,
-                resourceManifest: resourceManifest,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (source.SourceState == ResourceSourceState.GameData)
+            {
+                var collection = await _penumbra.GetCollectionTargetAsync(actor.ImportObjectIndex).ConfigureAwait(false);
+                handoffCached = await _blender.SendGameImportAsync(
+                    blenderPort,
+                    file,
+                    model.GamePath,
+                    model.LocalPath,
+                    actor.ImportObjectIndex,
+                    $"{actor.Name} {model.FileName}",
+                    listenPort,
+                    collection?.Id,
+                    collection?.Name,
+                    importOptions: importOptions,
+                    previewManifestPath: preview?.ManifestPath,
+                    resourceManifest: resourceManifest,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                handoffCached = await _blender.SendSourceImportAsync(
+                    blenderPort,
+                    file,
+                    model.GamePath,
+                    actor.ImportObjectIndex,
+                    $"{actor.Name} {model.FileName}",
+                    listenPort,
+                    source.ActualPath,
+                    source.SourceModDirectory,
+                    source.SourceModName,
+                    importOptions: importOptions,
+                    previewManifestPath: preview?.ManifestPath,
+                    sourceModRootPath: source.SourceModRootPath,
+                    targetRelativePath: source.SourceRelativePath,
+                    resourceManifest: resourceManifest,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
             var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
             var mashupWarning = resourceManifest is null
                 ? " Mashup warning: exact material/texture sources could not be captured; re-import after resolving the missing resources."
@@ -1183,6 +1246,7 @@ public sealed class MainWindow : Window, IDisposable
         string SourceModDirectory,
         string SourceModRootPath,
         string SourceRelativePath,
+        ResourceSourceState SourceState,
         string Section,
         string Slot,
         int Order,

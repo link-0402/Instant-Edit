@@ -67,11 +67,17 @@ public sealed record ResourceDependencyManifest
 /// <summary> Versioned, plugin-owned context sent to the Blender add-on. </summary>
 public sealed record InstantEditImportContext
 {
+    public const int CurrentVersion = 2;
+    public const string ModSource = "mod";
+    public const string GameSource = "game";
+    public const string ReadyDestination = "ready";
+    public const string NewModRequiredDestination = "new_mod_required";
+
     [JsonPropertyName("schema")]
     public string Schema { get; init; } = "instant-edit.context";
 
     [JsonPropertyName("version")]
-    public int Version { get; init; } = 1;
+    public int Version { get; init; } = CurrentVersion;
 
     [JsonPropertyName("pluginInstanceId")]
     public required string PluginInstanceId { get; init; }
@@ -88,23 +94,32 @@ public sealed record InstantEditImportContext
     [JsonPropertyName("sourceGamePath")]
     public required string GamePath { get; init; }
 
+    [JsonPropertyName("sourceKind")]
+    public string SourceKind { get; init; } = ModSource;
+
+    [JsonPropertyName("resolvedGamePath")]
+    public required string ResolvedGamePath { get; init; }
+
+    [JsonPropertyName("destinationState")]
+    public string DestinationState { get; init; } = ReadyDestination;
+
     [JsonPropertyName("objectIndex")]
     public required ushort ObjectIndex { get; init; }
 
     /// <summary>Original resolved model file inside the source Penumbra mod.</summary>
     [JsonPropertyName("targetFilePath")]
-    public required string TargetFilePath { get; init; }
+    public string? TargetFilePath { get; init; }
 
     /// <summary>Physical directory displayed in Blender as the Quick Export target.</summary>
     [JsonPropertyName("managedDestination")]
-    public required string TargetFolder { get; init; }
+    public string? TargetFolder { get; init; }
 
     /// <summary>Penumbra's directory key, used by ReloadMod.</summary>
     [JsonPropertyName("sourceModDirectory")]
-    public required string SourceModDirectory { get; init; }
+    public string? SourceModDirectory { get; init; }
 
     [JsonPropertyName("sourceModName")]
-    public required string SourceModName { get; init; }
+    public string? SourceModName { get; init; }
 
     /// <summary>Physical root directory of the source Penumbra mod.</summary>
     [JsonPropertyName("sourceModRootPath")]
@@ -118,6 +133,12 @@ public sealed record InstantEditImportContext
     /// </summary>
     [JsonPropertyName("targetRelativePath")]
     public string? TargetRelativePath { get; init; }
+
+    [JsonPropertyName("targetCollectionId")]
+    public Guid? TargetCollectionId { get; init; }
+
+    [JsonPropertyName("targetCollectionName")]
+    public string? TargetCollectionName { get; init; }
 
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
@@ -138,6 +159,9 @@ public sealed record InstantEditImportContext
 /// </summary>
 public sealed record PersistedExportContext
 {
+    [JsonPropertyName("version")]
+    public int Version { get; init; } = 1;
+
     [JsonPropertyName("contextId")]
     public required string ContextId { get; init; }
 
@@ -150,26 +174,41 @@ public sealed record PersistedExportContext
     [JsonPropertyName("gamePath")]
     public required string GamePath { get; init; }
 
+    [JsonPropertyName("sourceKind")]
+    public string? SourceKind { get; init; }
+
+    [JsonPropertyName("resolvedGamePath")]
+    public string? ResolvedGamePath { get; init; }
+
+    [JsonPropertyName("destinationState")]
+    public string? DestinationState { get; init; }
+
     [JsonPropertyName("objectIndex")]
     public required ushort ObjectIndex { get; init; }
 
     [JsonPropertyName("targetFilePath")]
-    public required string TargetFilePath { get; init; }
+    public string? TargetFilePath { get; init; }
 
     [JsonPropertyName("managedDestination")]
-    public required string TargetFolder { get; init; }
+    public string? TargetFolder { get; init; }
 
     [JsonPropertyName("sourceModDirectory")]
-    public required string SourceModDirectory { get; init; }
+    public string? SourceModDirectory { get; init; }
 
     [JsonPropertyName("sourceModName")]
-    public required string SourceModName { get; init; }
+    public string? SourceModName { get; init; }
 
     [JsonPropertyName("sourceModRootPath")]
     public string? SourceModRootPath { get; init; }
 
     [JsonPropertyName("targetRelativePath")]
     public string? TargetRelativePath { get; init; }
+
+    [JsonPropertyName("targetCollectionId")]
+    public Guid? TargetCollectionId { get; init; }
+
+    [JsonPropertyName("targetCollectionName")]
+    public string? TargetCollectionName { get; init; }
 
     [JsonPropertyName("callbackPort")]
     public required int CallbackPort { get; init; }
@@ -183,10 +222,14 @@ public sealed record PersistedExportContext
     public static PersistedExportContext FromContext(InstantEditImportContext context)
         => new()
         {
+            Version = context.Version,
             ContextId = context.ContextId,
             ImportId = context.ImportId,
             Capability = context.Capability,
             GamePath = context.GamePath,
+            SourceKind = context.SourceKind,
+            ResolvedGamePath = context.ResolvedGamePath,
+            DestinationState = context.DestinationState,
             ObjectIndex = context.ObjectIndex,
             TargetFilePath = context.TargetFilePath,
             TargetFolder = context.TargetFolder,
@@ -194,6 +237,8 @@ public sealed record PersistedExportContext
             SourceModName = context.SourceModName,
             SourceModRootPath = context.SourceModRootPath,
             TargetRelativePath = context.TargetRelativePath,
+            TargetCollectionId = context.TargetCollectionId,
+            TargetCollectionName = context.TargetCollectionName,
             CallbackPort = context.CallbackPort,
             ResourceManifest = context.ResourceManifest,
             ResourceManifestStatus = context.ResourceManifestStatus,
@@ -207,4 +252,5 @@ public sealed record ExportReceipt(
     string Message,
     IReadOnlyList<string>? Warnings = null,
     string? TargetFilePath = null,
-    string? DestinationName = null);
+    string? DestinationName = null,
+    InstantEditImportContext? Context = null);

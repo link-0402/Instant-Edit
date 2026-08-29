@@ -15,7 +15,8 @@ import bpy
 
 
 SCHEMA = "instant-edit.context"
-VERSION = 1
+VERSION = 2
+SUPPORTED_VERSIONS = {1, 2}
 COLLECTION_TAG = "instant_edit_context_id"
 OBJECT_TAG = "instant_edit_context_id"
 
@@ -23,7 +24,8 @@ CONTEXT_METADATA_FIELDS = (
     "context_id", "schema", "version", "plugin_instance_id", "capability",
     "source_game_path", "managed_destination", "target_file_path",
     "source_mod_directory", "source_mod_name", "source_mod_root_path",
-    "target_relative_path",
+    "target_relative_path", "source_kind", "resolved_game_path", "destination_state",
+    "target_collection_id", "target_collection_name",
     "resource_manifest_version", "resource_manifest_status",
     "import_id", "callback_port", "import_file_name", "collection_kind",
 )
@@ -44,6 +46,16 @@ class ContextValidationError(ValueError):
     """Raised when an XIV Instant Edit context cannot be used safely."""
 
 
+def is_safe_game_model_path(value: str) -> bool:
+    """Accept only normalized, non-rooted game paths for model contexts."""
+    if not isinstance(value, str) or not value or len(value) > 4096:
+        return False
+    if value.startswith(("/", "\\")) or "\\" in value or ":" in value or "\0" in value:
+        return False
+    parts = value.split("/")
+    return all(part not in {"", ".", ".."} for part in parts) and value.casefold().endswith(".mdl")
+
+
 @dataclass(frozen=True)
 class ContextRef:
     collection: object
@@ -54,12 +66,17 @@ class ContextRef:
     plugin_instance_id: str
     capability: str
     source_game_path: str
+    source_kind: str
+    resolved_game_path: str
+    destination_state: str
     managed_destination: str
     target_file_path: str
     source_mod_directory: str
     source_mod_name: str
     source_mod_root_path: str
     target_relative_path: str
+    target_collection_id: str
+    target_collection_name: str
     resource_manifest_version: int
     resource_manifest_status: str
     callback_port: int
@@ -164,7 +181,7 @@ def apply_authoritative_context(collection, payload: dict) -> None:
         raise ContextValidationError("context reattach response changed the context id")
     if import_id and payload.get("importId") != import_id:
         raise ContextValidationError("context reattach response changed the import id")
-    if payload.get("schema") != SCHEMA or payload.get("version") != VERSION:
+    if payload.get("schema") != SCHEMA or payload.get("version") not in SUPPORTED_VERSIONS:
         raise ContextValidationError("context reattach response has an invalid schema or version")
 
     fields = {
@@ -174,12 +191,17 @@ def apply_authoritative_context(collection, payload: dict) -> None:
         "plugin_instance_id": payload.get("pluginInstanceId"),
         "capability": payload.get("capability"),
         "source_game_path": payload.get("sourceGamePath"),
-        "managed_destination": payload.get("managedDestination"),
-        "target_file_path": payload.get("targetFilePath"),
-        "source_mod_directory": payload.get("sourceModDirectory"),
-        "source_mod_name": payload.get("sourceModName"),
+        "source_kind": payload.get("sourceKind") or "mod",
+        "resolved_game_path": payload.get("resolvedGamePath") or payload.get("sourceGamePath"),
+        "destination_state": payload.get("destinationState") or "ready",
+        "managed_destination": payload.get("managedDestination") or "",
+        "target_file_path": payload.get("targetFilePath") or "",
+        "source_mod_directory": payload.get("sourceModDirectory") or "",
+        "source_mod_name": payload.get("sourceModName") or "",
         "source_mod_root_path": payload.get("sourceModRootPath") or "",
         "target_relative_path": payload.get("targetRelativePath") or "",
+        "target_collection_id": payload.get("targetCollectionId") or "",
+        "target_collection_name": payload.get("targetCollectionName") or "",
         "resource_manifest_version": payload.get("resourceManifestVersion") or 0,
         "resource_manifest_status": payload.get("resourceManifestStatus") or "capture_failed",
         "import_id": payload.get("importId"),
@@ -249,31 +271,54 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         "context_id", "schema", "version", "plugin_instance_id", "capability",
         "source_game_path", "managed_destination", "target_file_path",
         "source_mod_directory", "source_mod_name", "source_mod_root_path", "callback_port",
-        "target_relative_path",
+        "target_relative_path", "source_kind", "resolved_game_path", "destination_state",
+        "target_collection_id", "target_collection_name",
         "resource_manifest_version", "resource_manifest_status",
     ))
 
-    if _value(collection, "schema") != SCHEMA or _value(collection, "version") != VERSION:
+    if _value(collection, "schema") != SCHEMA or _value(collection, "version") not in SUPPORTED_VERSIONS:
         raise ContextValidationError("context collection has an invalid schema or version")
 
     plugin_instance_id = _value(collection, "plugin_instance_id", "")
     capability = _value(collection, "capability", "")
     source_game_path = _value(collection, "source_game_path", "")
+    source_kind = _value(collection, "source_kind", "mod")
+    resolved_game_path = _value(collection, "resolved_game_path", source_game_path)
+    destination_state = _value(collection, "destination_state", "ready")
     managed_destination = _value(collection, "managed_destination", "")
     target_file_path = _value(collection, "target_file_path", "")
     source_mod_directory = _value(collection, "source_mod_directory", "")
     source_mod_name = _value(collection, "source_mod_name", "")
     source_mod_root_path = _value(collection, "source_mod_root_path", "")
     target_relative_path = _value(collection, "target_relative_path", "")
+    target_collection_id = _value(collection, "target_collection_id", "")
+    target_collection_name = _value(collection, "target_collection_name", "")
     resource_manifest_version = _value(collection, "resource_manifest_version", 0)
     resource_manifest_status = _value(collection, "resource_manifest_status", "capture_failed")
     import_id = _value(collection, "import_id", "")
     callback_port = _value(collection, "callback_port", 0)
     if not all(isinstance(value, str) and value for value in (
-        plugin_instance_id, capability, source_game_path, managed_destination,
-        target_file_path, source_mod_directory, source_mod_name
+        plugin_instance_id, capability, source_game_path, source_kind,
+        resolved_game_path, destination_state
     )):
         raise ContextValidationError("context collection is missing immutable reference data")
+    if source_kind not in {"mod", "game"} or destination_state not in {"ready", "new_mod_required"}:
+        raise ContextValidationError("context collection has an invalid source or destination state")
+    if source_kind == "game" and (
+        not is_safe_game_model_path(source_game_path) or
+        not is_safe_game_model_path(resolved_game_path)
+    ):
+        raise ContextValidationError("game context contains an unsafe model path")
+    if destination_state == "ready" and not all(isinstance(value, str) and value for value in (
+        managed_destination, target_file_path, source_mod_directory, source_mod_name
+    )):
+        raise ContextValidationError("ready context collection is missing destination data")
+    if destination_state == "new_mod_required" and (
+        source_kind != "game" or any((managed_destination, target_file_path,
+                                      source_mod_directory, source_mod_name,
+                                      source_mod_root_path, target_relative_path))
+    ):
+        raise ContextValidationError("pending game context contains unexpected destination data")
     callback_port = _require_int(callback_port, "callback port", 1)
     resource_manifest_version = _require_int(resource_manifest_version, "resource manifest version")
     if resource_manifest_status not in {"capture_failed", "ready"}:
@@ -290,7 +335,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
             _check_aliases(obj, REQUIRED_OBJECT_FIELDS + ("plugin_instance_id", "capability"))
             if tagged_context_id != context_id:
                 raise ContextValidationError(f"{obj.name}: context id does not match its collection")
-            if _value(obj, "schema") != SCHEMA or _value(obj, "version") != VERSION:
+            if _value(obj, "schema") != SCHEMA or _value(obj, "version") not in SUPPORTED_VERSIONS:
                 raise ContextValidationError(f"{obj.name}: invalid XIV Instant Edit metadata schema")
         if obj.type != "MESH":
             continue
@@ -332,12 +377,17 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
         plugin_instance_id=plugin_instance_id,
         capability=capability,
         source_game_path=source_game_path,
+        source_kind=source_kind,
+        resolved_game_path=resolved_game_path,
+        destination_state=destination_state,
         managed_destination=managed_destination,
         target_file_path=target_file_path,
         source_mod_directory=source_mod_directory,
         source_mod_name=source_mod_name,
         source_mod_root_path=source_mod_root_path if isinstance(source_mod_root_path, str) else "",
         target_relative_path=target_relative_path if isinstance(target_relative_path, str) else "",
+        target_collection_id=target_collection_id if isinstance(target_collection_id, str) else "",
+        target_collection_name=target_collection_name if isinstance(target_collection_name, str) else "",
         resource_manifest_version=resource_manifest_version,
         resource_manifest_status=resource_manifest_status,
         callback_port=callback_port,

@@ -44,6 +44,8 @@ def _relative_physical_path(file_path: str, root_path: str) -> str:
 
 def _import_file_display(ref) -> str:
     """Prefer the plugin-validated path, with a legacy physical-path fallback."""
+    if getattr(ref, "source_kind", "mod") == "game":
+        return str(getattr(ref, "resolved_game_path", "") or "Unavailable").replace("\\", "/")
     relative = str(getattr(ref, "target_relative_path", "") or "").strip()
     if relative:
         return relative.replace("\\", "/")
@@ -186,15 +188,19 @@ class XIVIE_PT_main(Panel):
             ref = None
 
         if ref is not None:
-            source_mod = ref.source_mod_root_path or ref.source_mod_name or ref.source_mod_directory
-            box.label(text=f"Source Mod: {source_mod}")
+            if ref.source_kind == "game":
+                box.label(text="Source: Game Data")
+            else:
+                source_mod = ref.source_mod_root_path or ref.source_mod_name or ref.source_mod_directory
+                box.label(text=f"Source Mod: {source_mod}")
             _draw_wrapped_display(box, context, "Imported File", _import_file_display(ref))
             destination = box.box()
             _draw_wrapped_display(
                 destination,
                 context,
                 "Current Export Destination",
-                _export_destination_display(ref, props),
+                "Not created yet" if ref.destination_state == "new_mod_required"
+                else _export_destination_display(ref, props),
                 icon="EXPORT",
             )
         else:
@@ -202,7 +208,14 @@ class XIVIE_PT_main(Panel):
 
         box.prop(props, "export_destination", text="Context")
         box.prop(props, "export_scope")
-        if ref is not None:
+        if ref is not None and ref.destination_state == "new_mod_required":
+            pending = box.box()
+            pending.label(
+                text="Quick Export will create a new Penumbra mod for this model.",
+                icon="INFO",
+            )
+            box.operator("xiv_ie.instant_export", text="Quick Export", icon="EXPORT")
+        elif ref is not None:
             targets = box.box()
             header = targets.row(align=True)
             header.label(text="Export Target", icon="EXPORT")
@@ -537,6 +550,11 @@ class XIVIE_PT_main(Panel):
         settings = get_settings()
         if not settings.backup_models_on_export:
             return
+        try:
+            if export_destination_context(context).destination_state == "new_mod_required":
+                return
+        except ContextValidationError:
+            pass
         box = layout.box()
         expanded = settings.show_backups
         header = box.row(align=True)

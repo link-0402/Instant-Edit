@@ -18,8 +18,8 @@ from ..mesh.objects  import visible_meshobj
 from ..properties    import get_settings
 from ..xivpy.model   import XIVModel
 from .props          import IN_PLACE_TARGET, NO_EXPORT_CONTEXT, get_instant_edit_props
-from .context        import (SCHEMA, VERSION, ContextValidationError,
-                             _value, clear_context_metadata,
+from .context        import (SCHEMA, VERSION, SUPPORTED_VERSIONS, ContextValidationError,
+                             _value, apply_authoritative_context, clear_context_metadata,
                              context_collections, context_id_for_object, create_collection, tag_object,
                              validate_context)
 from .plugin_http    import post_json
@@ -87,6 +87,9 @@ def mashup_export_selection(context: Context, ref=None):
         raise ContextValidationError("The active Context must contribute at least one exported mesh.")
     if len(materials) < 2:
         raise ContextValidationError("Create Mashup requires visible exported meshes from at least two Contexts.")
+    pending = [refs[context_id] for context_id in materials if refs[context_id].destination_state != "ready"]
+    if pending:
+        raise ContextValidationError("Create the Penumbra mod for every game-data Context before making a Mashup.")
     source_mods = {refs[context_id].source_mod_directory.casefold() for context_id in materials}
     if len(source_mods) < 2:
         raise ContextValidationError("Create Mashup requires Contexts from at least two different Penumbra mods.")
@@ -110,6 +113,8 @@ def mashup_target_state(context: Context, ref=None) -> tuple[bool, bool, str]:
         if ref.context_id not in ids or len(ids) < 2:
             return False, False, ""
         refs = [validate_context(context_id, context.scene) for context_id in ids]
+        if any(item.destination_state != "ready" for item in refs):
+            return True, False, "Create the Penumbra mod for every game-data Context first."
         if len({item.source_mod_directory.casefold() for item in refs}) < 2:
             return False, False, ""
         mashup_export_selection(context, ref)
@@ -167,7 +172,7 @@ def _request_variant_targets(ref) -> list[dict]:
     """Fetch the plugin-owned list of compatible Penumbra option targets."""
     payload = {
         "schema": "instant-edit.variant-targets",
-        "version": VERSION,
+        "version": 1,
         "pluginInstanceId": ref.plugin_instance_id,
         "contextId": ref.context_id,
         "capability": ref.capability,
@@ -199,8 +204,12 @@ def refresh_variant_targets(
 ) -> int:
     """Replace the cached tree with targets for the selected export context."""
     ref = export_destination_context(context)
-    groups = _request_variant_targets(ref)
     props = get_instant_edit_props()
+    if ref.destination_state != "ready":
+        props.variant_targets.clear()
+        props.variant_targets_context_id = ref.context_id
+        return 0
+    groups = _request_variant_targets(ref)
     previous_targets_context_id = props.variant_targets_context_id
     props.variant_targets.clear()
     for group in groups:
@@ -343,12 +352,17 @@ class InstantImport(Operator):
     context_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     capability: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_game_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    source_kind: bpy.props.StringProperty(default="mod", options={'HIDDEN'})  # type: ignore
+    resolved_game_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    destination_state: bpy.props.StringProperty(default="ready", options={'HIDDEN'})  # type: ignore
     managed_destination: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     target_file_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_directory: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_name: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     source_mod_root_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     target_relative_path: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    target_collection_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
+    target_collection_name: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
     resource_manifest_version: bpy.props.IntProperty(default=0, options={'HIDDEN'})  # type: ignore
     resource_manifest_status: bpy.props.StringProperty(default="capture_failed", options={'HIDDEN'})  # type: ignore
     import_id: bpy.props.StringProperty(default="", options={'HIDDEN'})  # type: ignore
@@ -383,7 +397,7 @@ class InstantImport(Operator):
             return {"CANCELLED"}
 
         try:
-            if self.schema != SCHEMA or self.version != VERSION:
+            if self.schema != SCHEMA or self.version not in SUPPORTED_VERSIONS:
                 raise ValueError("Import context has an unsupported schema or version")
             context_metadata = {
                 "context_id": self.context_id,
@@ -395,12 +409,17 @@ class InstantImport(Operator):
                 "plugin_instance_id": self.plugin_instance_id,
                 "capability": self.capability,
                 "source_game_path": self.source_game_path,
+                "source_kind": self.source_kind,
+                "resolved_game_path": self.resolved_game_path,
+                "destination_state": self.destination_state,
                 "managed_destination": self.managed_destination,
                 "target_file_path": self.target_file_path,
                 "source_mod_directory": self.source_mod_directory,
                 "source_mod_name": self.source_mod_name,
                 "source_mod_root_path": self.source_mod_root_path,
                 "target_relative_path": self.target_relative_path,
+                "target_collection_id": self.target_collection_id,
+                "target_collection_name": self.target_collection_name,
                 "resource_manifest_version": self.resource_manifest_version,
                 "resource_manifest_status": self.resource_manifest_status,
                 "import_id": self.import_id,
@@ -705,6 +724,12 @@ class QuickExport(Operator):
             return False
 
     def invoke(self, context: Context, _event):
+        try:
+            if export_destination_context(context).destination_state == "new_mod_required":
+                return bpy.ops.xiv_ie.vanilla_mod_name("INVOKE_DEFAULT", name="")
+        except ContextValidationError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
         if get_instant_edit_props().variant_target == MASHUP_TARGET:
             return bpy.ops.xiv_ie.mashup_destination("INVOKE_DEFAULT")
         return self.execute(context)
@@ -788,6 +813,36 @@ class MashupName(Operator):
         return {"FINISHED"}
 
 
+class VanillaModName(Operator):
+    bl_idname = "xiv_ie.vanilla_mod_name"
+    bl_label = "Create Penumbra Mod"
+    bl_description = "Name the new Penumbra mod for this game-data model"
+
+    name: StringProperty(name="Mod Name", default="", maxlen=120)  # type: ignore
+
+    def draw(self, _context):
+        self.layout.prop(self, "name", text="Mod Name")
+
+    def invoke(self, context: Context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=430)
+
+    def execute(self, context: Context):
+        try:
+            perform_instant_export(context, new_mod_name=self.name)
+        except Exception as error:
+            props = get_instant_edit_props()
+            props.last_status = f"Export failed: {error}"
+            self.report({"ERROR"}, props.last_status)
+            return {"CANCELLED"}
+        status = get_instant_edit_props().last_status
+        self.report(
+            {"WARNING"} if " with warnings:" in status or "could not refresh" in status else {"INFO"},
+            status,
+        )
+        get_export_stats(context)
+        return {"FINISHED"}
+
+
 class ClearInstantEditContexts(Operator):
     bl_idname = "xiv_ie.clear_contexts"
     bl_label = "Clear Contexts"
@@ -843,7 +898,8 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
                          sha256: str, props, variant_name: str | None,
                          variant_group_name: str | None = None, variant_target=None,
                          backup_existing: bool | None = None, *,
-                         setup_in_penumbra: bool = True) -> dict:
+                         setup_in_penumbra: bool = True,
+                         new_mod_name: str | None = None) -> dict:
     """Build the versioned Dalamud export envelope."""
     payload = {
         "schema": "instant-edit.export",
@@ -861,6 +917,8 @@ def build_export_payload(ref, export_id: str, mdl_path: Path, byte_size: int,
         ),
     }
     payload["setupInPenumbra"] = setup_in_penumbra
+    if new_mod_name is not None:
+        payload["newModName"] = new_mod_name
     if setup_in_penumbra:
         if variant_name is not None:
             payload["variantName"] = variant_name
@@ -921,7 +979,7 @@ def _request_export_status(ref, export_id: str) -> tuple[dict | None, bool]:
     """Return (receipt, pending); missing/unreachable receipts return (None, False)."""
     payload = {
         "schema": "instant-edit.export-status",
-        "version": VERSION,
+        "version": 1,
         "pluginInstanceId": ref.plugin_instance_id,
         "contextId": ref.context_id,
         "exportId": export_id,
@@ -1249,26 +1307,40 @@ def perform_mashup_export(context: Context, destination: str, name: str) -> Path
             print(f"XIV Instant Edit: could not remove mashup export cache job: {error}")
 
 
-def perform_instant_export(context: Context, destination: str | None = None) -> Path:
-    """Export one validated context and send only the v1 secure envelope."""
+def perform_instant_export(
+    context: Context,
+    destination: str | None = None,
+    new_mod_name: str | None = None,
+) -> Path:
+    """Export one validated context through its authenticated plugin route."""
     ref = export_destination_context(context, destination)
     props = get_instant_edit_props()
-    if props.variant_target == MASHUP_TARGET:
+    pending = ref.destination_state == "new_mod_required"
+    if pending:
+        name = (new_mod_name or "").strip()
+        if not name:
+            raise ValueError("Enter a name for the new Penumbra mod.")
+        if name in {".", ".."} or name.endswith(".") or any(char in INVALID_VARIANT_CHARS for char in name):
+            raise ValueError("Mod name contains characters that cannot be used in a folder name.")
+        new_mod_name = name
+    elif new_mod_name is not None:
+        raise ValueError("This context already has a Penumbra destination.")
+    if not pending and props.variant_target == MASHUP_TARGET:
         raise ValueError("Use Quick Export to choose the mashup destination and name.")
-    in_place = props.variant_target == IN_PLACE_TARGET
-    variant_target = None if in_place else selected_variant_target(props)
+    in_place = not pending and props.variant_target == IN_PLACE_TARGET
+    variant_target = None if pending or in_place else selected_variant_target(props)
     if variant_target is not None and props.variant_targets_context_id != ref.context_id:
         raise ValueError("Refresh Penumbra targets after changing Context.")
     overwrite_existing_option = variant_target is not None and variant_target.kind == "OPTION"
     variant_name = (
         validate_variant_name(ref.source_game_path, props.variant_name)
-        if not in_place and not overwrite_existing_option else None
+        if not pending and not in_place and not overwrite_existing_option else None
     )
     variant_group_name = (
         normalise_variant_group_name(
             variant_target.group_name if variant_target is not None and variant_target.kind == "GROUP"
             else props.variant_group_name)
-        if not in_place and not overwrite_existing_option
+        if not pending and not in_place and not overwrite_existing_option
         else None
     )
     export_objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
@@ -1313,7 +1385,9 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
             variant_name,
             variant_group_name,
             variant_target,
-            setup_in_penumbra=not in_place,
+            backup_existing=False if pending else None,
+            setup_in_penumbra=not pending and not in_place,
+            new_mod_name=new_mod_name,
         )
         try:
             result = _send_plugin_export(ref, payload)
@@ -1343,15 +1417,31 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
                 variant_name,
                 variant_group_name,
                 variant_target,
-                setup_in_penumbra=not in_place,
+                backup_existing=False if pending else None,
+                setup_in_penumbra=not pending and not in_place,
+                new_mod_name=new_mod_name,
             )
             result = _send_plugin_export(ref, payload)
 
         props.last_export_id = export_id
+        promoted = result.get("context")
+        if promoted is not None:
+            if not isinstance(promoted, dict):
+                raise ValueError("plugin returned an invalid promoted context")
+            apply_authoritative_context(ref.collection, promoted)
+            ref = validate_context(ref.context_id, context.scene)
+            props.context_version = int(promoted.get("version", VERSION))
+            props.plugin_instance_id = ref.plugin_instance_id
+            props.capability = ref.capability
+            props.managed_destination = ref.managed_destination
         target_file_path = Path(result.get("targetFilePath") or ref.target_file_path)
         if variant_name is not None and not result.get("targetFilePath"):
             target_file_path = target_file_path.with_name(f"{variant_name}.mdl")
-        setup_status = " and set up in Penumbra" if variant_name is not None else ""
+        setup_status = (
+            " and created its Penumbra mod" if pending
+            else " and set up in Penumbra" if variant_name is not None
+            else ""
+        )
         group_status = "; ".join(
             f"{group.mesh_index}.({','.join(str(part) for part in group.parts)})"
             for group in export_groups
@@ -1362,7 +1452,14 @@ def perform_instant_export(context: Context, destination: str | None = None) -> 
             f"{plugin_warning_summary(warnings)}"
             if warnings else f"Exported {group_status} to {target_file_path}{setup_status}"
         )
-        if variant_name is not None:
+        if pending:
+            try:
+                props.variant_targets_context_id = ""
+                if refresh_variant_targets(context) == 0:
+                    props.variant_target = IN_PLACE_TARGET
+            except Exception as error:
+                props.last_status += f"; Penumbra targets could not refresh: {error}"
+        elif variant_name is not None:
             try:
                 refresh_variant_targets(
                     context,
@@ -1414,6 +1511,7 @@ CLASSES = [
     QuickExport,
     MashupDestination,
     MashupName,
+    VanillaModName,
     ClearInstantEditContexts,
     CopyInstantEditStatus,
     ApplyInstantEdit,

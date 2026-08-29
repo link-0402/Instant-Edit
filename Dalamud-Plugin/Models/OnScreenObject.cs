@@ -38,6 +38,7 @@ public sealed record ResourceNode
     public required string GamePath { get; init; }
     public required string ActualPath { get; init; }
     public required IReadOnlyList<ResourceNode> Children { get; init; }
+    public required ResourceSourceState SourceState { get; init; }
     public required string SourceLabel { get; init; }
     public string? SourceModName { get; init; }
     public string? SourceModDirectory { get; init; }

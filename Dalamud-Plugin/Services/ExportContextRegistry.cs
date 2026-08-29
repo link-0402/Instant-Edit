@@ -113,6 +113,9 @@ public sealed class ExportContextRegistry : IDisposable
             ImportId = Guid.NewGuid().ToString("N"),
             Capability = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
             GamePath = gamePath,
+            SourceKind = InstantEditImportContext.ModSource,
+            ResolvedGamePath = gamePath,
+            DestinationState = InstantEditImportContext.ReadyDestination,
             ObjectIndex = (ushort)objectIndex,
             TargetFilePath = targetFilePath,
             TargetFolder = targetFolder,
@@ -139,6 +142,104 @@ public sealed class ExportContextRegistry : IDisposable
         Persist();
 
         return context;
+    }
+
+    public InstantEditImportContext CreateGameContext(
+        string gamePath,
+        string resolvedGamePath,
+        int objectIndex,
+        int callbackPort,
+        Guid? targetCollectionId = null,
+        string? targetCollectionName = null,
+        ResourceDependencyManifest? resourceManifest = null)
+    {
+        if (!PenumbraService.IsSafeGamePath(gamePath) ||
+            !PenumbraService.IsSafeGamePath(resolvedGamePath) ||
+            !gamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
+            !resolvedGamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
+            objectIndex is < 0 or > ushort.MaxValue || callbackPort is < 1 or > 65535 ||
+            targetCollectionId == Guid.Empty ||
+            (targetCollectionName is not null && targetCollectionName.Length > 512))
+            throw new ArgumentException("The game-data import target is not safe.");
+
+        var safeManifest = IsSafeResourceManifest(resourceManifest) ? resourceManifest : null;
+        var context = new InstantEditImportContext
+        {
+            PluginInstanceId = PluginInstanceId,
+            ContextId = Guid.NewGuid().ToString("N"),
+            ImportId = Guid.NewGuid().ToString("N"),
+            Capability = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            GamePath = gamePath,
+            SourceKind = InstantEditImportContext.GameSource,
+            ResolvedGamePath = resolvedGamePath,
+            DestinationState = InstantEditImportContext.NewModRequiredDestination,
+            ObjectIndex = (ushort)objectIndex,
+            TargetCollectionId = targetCollectionId,
+            TargetCollectionName = string.IsNullOrWhiteSpace(targetCollectionName) ? null : targetCollectionName,
+            CallbackPort = callbackPort,
+            ResourceManifest = safeManifest,
+            ResourceManifestStatus = safeManifest is not null ? "ready" : "capture_failed",
+        };
+
+        lock (_lock)
+        {
+            ThrowIfDisposed();
+            _contexts[context.ContextId] = new ContextEntry { Context = context };
+        }
+        Persist();
+        return context;
+    }
+
+    public bool PromoteGameContext(
+        string contextId,
+        string sourceModDirectory,
+        string sourceModName,
+        string sourceModRootPath,
+        string targetRelativePath,
+        out InstantEditImportContext? context)
+    {
+        context = null;
+        if (!IsSafeId(contextId) || !PenumbraService.IsSafeModName(sourceModDirectory) ||
+            string.IsNullOrWhiteSpace(sourceModName) || sourceModName.Length > 512 ||
+            !PenumbraService.IsSafeRelativeModelPath(targetRelativePath))
+            return false;
+
+        string root;
+        string target;
+        try
+        {
+            root = Path.GetFullPath(sourceModRootPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            target = Path.GetFullPath(Path.Combine(root, targetRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+            if (!Directory.Exists(root) || !File.Exists(target) || !IsPathWithin(target, root) ||
+                !PenumbraService.IsSafeLocalModelPath(target))
+                return false;
+        }
+        catch
+        {
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (_disposed || !_contexts.TryGetValue(contextId, out var entry) ||
+                entry.Context.SourceKind != InstantEditImportContext.GameSource ||
+                entry.Context.DestinationState != InstantEditImportContext.NewModRequiredDestination)
+                return false;
+            context = entry.Context with
+            {
+                DestinationState = InstantEditImportContext.ReadyDestination,
+                SourceModDirectory = sourceModDirectory,
+                SourceModName = sourceModName,
+                SourceModRootPath = root,
+                TargetRelativePath = targetRelativePath.Replace('\\', '/'),
+                TargetFilePath = target,
+                TargetFolder = Path.GetDirectoryName(target),
+            };
+            entry.Context = context;
+        }
+        Persist();
+        return true;
     }
 
     public bool TryReattach(
@@ -662,6 +763,9 @@ public sealed class ExportContextRegistry : IDisposable
             ImportId = saved.ImportId,
             Capability = saved.Capability,
             GamePath = saved.GamePath,
+            SourceKind = saved.Version >= 2 ? saved.SourceKind! : InstantEditImportContext.ModSource,
+            ResolvedGamePath = saved.Version >= 2 ? saved.ResolvedGamePath! : saved.GamePath,
+            DestinationState = saved.Version >= 2 ? saved.DestinationState! : InstantEditImportContext.ReadyDestination,
             ObjectIndex = saved.ObjectIndex,
             TargetFilePath = saved.TargetFilePath,
             TargetFolder = saved.TargetFolder,
@@ -669,6 +773,8 @@ public sealed class ExportContextRegistry : IDisposable
             SourceModName = saved.SourceModName,
             SourceModRootPath = saved.SourceModRootPath,
             TargetRelativePath = saved.TargetRelativePath,
+            TargetCollectionId = saved.TargetCollectionId,
+            TargetCollectionName = saved.TargetCollectionName,
             CallbackPort = saved.CallbackPort,
             ResourceManifest = safeManifest,
             ResourceManifestStatus = safeManifest is not null ? "ready" : "capture_failed",
@@ -680,14 +786,27 @@ public sealed class ExportContextRegistry : IDisposable
         if (!IsSafeId(saved.ContextId) || !IsSafeId(saved.ImportId) ||
             !CapabilityMatches(saved.Capability, saved.Capability) ||
             !PenumbraService.IsSafeGamePath(saved.GamePath) ||
-            !PenumbraService.IsSafeModName(saved.SourceModDirectory) ||
-            !PenumbraService.IsSafeLocalModelPath(saved.TargetFilePath) ||
-            !PenumbraService.IsSafeRelativeModelPath(saved.TargetRelativePath) ||
-            saved.CallbackPort is < 1 or > 65535 ||
-            string.IsNullOrWhiteSpace(saved.SourceModName) || string.IsNullOrWhiteSpace(saved.TargetFolder))
+            saved.CallbackPort is < 1 or > 65535)
             return false;
-
-        return true;
+        if (saved.Version < 2)
+            return PenumbraService.IsSafeModName(saved.SourceModDirectory) &&
+                   PenumbraService.IsSafeLocalModelPath(saved.TargetFilePath) &&
+                   PenumbraService.IsSafeRelativeModelPath(saved.TargetRelativePath) &&
+                   !string.IsNullOrWhiteSpace(saved.SourceModName) && !string.IsNullOrWhiteSpace(saved.TargetFolder);
+        if (saved.SourceKind is not (InstantEditImportContext.ModSource or InstantEditImportContext.GameSource) ||
+            !PenumbraService.IsSafeGamePath(saved.ResolvedGamePath) ||
+            saved.DestinationState is not (InstantEditImportContext.ReadyDestination or InstantEditImportContext.NewModRequiredDestination) ||
+            saved.TargetCollectionId == Guid.Empty ||
+            (saved.TargetCollectionName is not null && saved.TargetCollectionName.Length > 512))
+            return false;
+        if (saved.DestinationState == InstantEditImportContext.NewModRequiredDestination)
+            return saved.SourceKind == InstantEditImportContext.GameSource && saved.TargetFilePath is null &&
+                   saved.TargetFolder is null && saved.SourceModDirectory is null && saved.SourceModName is null &&
+                   saved.SourceModRootPath is null && saved.TargetRelativePath is null;
+        return PenumbraService.IsSafeModName(saved.SourceModDirectory) &&
+               PenumbraService.IsSafeLocalModelPath(saved.TargetFilePath) &&
+               PenumbraService.IsSafeRelativeModelPath(saved.TargetRelativePath) &&
+               !string.IsNullOrWhiteSpace(saved.SourceModName) && !string.IsNullOrWhiteSpace(saved.TargetFolder);
     }
 
     private static bool IsSafeResourceManifest(ResourceDependencyManifest? manifest)

@@ -250,25 +250,29 @@ public sealed class OnScreenService
         var represented = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var node in Flatten(roots))
         {
-            if (IsModelPath(node.GamePath) && Path.IsPathRooted(node.ActualPath))
+            if (IsModelPath(node.GamePath) && IsModelPath(node.ActualPath))
                 represented.Add(ModelKey(node.ActualPath, node.GamePath));
         }
 
         var supplemented = new List<ResourceNode>();
         foreach (var (actualPath, gamePaths) in resolvedPaths)
         {
-            if (!Path.IsPathRooted(actualPath) ||
-                !string.Equals(Path.GetExtension(actualPath), ".mdl", StringComparison.OrdinalIgnoreCase))
+            if (!IsModelPath(actualPath))
                 continue;
 
             var source = attributeSource(actualPath);
-            if (source.State != ResourceSourceState.LoadedMod)
+            var normalizedActualPath = NormalizeActualPath(actualPath, source.State);
+            var safeModModel = source.State == ResourceSourceState.LoadedMod && Path.IsPathRooted(actualPath);
+            var safeGameModel = source.State == ResourceSourceState.GameData &&
+                                !Path.IsPathRooted(normalizedActualPath) &&
+                                PenumbraService.IsSafeGamePath(normalizedActualPath);
+            if (!safeModModel && !safeGameModel)
                 continue;
 
             foreach (var rawGamePath in gamePaths)
             {
                 var gamePath = rawGamePath.Replace('\\', '/').TrimStart('/');
-                if (!IsModelPath(gamePath) || !represented.Add(ModelKey(actualPath, gamePath)))
+                if (!IsModelPath(gamePath) || !represented.Add(ModelKey(normalizedActualPath, gamePath)))
                     continue;
 
                 var presentation = ResourcePresentation.For("Mdl", string.Empty, string.Empty, gamePath);
@@ -278,13 +282,16 @@ public sealed class OnScreenService
                     Icon = string.Empty,
                     Name = FileName(gamePath),
                     GamePath = gamePath,
-                    ActualPath = actualPath,
+                    ActualPath = normalizedActualPath,
                     Children = Array.Empty<ResourceNode>(),
+                    SourceState = source.State,
                     SourceLabel = source.Label,
                     SourceModName = source.ModName,
                     SourceModDirectory = source.ModDirectory,
                     SourceModRootPath = source.ModRootPath,
-                    SourceRelativePath = source.RelativePath,
+                    SourceRelativePath = source.State == ResourceSourceState.GameData
+                        ? normalizedActualPath
+                        : source.RelativePath,
                     SlotLabel = presentation.SlotLabel,
                     ResourceSection = presentation.Section,
                     SortOrder = presentation.SortOrder,
@@ -314,6 +321,32 @@ public sealed class OnScreenService
         return separator < 0 ? path : path[(separator + 1)..];
     }
 
+    internal static IReadOnlyList<ResourceNode> ProjectVisibleResourceNodes(
+        IEnumerable<ResourceNode> roots,
+        bool includeVanilla)
+        => roots.SelectMany(node => ProjectVisibleResourceNode(node, includeVanilla)).ToArray();
+
+    private static IEnumerable<ResourceNode> ProjectVisibleResourceNode(
+        ResourceNode node,
+        bool includeVanilla)
+    {
+        if (includeVanilla)
+            return [node];
+
+        var children = ProjectVisibleResourceNodes(node.Children, false);
+        if (node.SourceState == ResourceSourceState.GameData)
+            return children;
+        if (node.Children.Count > 0 && children.Count == 0 &&
+            node.SourceState != ResourceSourceState.LoadedMod)
+            return [];
+        return [node with { Children = children }];
+    }
+
+    internal static string NormalizeActualPath(string actualPath, ResourceSourceState sourceState)
+        => sourceState == ResourceSourceState.GameData
+            ? PathRules.NormalizeGamePath(actualPath)
+            : actualPath;
+
     private ResourceNode? CopyPrunedNode(ResourceNodeDto node)
     {
         var children = (node.Children ?? [])
@@ -324,23 +357,28 @@ public sealed class OnScreenService
             .ThenBy(child => child.SortOrder)
             .ToArray();
         var source = _sourceAttributor.AttributionFor(node.ActualPath);
-        if (source.State != ResourceSourceState.LoadedMod && children.Length == 0)
+        if (source.State is not (ResourceSourceState.LoadedMod or ResourceSourceState.GameData) && children.Length == 0)
             return null;
 
-        var presentation = ResourcePresentation.For(node.Type.ToString(), node.Name ?? string.Empty, node.Icon.ToString(), node.GamePath ?? string.Empty);
+        var actualPath = NormalizeActualPath(node.ActualPath ?? string.Empty, source.State);
+        var gamePath = PathRules.NormalizeGamePath(node.GamePath);
+        var presentation = ResourcePresentation.For(node.Type.ToString(), node.Name ?? string.Empty, node.Icon.ToString(), gamePath);
         return new ResourceNode
         {
             Type = node.Type.ToString(),
             Icon = node.Icon.ToString(),
             Name = node.Name ?? string.Empty,
-            GamePath = node.GamePath ?? string.Empty,
-            ActualPath = node.ActualPath ?? string.Empty,
+            GamePath = gamePath,
+            ActualPath = actualPath,
             Children = children,
+            SourceState = source.State,
             SourceLabel = source.Label,
             SourceModName = source.ModName,
             SourceModDirectory = source.ModDirectory,
             SourceModRootPath = source.ModRootPath,
-            SourceRelativePath = source.RelativePath,
+            SourceRelativePath = source.State == ResourceSourceState.GameData
+                ? actualPath
+                : source.RelativePath,
             SlotLabel = presentation.SlotLabel,
             ResourceSection = presentation.Section,
             SortOrder = presentation.SortOrder,

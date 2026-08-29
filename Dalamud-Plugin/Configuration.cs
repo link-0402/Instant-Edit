@@ -28,6 +28,9 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Skip body skin, body-piercing, and pube preview resources.</summary>
     public bool ExcludeBodyAndGeneralMaterials { get; set; }
 
+    /// <summary>Show game-data resources alongside Penumbra-modified resources on screen.</summary>
+    public bool IncludeVanillaResources { get; set; }
+
     /// <summary>Keep the main window visible when the user hides the game UI with Scroll Lock.</summary>
     public bool KeepVisibleWhenUiHidden { get; set; }
 

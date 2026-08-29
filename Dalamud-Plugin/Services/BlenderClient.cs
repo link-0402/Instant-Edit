@@ -12,6 +12,7 @@ public sealed class BlenderClient : IDisposable
     public const string ImportOptionsCapability = "instant-edit.import-options.v1";
     public const string MaterialPreviewCapability = "instant-edit.material-preview.v1";
     public const string CacheHandoffCapability = "instant-edit.cache-handoff.v1";
+    public const string VanillaContextCapability = "instant-edit.vanilla-context.v1";
 
     private readonly HttpClient _http;
     private readonly IPluginLog _log;
@@ -72,6 +73,9 @@ public sealed class BlenderClient : IDisposable
 
     public async Task<bool> SupportsCacheHandoffAsync(int port, CancellationToken cancellationToken = default)
         => await SupportsCapabilityAsync(port, CacheHandoffCapability, cancellationToken).ConfigureAwait(false);
+
+    public async Task<bool> SupportsVanillaContextAsync(int port, CancellationToken cancellationToken = default)
+        => await SupportsCapabilityAsync(port, VanillaContextCapability, cancellationToken).ConfigureAwait(false);
 
     private async Task<bool> SupportsCapabilityAsync(
         int port,
@@ -150,6 +154,55 @@ public sealed class BlenderClient : IDisposable
             targetRelativePath,
             resourceManifest);
 
+        return await SendImportAsync(
+            port, importFilePath, name, context, cancellationToken,
+            importOptions, previewManifestPath).ConfigureAwait(false);
+    }
+
+    public async Task<bool> SendGameImportAsync(
+        int port,
+        string importFilePath,
+        string gamePath,
+        string resolvedGamePath,
+        int objectIndex,
+        string name,
+        int callbackPort,
+        Guid? targetCollectionId = null,
+        string? targetCollectionName = null,
+        CancellationToken cancellationToken = default,
+        BlenderImportOptions? importOptions = null,
+        string? previewManifestPath = null,
+        ResourceDependencyManifest? resourceManifest = null)
+    {
+        if (port is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port));
+        if (callbackPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(callbackPort));
+
+        var context = _contexts.CreateGameContext(
+            gamePath,
+            resolvedGamePath,
+            objectIndex,
+            callbackPort,
+            targetCollectionId,
+            targetCollectionName,
+            resourceManifest);
+
+        return await SendImportAsync(
+            port, importFilePath, name, context, cancellationToken,
+            importOptions, previewManifestPath).ConfigureAwait(false);
+    }
+
+    private async Task<bool> SendImportAsync(
+        int port,
+        string importFilePath,
+        string name,
+        InstantEditImportContext context,
+        CancellationToken cancellationToken,
+        BlenderImportOptions? importOptions,
+        string? previewManifestPath)
+    {
+
         try
         {
             var payload = JsonSerializer.Serialize(new
@@ -162,6 +215,9 @@ public sealed class BlenderClient : IDisposable
                 capability = context.Capability,
                 filePath = importFilePath,
                 sourceGamePath = context.GamePath,
+                sourceKind = context.SourceKind,
+                resolvedGamePath = context.ResolvedGamePath,
+                destinationState = context.DestinationState,
                 objectIndex = context.ObjectIndex,
                 displayName = name,
                 callbackPort = context.CallbackPort,
@@ -171,6 +227,8 @@ public sealed class BlenderClient : IDisposable
                 sourceModName = context.SourceModName,
                 sourceModRootPath = context.SourceModRootPath,
                 targetRelativePath = context.TargetRelativePath,
+                targetCollectionId = context.TargetCollectionId,
+                targetCollectionName = context.TargetCollectionName,
                 resourceManifestVersion = context.ResourceManifestVersion,
                 resourceManifestStatus = context.ResourceManifestStatus,
                 previewManifestPath,

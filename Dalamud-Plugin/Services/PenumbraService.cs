@@ -43,6 +43,8 @@ public sealed record ModPathRemap(
 public sealed record VariantOptionTarget(string Id, string Name, string ModelPath);
 public sealed record VariantGroupTarget(string Id, string Name, IReadOnlyList<VariantOptionTarget> Options);
 public sealed record VariantTargetsResult(bool Success, string Code, string Message, IReadOnlyList<VariantGroupTarget> Groups);
+public sealed record PenumbraCollectionTarget(Guid Id, string Name);
+public sealed record NewModelModResult(ExportResult Result, string? ModRoot = null, string? TargetRelativePath = null);
 public sealed record MashupContributor(InstantEditImportContext Context, IReadOnlyList<string> Materials);
 public sealed record MashupMaterialAssignment(
     string ContextId,
@@ -157,6 +159,24 @@ public sealed class PenumbraService
     /// <summary>Resolve one object's effective resources on Dalamud's framework thread.</summary>
     public async Task<Dictionary<string, HashSet<string>>?> GetResourcePathsAsync(ushort gameObjectIndex)
         => await _framework.RunOnFrameworkThread(() => GetResourcePaths(gameObjectIndex)).ConfigureAwait(false);
+
+    public async Task<PenumbraCollectionTarget?> GetCollectionTargetAsync(int gameObjectIndex)
+        => await _framework.RunOnFrameworkThread(() =>
+        {
+            try
+            {
+                var collection = _getCollectionForObject.Invoke(gameObjectIndex);
+                return collection.ObjectValid && collection.EffectiveCollection.Id != Guid.Empty &&
+                       !string.IsNullOrWhiteSpace(collection.EffectiveCollection.Name)
+                    ? new PenumbraCollectionTarget(collection.EffectiveCollection.Id, collection.EffectiveCollection.Name)
+                    : null;
+            }
+            catch (Exception e)
+            {
+                _log.Debug(e, "Could not capture the Penumbra collection for object {ObjectIndex}.", gameObjectIndex);
+                return null;
+            }
+        }).ConfigureAwait(false);
 
     /// <summary> Get the resolved resource paths for several game objects in one IPC call. </summary>
     public Dictionary<string, HashSet<string>>?[] GetResourcePaths(ushort[] gameObjectIndices)
@@ -394,6 +414,124 @@ public sealed class PenumbraService
         }
     }
 
+    /// <summary>Create the first persistent Penumbra destination for a game-data import.</summary>
+    public async Task<NewModelModResult> CreateGameModelModAsync(
+        InstantEditImportContext context,
+        string exportedFile,
+        string modName)
+    {
+        if (context.SourceKind != InstantEditImportContext.GameSource ||
+            context.DestinationState != InstantEditImportContext.NewModRequiredDestination)
+            return new NewModelModResult(new ExportResult(false, "invalid_destination_state", "This import no longer requires a new Penumbra mod."));
+        if (!IsSafeNewModName(modName))
+            return new NewModelModResult(new ExportResult(false, "invalid_mod_name", "The Penumbra mod name is invalid."));
+        var validationError = ValidateExportRequest(modName, context.GamePath, exportedFile);
+        if (validationError is not null)
+            return new NewModelModResult(new ExportResult(false, "invalid_export_file", validationError));
+
+        await _exportGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var root = await _framework.RunOnFrameworkThread(GetModDirectory).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+                return new NewModelModResult(new ExportResult(false, "penumbra_root_missing", "The Penumbra mod root is unavailable."));
+            root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+                return new NewModelModResult(new ExportResult(false, "penumbra_root_unsafe", "The Penumbra mod root is an unsupported linked directory."));
+
+            var modList = await _framework.RunOnFrameworkThread(() =>
+                TryGetModList(out var mods) ? mods : null).ConfigureAwait(false);
+            if (modList is null)
+                return new NewModelModResult(new ExportResult(false, "penumbra_unavailable", "Could not retrieve the Penumbra mod list."));
+            var finalFolder = Path.GetFullPath(Path.Combine(root, modName));
+            if (!IsPathWithin(finalFolder, root) || modList.Keys.Any(key =>
+                    string.Equals(key, modName, StringComparison.OrdinalIgnoreCase)) ||
+                modList.Values.Any(name => string.Equals(name, modName, StringComparison.OrdinalIgnoreCase)) ||
+                Directory.Exists(finalFolder) || File.Exists(finalFolder))
+                return new NewModelModResult(new ExportResult(false, "vanilla_mod_exists", "A Penumbra mod or folder with this name already exists."));
+
+            var relativeModel = "Files/" + NormalizeGamePath(context.GamePath);
+            var staging = Path.Combine(root, $".instant-edit-vanilla-{Guid.NewGuid():N}.tmp");
+            var committed = false;
+            try
+            {
+                Directory.CreateDirectory(staging);
+                StageGameModelMod(
+                    staging,
+                    modName,
+                    context.GamePath,
+                    await File.ReadAllBytesAsync(exportedFile).ConfigureAwait(false));
+                Directory.Move(staging, finalFolder);
+                committed = true;
+
+                var warnings = new List<string>();
+                try
+                {
+                    var addError = await AddNewModAsync(modName).ConfigureAwait(false);
+                    if (addError is not null)
+                        warnings.Add(addError.Message);
+                    else if (context.TargetCollectionId is { } collectionId && collectionId != Guid.Empty)
+                    {
+                        var configure = await _framework.RunOnFrameworkThread(() => ConfigureModForCollectionOnFramework(
+                            modName,
+                            collectionId,
+                            context.TargetCollectionName ?? "captured collection",
+                            setPriority: true,
+                            priority: 0,
+                            redraw: false)).ConfigureAwait(false);
+                        if (!configure.Success)
+                            warnings.Add(configure.Message);
+                        else
+                            warnings.AddRange(configure.WarningList);
+                    }
+                    else
+                    {
+                        warnings.Add("The import's Penumbra collection was unavailable; enable the new mod manually.");
+                    }
+
+                    var redrawWarning = await _framework.RunOnFrameworkThread(
+                        RedrawPlayerOwnedEntitiesOnFramework).ConfigureAwait(false);
+                    if (redrawWarning is not null)
+                        warnings.Add(redrawWarning);
+                }
+                catch (Exception e)
+                {
+                    warnings.Add($"The model mod was committed, but Penumbra setup failed: {e.Message}");
+                }
+
+                var targetFile = Path.Combine(finalFolder, relativeModel.Replace('/', Path.DirectorySeparatorChar));
+                return new NewModelModResult(new ExportResult(
+                    true,
+                    warnings.Count == 0 ? "vanilla_mod_created" : "vanilla_mod_created_with_warnings",
+                    $"Created Penumbra model mod {modName}.",
+                    warnings,
+                    targetFile,
+                    modName), finalFolder, relativeModel);
+            }
+            catch (Exception e)
+            {
+                if (Directory.Exists(staging))
+                    TryDeleteMashupNamespace(root, staging);
+                if (committed)
+                {
+                    var targetFile = Path.Combine(finalFolder, relativeModel.Replace('/', Path.DirectorySeparatorChar));
+                    return new NewModelModResult(new ExportResult(
+                        true,
+                        "vanilla_mod_created_with_warnings",
+                        $"Created Penumbra model mod {modName}.",
+                        [$"The model mod was committed, but follow-up processing failed: {e.Message}"],
+                        targetFile,
+                        modName), finalFolder, relativeModel);
+                }
+                return new NewModelModResult(new ExportResult(false, "vanilla_mod_create_failed", e.Message));
+            }
+        }
+        finally
+        {
+            _exportGate.Release();
+        }
+    }
+
     /// <summary>Get resource trees for explicit object-table indices.</summary>
     public ResourceTreeDto?[] GetResourceTrees(ushort[] gameObjectIndices)
     {
@@ -425,6 +563,10 @@ public sealed class PenumbraService
     {
         if (_data is null)
             return new ExportResult(false, "mashup_unavailable", "Game data access is unavailable.");
+        if (activeContext.DestinationState != InstantEditImportContext.ReadyDestination ||
+            string.IsNullOrWhiteSpace(activeContext.SourceModDirectory) ||
+            string.IsNullOrWhiteSpace(activeContext.TargetFilePath))
+            return new ExportResult(false, "destination_not_ready", "The active Context has no Penumbra mod destination.");
         if (!plan.Success || string.IsNullOrWhiteSpace(plan.Fingerprint) ||
             !IsSafeVariantGroupName(name) || exportId.Length is < 8 or > 128 ||
             destination is not ("active_mod" or "new_mod") || contributors.Count is < 2 or > 16)
@@ -439,8 +581,8 @@ public sealed class PenumbraService
         try
         {
             var activeTarget = await _framework.RunOnFrameworkThread(() => ResolveSourceModTargetOnFramework(
-                activeContext.SourceModDirectory,
-                activeContext.TargetFilePath,
+                activeContext.SourceModDirectory!,
+                activeContext.TargetFilePath!,
                 activeContext.SourceModRootPath,
                 activeContext.TargetRelativePath)).ConfigureAwait(false);
             if (activeTarget.Target is null)
@@ -1664,11 +1806,30 @@ public sealed class PenumbraService
             string.IsNullOrWhiteSpace(collection.EffectiveCollection.Name))
             return new ExportResult(false, "The target object has no valid Penumbra collection.");
 
+        return ConfigureModForCollectionOnFramework(
+            modName,
+            collection.EffectiveCollection.Id,
+            collection.EffectiveCollection.Name,
+            setPriority,
+            priority);
+    }
+
+    private ExportResult ConfigureModForCollectionOnFramework(
+        string modName,
+        Guid collectionId,
+        string collectionName,
+        bool setPriority = true,
+        int priority = int.MaxValue,
+        bool redraw = true)
+    {
         PenumbraApiEc enabledResult;
+        if (!redraw)
+            return new ExportResult(true, $"Applied {modName} to {collectionName}.");
+
         try
         {
             enabledResult = _trySetMod.Invoke(
-                collection.EffectiveCollection.Id,
+                collectionId,
                 modName,
                 true,
                 modName);
@@ -1688,7 +1849,7 @@ public sealed class PenumbraService
             try
             {
                 priorityResult = _trySetModPriority.Invoke(
-                    collection.EffectiveCollection.Id,
+                    collectionId,
                     modName,
                     priority,
                     modName);
@@ -1707,11 +1868,11 @@ public sealed class PenumbraService
         {
             var redrawWarning = RedrawPlayerOwnedEntitiesOnFramework();
             return redrawWarning is null
-                ? new ExportResult(true, $"Applied {modName} to {collection.EffectiveCollection.Name} ({objectIndex}).")
+                ? new ExportResult(true, $"Applied {modName} to {collectionName}.")
                 : new ExportResult(
                     true,
                     "export_applied_with_warnings",
-                    $"Applied {modName} to {collection.EffectiveCollection.Name} ({objectIndex}).",
+                    $"Applied {modName} to {collectionName}.",
                     [redrawWarning]);
         }
         catch (Exception e)
@@ -3017,6 +3178,47 @@ public sealed class PenumbraService
                 HasReparsePointInPath(staging, physical))
                 throw new InvalidDataException("A staged mashup resource is missing or unsafe.");
         }
+    }
+
+    internal static string StageGameModelMod(
+        string staging,
+        string modName,
+        string consumerGamePath,
+        byte[] modelBytes)
+    {
+        if (!Directory.Exists(staging) || !IsSafeNewModName(modName) ||
+            !IsSafeGamePath(consumerGamePath) ||
+            !consumerGamePath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
+            modelBytes.Length == 0)
+            throw new InvalidDataException("The vanilla model staging request is invalid.");
+
+        var gamePath = NormalizeGamePath(consumerGamePath);
+        var relativeModel = "Files/" + gamePath;
+        var mappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [gamePath] = relativeModel,
+        };
+        WriteJsonAtomic(Path.Combine(staging, "meta.json"), new JsonObject
+        {
+            ["FileVersion"] = 3,
+            ["Name"] = modName,
+            ["Author"] = "XIV Instant Edit",
+            ["Description"] = $"Vanilla model edit for {gamePath}",
+            ["Image"] = "",
+            ["Version"] = "",
+            ["Website"] = "",
+            ["ModTags"] = new JsonArray(),
+        });
+        WriteBytesAtomic(staging, relativeModel, modelBytes);
+        WriteJsonAtomic(Path.Combine(staging, "default_mod.json"), new JsonObject
+        {
+            ["Version"] = 0,
+            ["Files"] = new JsonObject { [gamePath] = relativeModel },
+            ["FileSwaps"] = new JsonObject(),
+            ["Manipulations"] = new JsonArray(),
+        });
+        ValidateStagedMashupMod(staging, modName, mappings);
+        return relativeModel;
     }
 
     internal static MashupPlanResult BuildMashupPlan(
