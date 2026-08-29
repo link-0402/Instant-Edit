@@ -17,6 +17,7 @@ namespace InstantEdit.Ui;
 public sealed class MainWindow : Window, IDisposable
 {
     private const string WindowOptionsPopupName = "WindowSystemContextActions";
+    private const string KofiUrl = "https://ko-fi.com/luci_xiv";
     private readonly Configuration _config; private readonly PenumbraService _penumbra; private readonly OnScreenService _onScreen;
     private readonly BlenderClient _blender; private readonly IDataManager _data; private readonly IChatGui _chat; private readonly IPluginLog _log;
     private readonly MaterialPreviewBundleBuilder _materialPreviews;
@@ -52,6 +53,12 @@ public sealed class MainWindow : Window, IDisposable
         AllowPinning = true;
         AllowClickthrough = true;
         AllowBackgroundBlur = true;
+        TitleBarButtons.Add(new TitleBarButton
+        {
+            Icon = FontAwesomeIcon.Heart,
+            Click = _ => OpenKofiPage(),
+            ShowTooltip = () => ImGui.SetTooltip("♥ Support me on Ko-fi"),
+        });
         _ = uiBuilder.RunWhenUiPrepared(() => LoadSlotIcons(uiBuilder, textureProvider), true);
     }
 
@@ -75,6 +82,18 @@ public sealed class MainWindow : Window, IDisposable
 
     public void Open() => IsOpen = true;
     public void Close() => IsOpen = false;
+
+    private void OpenKofiPage()
+    {
+        try
+        {
+            Util.OpenLink(KofiUrl);
+        }
+        catch (Exception e)
+        {
+            _log.Error(e, "Could not open the XIV Instant Edit Ko-fi page.");
+        }
+    }
 
     public override void Draw()
     {
