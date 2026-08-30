@@ -1,8 +1,6 @@
 # XIV Instant Edit
 
-XIV Instant Edit lets you instantly send Final Fantasy XIV Penumbra models back and forth between
-the game and Blender with just a single click. Models can be selected either from on-screen
-resources belonging to your character or through a simplified resource browser for your Penumbra mods.
+Instant Edit is a combination of in-game Dalamud plugin and Blender addon that allows for an easy and instant exchange of game models between the two (.mdl files through Penumbra as well as vanilla assets).
 
 ## Requirements
 
@@ -38,38 +36,29 @@ Note that you will not receive automatic feature and compatibility updates this 
 
 ## How to use it
 
-1. Start Blender and make sure the XIV Instant Edit add-on is enabled.
-2. Start FFXIV and run `/ie` to open the plugin window.
-3. Click **Refresh character list** at the top and browse to the model you are looking for, then click Edit.
-4. Edit the model in Blender. XIV Instant Edit tools are available in the
-   **XIV Instant Edit** tab of the 3D Viewport sidebar.
-5. (Optional) If you want to redirect the model export to another file/option group, pick a new target from the list.
-   Default behavior is to export in-place, so replacing the exact model that was originally imported.
-6. Click **Quick Export** to send the edited model back to its Penumbra mod.
-
-The addon supports saving a single-context model to a self-contained new mod and
-creating multi-context mashups on export. The workflow for both is available from
-the export target list in the Blender UI.
-
+1. Type /ie to open the plugin interface ingame. Click Refresh character list.
+2. Start Blender. Verify The plugin shows Blender as "Online".
+2. Verify import options, then click "Edit" on the model you want to import to Blender.
+3. Do whatever you wanna do with the model in Blender.
+4. Pick an export context from the list
+- In-place overwrites the exact model that you imported.
+- New Group sets up a new option group in the mod you imported from and automatically configures the paths for you.
+- (Existing group) creates a new option in an existing option group.
+- (Option in existing group overwrites the model file that is mapped to this option.
+- Create Mashup creates a new mod or group in an existing mod containing the combined model + all required textures and materials. Only visible with 2+ mods imported into the scene, otherwise switches to "Create as new mod".
+The context dropdown controls which mod structure is being shown.
+5. Hit export. Immediately see the result ingame.
+Creating new options on existing mods requires you to refresh the view in Penumbra by navigating to a different mod and back.
 
 ## Additional notes
 
-### Settings
-
-Blender and FFXIV must be running at the same time. If the plugin reports that
-Blender is offline, restart Blender with the add-on enabled. In order for the communication
-between the game plugin and Blender add-on to work, the port configurations in the settings need to match.
-I do not recommend changing them unless necessary and you know what you are doing.
-
-The same Blender add-on preferences contain the XIV Instant Edit cache settings.
-Imports and Quick Exports are staged inside an add-on-owned `XIV-Instant-Edit`
-subfolder of the selected cache directory. Automatic cleanup removes completed
-jobs immediately and crash leftovers after 24 hours; **Clean Cache Now** removes
-inactive owned jobs on demand.
-
-You may also save a model imported through XIV Instant Edit as a variant by giving it a new file name. The add-on will then
-automatically set up the required Penumbra paths for this new model if the option is enabled, letting you switch back and forth
-between the original and this new version right away.
+### Main Features
+Main Features
+- One-click import of models through an on-screen browser or simplified mod file browser.
+- Easy export context selection. Export in-place, pick any existing mod option or easily create a new one. The plugin sets up everything for you automatically.
+- Instant creation of mashups. The plugin automatically sets up all required textures, materials and paths for you.
+- Seamlessly integrates into any existing Blender scene, independent of body, devkit, etc.
+- Simple Importer / Exporter for general FBX and MDL files with various QoL functions and automations optimized for FFXIV workflows 
 
 ### Material preview
 
@@ -84,8 +73,8 @@ Making changes to them in Blender will not affect the exported model.
 
 ## Contributing
 
-Bug reports, feature requests, and pull requests are welcome. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and submission guidance.
+Bug reports and feature idea submissions are welcome.
+If you'd like to contribute anything, see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and submission guidance.
 
 ## License
 
