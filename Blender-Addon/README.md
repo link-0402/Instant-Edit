@@ -11,6 +11,8 @@ plus a standalone Simple Import/Export panel.
   export destination.
 - Supports generated import armatures or a named existing scene armature.
 - Displays and assigns the FFXIV material path for every visible mesh group.
+- Highlights only the mesh-part rows whose normalized export material is
+  missing or differs from the first part used by their mesh group.
 - Optionally builds import-local, packed Principled BSDF previews from the
   effective game/Penumbra MTRL and TEX resources supplied by the plugin.
 - Supports adding new visible mesh parts and groups anywhere in the scene using
@@ -37,6 +39,14 @@ plus a standalone Simple Import/Export panel.
 - Simple Import/Export settings are separated into dedicated option sections,
   including the import-time export-folder setting.
 - Export-time UV2 copy/clear, vertex color/alpha cleanup, and flow-data cleanup.
+- Optional **Reset Scaling on Export** neutralization; armature rest-pose
+  neutralization and complete state restoration remain automatic.
+
+Meshes in one export may resolve to different Blender armatures. Each mesh uses
+its parent armature when present, otherwise its first valid Armature modifier.
+Every resolved rig is evaluated in rest pose. The resulting FFXIV MDL merges the
+used bone names into one bone list; it does not preserve separate Blender
+armature identities.
 
 Material previews are display-only and intentionally approximate. They do not
 include actor colors or dye baking, do not add material/texture editing, and

@@ -295,8 +295,59 @@ def set_mesh_part_tags(objects, mesh_index: int, part_index: int, value: str) ->
 
 
 def _rename_mesh_object(obj, mesh_index: int, part_index: int, label: str, lod: int | None) -> None:
+    obj.name = _mesh_object_name(mesh_index, part_index, label, lod)
+
+
+def _mesh_object_name(mesh_index: int, part_index: int, label: str, lod: int | None) -> str:
     lod_suffix = f" LOD{lod}" if lod else ""
-    obj.name = f"{mesh_index}.{part_index} {label}{lod_suffix}"
+    return f"{mesh_index}.{part_index} {label}{lod_suffix}"
+
+
+def _rename_mesh_targets(targets) -> int:
+    """Apply mesh-ID renames without allowing Blender to suffix collisions."""
+    targets = tuple(targets)
+    if not targets:
+        return 0
+
+    desired = [
+        (obj, _mesh_object_name(group, part, label, lod))
+        for obj, group, part, lod, label in targets
+    ]
+    desired_names = [name for _obj, name in desired]
+    if len(set(desired_names)) != len(desired_names):
+        raise ValueError("Mesh movement would create duplicate object names.")
+
+    target_ids = {obj.as_pointer() for obj, _name in desired}
+    existing_names = {
+        obj.name for obj in bpy.data.objects if obj.as_pointer() not in target_ids
+    }
+    conflicts = sorted(set(desired_names) & existing_names)
+    if conflicts:
+        raise ValueError(
+            "Mesh movement would collide with existing objects: " + ", ".join(conflicts)
+        )
+
+    originals = [(obj, obj.name) for obj, _name in desired]
+    all_names = {obj.name for obj in bpy.data.objects}
+    temporary_names = []
+    for index, (obj, _name) in enumerate(desired):
+        temporary = f"__xiv_ie_move_{obj.as_pointer()}_{index}"
+        while temporary in all_names or temporary in temporary_names:
+            temporary += "_"
+        temporary_names.append(temporary)
+
+    try:
+        for (obj, _name), temporary in zip(desired, temporary_names):
+            obj.name = temporary
+        for obj, name in desired:
+            obj.name = name
+    except Exception:
+        for (obj, _old_name), temporary in zip(originals, temporary_names):
+            obj.name = temporary
+        for obj, old_name in originals:
+            obj.name = old_name
+        raise
+    return len(desired)
 
 
 def rename_mesh_part(objects, mesh_index: int, part_index: int, value: str) -> str:
@@ -327,11 +378,7 @@ def _swap_mesh_ids(objects, first: tuple[int, int], second: tuple[int, int], swa
             continue
         if (group in {first[0], second[0]} if swap_group else (group, part) in {first, second}):
             targets.append((obj, group, part, lod, mesh_display_name(obj)))
-    if not targets:
-        return 0
-    for obj, _group, _part, _lod, _label in targets:
-        obj.name = f"__xiv_ie_move_{obj.as_pointer()}"
-    changed = 0
+    renames = []
     for obj, group, part, lod, label in targets:
         if swap_group:
             new_group = second[0] if group == first[0] else first[0]
@@ -339,9 +386,8 @@ def _swap_mesh_ids(objects, first: tuple[int, int], second: tuple[int, int], swa
         else:
             new_group = group
             new_part = second[1] if part == first[1] else first[1]
-        _rename_mesh_object(obj, new_group, new_part, label, lod)
-        changed += 1
-    return changed
+        renames.append((obj, new_group, new_part, lod, label))
+    return _rename_mesh_targets(renames)
 
 
 def swap_mesh_groups(objects, first_group: int, second_group: int) -> int:
@@ -360,6 +406,35 @@ def swap_mesh_parts(objects, mesh_index: int, first_part: int, second_part: int)
         (mesh_index, second_part),
         swap_group=False,
     )
+
+
+def move_mesh_part_to_group(
+    objects,
+    source_group: int,
+    source_part: int,
+    target_group: int,
+) -> int:
+    """Move one complete part, including every LOD, to another group."""
+    source_objects = mesh_part_objects(objects, source_group, source_part)
+    if not source_objects:
+        raise ValueError(f"Mesh part {source_group}.{source_part} is no longer visible")
+
+    used_parts = set()
+    for obj in objects:
+        try:
+            group, part, _lod = mesh_ids_from_name(obj)
+        except Exception:
+            continue
+        if group == target_group:
+            used_parts.add(part)
+    target_part = next(index for index in range(len(used_parts) + 1) if index not in used_parts)
+
+    renames = []
+    for obj in source_objects:
+        _group, _part, lod = mesh_ids_from_name(obj)
+        renames.append((obj, target_group, target_part, lod, mesh_display_name(obj)))
+    _rename_mesh_targets(renames)
+    return target_part
 
 
 def _property(obj, name: str, default=None):
@@ -394,20 +469,75 @@ def visible_material_groups() -> list[MaterialGroup]:
     return group_mesh_objects(visible_meshobj())
 
 
+def material_group_slots(
+    groups: list[MaterialGroup],
+    maximum_group: int | None = None,
+) -> list[MaterialGroup]:
+    """Return every numeric group slot through the current trailing destination."""
+    if not groups:
+        return []
+    occupied = {group.mesh_index: group for group in groups}
+    highest_slot = max(occupied) + 1
+    if maximum_group is not None:
+        highest_slot = max(max(occupied), min(highest_slot, maximum_group))
+    return [
+        occupied.get(index, MaterialGroup(index, ()))
+        for index in range(highest_slot + 1)
+    ]
+
+
+def visible_material_group_slots(maximum_group: int | None = None) -> list[MaterialGroup]:
+    return material_group_slots(visible_material_groups(), maximum_group)
+
+
 def material_paths(objects) -> list[str]:
     """Return the distinct export material paths represented by a mesh group."""
     paths = set()
     for obj in objects:
-        value = _property(obj, "xiv_material", "")
-        if isinstance(value, str) and value.strip():
-            paths.add(value.strip())
-            continue
-        for slot in obj.material_slots:
-            material = slot.material
-            if material is not None and material.name.lower().endswith(".mtrl"):
-                paths.add(material.name)
-                break
+        path = export_material_path(obj)
+        if path:
+            paths.add(path)
     return sorted(paths)
+
+
+def export_material_path(obj) -> str:
+    """Return the normalized path the MDL exporter will read from one object."""
+    value = _property(obj, "xiv_material", "")
+    if not isinstance(value, str) or not value.strip():
+        slots = getattr(obj, "material_slots", ())
+        if not slots or slots[0].material is None:
+            return ""
+        value = slots[0].material.name
+    try:
+        return clean_material_path(value.strip())
+    except (AttributeError, TypeError, ValueError):
+        return ""
+
+
+def material_mismatch_parts(objects) -> set[int]:
+    """Identify part rows that diverge from the group's authoritative material.
+
+    The exporter builds each LOD mesh from its lowest-numbered part. The lowest
+    available LOD/part is therefore the group-wide reference; a part is warned
+    when any of its LOD objects is missing that material or exports another one.
+    """
+    ordered = sorted(
+        objects,
+        key=lambda obj: (
+            mesh_ids_from_name(obj)[2],
+            mesh_ids_from_name(obj)[1],
+            obj.name.casefold(),
+        ),
+    )
+    if not ordered:
+        return set()
+    authoritative = export_material_path(ordered[0])
+    mismatches = set()
+    for obj in ordered:
+        _group, part, _lod = mesh_ids_from_name(obj)
+        if not authoritative or export_material_path(obj) != authoritative:
+            mismatches.add(part)
+    return mismatches
 
 
 def normalize_material_path(value: str) -> str:

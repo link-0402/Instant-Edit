@@ -18,6 +18,7 @@ public sealed class MainWindow : Window, IDisposable
 {
     private const string WindowOptionsPopupName = "WindowSystemContextActions";
     private const string KofiUrl = "https://ko-fi.com/luci_xiv";
+    private const string ModBrowserAmbiguityWarning = "The Mod Browser selection is potentially ambiguous. Use the On Screen tab instead.";
     private readonly Configuration _config; private readonly PenumbraService _penumbra; private readonly OnScreenService _onScreen;
     private readonly BlenderClient _blender; private readonly IDataManager _data; private readonly IChatGui _chat; private readonly IPluginLog _log;
     private readonly MaterialPreviewBundleBuilder _materialPreviews;
@@ -38,7 +39,7 @@ public sealed class MainWindow : Window, IDisposable
     private ActorView? _loadedModView;
     private CancellationTokenSource? _modLoadCts;
     private bool _modLoading, _modLoadFailed;
-    private bool _statusOk = true;
+    private FeedbackSeverity _statusSeverity = FeedbackSeverity.Success;
 
     public MainWindow(Configuration config, PenumbraService penumbra, OnScreenService onScreen, BlenderClient blender,
         IDataManager data, IChatGui chat, IPluginLog log, Action saveConfig, Action restartExportListener, IUiBuilder uiBuilder,
@@ -304,9 +305,11 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawResources(IReadOnlyList<ActorView> actors, string? emptyMessage = null)
     {
         actors = actors.Where(ActorMatches).ToList();
-        // Keep room for the status line below the viewport. The old -5px calculation
-        // consumed the whole remaining window and clipped the refresh message.
-        var viewportHeight = Math.Max(80, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() - 8);
+        // The feedback panel lives below the tab bar. Reserve its full wrapped height
+        // so resizing grows the resource browser without pushing feedback off-screen.
+        var feedbackHeight = GetFeedbackHeight();
+        var feedbackSpacing = feedbackHeight > 0 ? ImGui.GetStyle().ItemSpacing.Y : 0;
+        var viewportHeight = Math.Max(1, ImGui.GetContentRegionAvail().Y - feedbackHeight - feedbackSpacing);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(.075f, .085f, .105f, 1));
         if (!ImGui.BeginChild("##resource-browser", new Vector2(0, viewportHeight), true)) { ImGui.EndChild(); ImGui.PopStyleColor(); return; }
         if (emptyMessage is null && _onScreen.IsRefreshing && actors.Count == 0) ImGui.TextColored(new Vector4(.65f, .68f, .75f, 1), "Refreshing resources…");
@@ -314,7 +317,8 @@ public sealed class MainWindow : Window, IDisposable
         else foreach (var actor in actors) DrawActor(actor);
         ImGui.EndChild();
         ImGui.PopStyleColor();
-        ImGui.Spacing();
+        if (feedbackHeight > 0)
+            ImGui.Spacing();
     }
 
     private void DrawActor(ActorView actor)
@@ -674,6 +678,7 @@ public sealed class MainWindow : Window, IDisposable
                 ResourceType(resource.GamePath),
                 int.MaxValue,
                 resource.OptionMapping,
+                resource.OptionMemberships,
                 new List<ResourceView>()))
             .ToList();
 
@@ -793,6 +798,7 @@ public sealed class MainWindow : Window, IDisposable
             node.SlotLabel,
             node.SortOrder,
             string.Empty,
+            Array.Empty<string>(),
             children);
     }
 
@@ -926,7 +932,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         if (!IsModel(node) || !IsSafeModel(node))
         {
-            SetStatus("Only safe .mdl resources can be imported.", false);
+            SetStatus("Only safe .mdl resources can be imported.", FeedbackSeverity.Warning);
             return;
         }
 
@@ -934,12 +940,12 @@ public sealed class MainWindow : Window, IDisposable
         EditModel(actor, model, node);
     }
 
-    private void RequestRefresh() { try { SetStatus(string.Empty, true); _onScreen.RequestRefresh(); } catch (Exception e) { _log.Debug(e.Message); SetStatus("Refresh unavailable. Is Penumbra running?", false); } }
+    private void RequestRefresh() { try { SetStatus(string.Empty, FeedbackSeverity.Success); _onScreen.RequestRefresh(); } catch (Exception e) { _log.Debug(e.Message); SetStatus("Refresh unavailable. Is Penumbra running?", FeedbackSeverity.Warning); } }
     private void EditModel(ActorView actor, MdlFile model, ResourceView source)
     {
         if (Interlocked.CompareExchange(ref _editing, 1, 0) != 0)
         {
-            SetStatus("Another model is already being sent.", false);
+            SetStatus("Another model is already being sent.", FeedbackSeverity.Warning);
             return;
         }
 
@@ -1015,12 +1021,38 @@ public sealed class MainWindow : Window, IDisposable
                 Path.Combine(dir, "preview"),
                 importOptions.ApplyTexturesAndMaterials,
                 importOptions.ExcludeBodyAndGeneralMaterials,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                actor.Entity is null ? source.OptionMemberships : null).ConfigureAwait(false);
             var preview = materialBundle.Preview;
             var resourceManifest = materialBundle.ResourceManifest;
+            var dependencyWarnings = materialBundle.DependencyWarnings.ToList();
+            var collection = await _penumbra.GetCollectionTargetAsync(
+                actor.ImportObjectIndex).ConfigureAwait(false);
+            if (source.SourceState != ResourceSourceState.GameData && resourceManifest is not null)
+            {
+                var manipulations = collection is not null &&
+                                    !string.IsNullOrWhiteSpace(source.SourceModRootPath)
+                    ? await _penumbra.CaptureEffectiveManipulationsAsync(
+                        collection.Id,
+                        source.SourceModDirectory,
+                        source.SourceModRootPath).ConfigureAwait(false)
+                    : null;
+                if (manipulations is null)
+                {
+                    dependencyWarnings.Add(
+                        "Could not snapshot the source mod's effective Meta Manipulations");
+                    resourceManifest = null;
+                }
+                else
+                {
+                    resourceManifest = resourceManifest with
+                    {
+                        Manipulations = manipulations,
+                    };
+                }
+            }
             if (source.SourceState == ResourceSourceState.GameData)
             {
-                var collection = await _penumbra.GetCollectionTargetAsync(actor.ImportObjectIndex).ConfigureAwait(false);
                 handoffCached = await _blender.SendGameImportAsync(
                     blenderPort,
                     file,
@@ -1053,13 +1085,23 @@ public sealed class MainWindow : Window, IDisposable
                     sourceModRootPath: source.SourceModRootPath,
                     targetRelativePath: source.SourceRelativePath,
                     resourceManifest: resourceManifest,
+                    targetCollectionId: collection?.Id,
+                    targetCollectionName: collection?.Name,
                     cancellationToken: cancellationToken).ConfigureAwait(false);
             }
-            var warning = preview is { Warnings.Count: > 0 } ? $" Preview warning: {preview.WarningSummary}" : string.Empty;
-            var mashupWarning = resourceManifest is null
-                ? " Mashup warning: exact material/texture sources could not be captured; re-import after resolving the missing resources."
+            var hasPreviewWarning = preview is { Warnings.Count: > 0 };
+            var hasMashupWarning = resourceManifest is null;
+            var warning = hasPreviewWarning ? $" Preview warning: {preview!.WarningSummary}" : string.Empty;
+            var mashupWarning = hasMashupWarning
+                ? $" Mashup warning: {(dependencyWarnings.Count > 0
+                    ? string.Join("; ", dependencyWarnings.Take(3))
+                    : "exact material/texture sources could not be captured; re-import after resolving the missing resources.")}"
                 : string.Empty;
-            SetStatus($"Sent {model.FileName} to Blender.{warning}{mashupWarning}", true);
+            var hasWarning = hasPreviewWarning || hasMashupWarning;
+            var status = actor.Entity is null && hasWarning
+                ? $"Sent {model.FileName} to Blender. {ModBrowserAmbiguityWarning}"
+                : $"Sent {model.FileName} to Blender.{warning}{mashupWarning}";
+            SetStatus(status, hasWarning ? FeedbackSeverity.Warning : FeedbackSeverity.Success);
             _chat.Print($"XIV Instant Edit: {model.FileName} sent to Blender.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1069,7 +1111,7 @@ public sealed class MainWindow : Window, IDisposable
         catch (Exception e)
         {
             _log.Error(e, "Failed to send model to Blender.");
-            SetStatus($"Failed: {e.Message}", false);
+            SetStatus($"Failed: {e.Message}", FeedbackSeverity.Error);
             _chat.PrintError($"XIV Instant Edit: could not send model to Blender: {e.Message}");
         }
         finally
@@ -1139,7 +1181,14 @@ public sealed class MainWindow : Window, IDisposable
             .SelectMany(Flatten)
             .Where(resource => resource.GamePath.EndsWith(".mtrl", StringComparison.OrdinalIgnoreCase) ||
                                resource.GamePath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
-            .Select(resource => new MaterialResourceCandidate(resource.GamePath, resource.ActualPath))
+            .Select(resource => new MaterialResourceCandidate(
+                resource.GamePath,
+                resource.ActualPath,
+                resource.SourceModDirectory,
+                resource.SourceModRootPath,
+                resource.SourceRelativePath,
+                resource.OptionMemberships,
+                resource.OptionMapping))
             .ToArray();
     }
 
@@ -1184,30 +1233,30 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawFeedback()
     {
         string text;
-        bool ok;
+        FeedbackSeverity severity;
         lock (_stateLock)
         {
             text = _status;
-            ok = _statusOk;
+            severity = _statusSeverity;
         }
 
         if (text.Length == 0)
             return;
 
-        var accent = ok
-            ? new Vector4(.35f, .85f, .55f, 1)
-            : new Vector4(1f, .35f, .22f, 1);
-        var background = ok
-            ? new Vector4(.08f, .18f, .12f, 1)
-            : new Vector4(.24f, .09f, .065f, 1);
+        var (accent, background, icon) = severity switch
+        {
+            FeedbackSeverity.Warning => (new Vector4(1f, .78f, .2f, 1), new Vector4(.22f, .16f, .04f, 1), "⚠"),
+            FeedbackSeverity.Error => (new Vector4(1f, .3f, .3f, 1), new Vector4(.24f, .055f, .055f, 1), "✕"),
+            _ => (new Vector4(.35f, .85f, .55f, 1), new Vector4(.08f, .18f, .12f, 1), "✓"),
+        };
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, background);
         ImGui.PushStyleColor(ImGuiCol.Border, accent);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 1);
-        if (ImGui.BeginChild("##instant-edit-feedback", new Vector2(0, ImGui.GetFrameHeightWithSpacing() * 2), true))
+        if (ImGui.BeginChild("##instant-edit-feedback", new Vector2(0, CalculateFeedbackHeight(text)), true))
         {
-            ImGui.TextColored(accent, ok ? "✓" : "⚠");
+            ImGui.TextColored(accent, icon);
             ImGui.SameLine(0, 6);
             ImGui.PushTextWrapPos();
             ImGui.TextColored(new Vector4(.92f, .93f, .96f, 1), text);
@@ -1217,7 +1266,25 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PopStyleVar(2);
         ImGui.PopStyleColor(2);
     }
-    private void SetStatus(string text, bool ok) { lock (_stateLock) { _status = text; _statusOk = ok; } }
+
+    private float GetFeedbackHeight()
+    {
+        string text;
+        lock (_stateLock)
+            text = _status;
+        return text.Length == 0 ? 0 : CalculateFeedbackHeight(text);
+    }
+
+    private static float CalculateFeedbackHeight(string text)
+    {
+        var style = ImGui.GetStyle();
+        var iconAndSpacingWidth = ImGui.CalcTextSize("⚠").X + 6;
+        var wrapWidth = Math.Max(1, ImGui.GetContentRegionAvail().X - style.WindowPadding.X * 2 - iconAndSpacingWidth);
+        var textHeight = ImGui.CalcTextSize(text, false, wrapWidth).Y;
+        return Math.Max(ImGui.GetFrameHeightWithSpacing() * 2, textHeight + style.WindowPadding.Y * 2 + 4);
+    }
+
+    private void SetStatus(string text, FeedbackSeverity severity) { lock (_stateLock) { _status = text; _statusSeverity = severity; } }
     private static string Sanitize(string name) { var invalid = Path.GetInvalidFileNameChars(); var value = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim(); return value.Length == 0 ? "Object" : value; }
 
     private static string Safe(string? value, string fallback = "")
@@ -1227,6 +1294,13 @@ public sealed class MainWindow : Window, IDisposable
     {
         var id = Safe(value, "resource");
         return id.Replace("\0", string.Empty, StringComparison.Ordinal);
+    }
+
+    private enum FeedbackSeverity
+    {
+        Success,
+        Warning,
+        Error,
     }
 
     private sealed record ActorView(
@@ -1251,5 +1325,6 @@ public sealed class MainWindow : Window, IDisposable
         string Slot,
         int Order,
         string OptionMapping,
+        IReadOnlyList<string> OptionMemberships,
         List<ResourceView> Children);
 }

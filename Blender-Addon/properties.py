@@ -101,6 +101,11 @@ class XIVIEExportSettings(PropertyGroup):
     keep_shapekeys: BoolProperty(name="Keep Shape Keys", default=False)  # type: ignore
     check_tris: BoolProperty(name="Check Triangulation", default=True)  # type: ignore
     create_backfaces: BoolProperty(name="Create Backfaces", default=False)  # type: ignore
+    reset_scaling_on_export: BoolProperty(
+        name="Reset Scaling on Export",
+        description="Temporarily reset armature scaling, positioning and rotation to default values for export.",
+        default=False,
+    )  # type: ignore
     remove_yas: EnumProperty(
         name="YAS Groups",
         items=[("KEEP", "Keep", "Keep all groups"), ("NO_GEN", "Remove Genitalia", "Remove genital groups"), ("REMOVE", "Remove All", "Remove iv_/ya_ groups")],

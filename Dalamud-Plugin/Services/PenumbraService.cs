@@ -82,6 +82,7 @@ public sealed class PenumbraService
     private readonly AddMod                     _addMod;
     private readonly ReloadMod                  _reloadMod;
     private readonly GetCollectionForObject      _getCollectionForObject;
+    private readonly GetCurrentModSettings       _getCurrentModSettings;
     private readonly TrySetMod                   _trySetMod;
     private readonly TrySetModPriority            _trySetModPriority;
     private readonly RedrawObject               _redrawObject;
@@ -112,6 +113,7 @@ public sealed class PenumbraService
         _addMod          = new AddMod(pi);
         _reloadMod       = new ReloadMod(pi);
         _getCollectionForObject = new GetCollectionForObject(pi);
+        _getCurrentModSettings = new GetCurrentModSettings(pi);
         _trySetMod       = new TrySetMod(pi);
         _trySetModPriority = new TrySetModPriority(pi);
         _redrawObject    = new RedrawObject(pi);
@@ -177,6 +179,124 @@ public sealed class PenumbraService
                 return null;
             }
         }).ConfigureAwait(false);
+
+    /// <summary>Capture the effective source-mod manipulations for one collection.</summary>
+    public async Task<JsonArray?> CaptureEffectiveManipulationsAsync(
+        Guid collectionId,
+        string modDirectory,
+        string modRoot)
+    {
+        if (collectionId == Guid.Empty || !IsSafeModName(modDirectory) ||
+            string.IsNullOrWhiteSpace(modRoot) || !Directory.Exists(modRoot))
+            return null;
+        try
+        {
+            var selections = await _framework.RunOnFrameworkThread(() =>
+            {
+                var result = _getCurrentModSettings.Invoke(
+                    collectionId, modDirectory, string.Empty, false);
+                if (result.Item1 is not PenumbraApiEc.Success || result.Item2 is null)
+                    return null;
+                return result.Item2.Value.Item3.ToDictionary(
+                    pair => pair.Key,
+                    pair => (IReadOnlyList<string>)pair.Value.ToArray(),
+                    StringComparer.OrdinalIgnoreCase);
+            }).ConfigureAwait(false);
+            return selections is null
+                ? null
+                : CaptureEffectiveManipulations(modRoot, selections);
+        }
+        catch (Exception e)
+        {
+            _log.Warning(e, "Could not snapshot Meta Manipulations for source mod {ModDirectory}.", modDirectory);
+            return null;
+        }
+    }
+
+    internal static JsonArray CaptureEffectiveManipulations(
+        string modFolder,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> enabledOptions)
+    {
+        var meta = LoadJsonObjectStrict(Path.Combine(modFolder, "meta.json"));
+        var fileVersion = meta["FileVersion"] is JsonValue value &&
+                          value.TryGetValue<int>(out var parsed)
+            ? parsed
+            : 3;
+        var groups = ReadAllVariantGroups(modFolder)
+            .Select((group, index) => (Group: group, Index: index))
+            .OrderByDescending(item => JsonInt(item.Group["Priority"]))
+            .ThenBy(item => item.Index)
+            .ToArray();
+        var result = new JsonArray();
+        var identities = new HashSet<string>(StringComparer.Ordinal);
+        var serializedBytes = 2;
+
+        static string CanonicalJson(JsonNode? node)
+            => node switch
+            {
+                null => "null",
+                JsonObject value => "{" + string.Join(",", value
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .Select(pair => JsonSerializer.Serialize(pair.Key) + ":" + CanonicalJson(pair.Value))) + "}",
+                JsonArray value => "[" + string.Join(",", value.Select(CanonicalJson)) + "]",
+                _ => node.ToJsonString(),
+            };
+
+        static string Identity(JsonObject manipulation)
+        {
+            var identity = manipulation.DeepClone().AsObject();
+            if (identity["Manipulation"] is JsonObject payload)
+                payload.Remove("Entry");
+            else
+                identity.Remove("Entry");
+            return CanonicalJson(identity);
+        }
+
+        void Append(JsonNode? container)
+        {
+            if (container?["Manipulations"] is not JsonArray manipulations)
+                return;
+            foreach (var manipulation in manipulations)
+            {
+                if (manipulation is not JsonObject entry)
+                    throw new InvalidDataException("A source manipulation entry is invalid.");
+                var type = JsonString(entry["Type"]);
+                if (type is not ("Eqp" or "Eqdp" or "Imc" or "Est" or "Atr"))
+                    continue;
+                if (!identities.Add(Identity(entry)))
+                    continue;
+                var clone = entry.DeepClone();
+                serializedBytes += Encoding.UTF8.GetByteCount(clone.ToJsonString()) + 1;
+                if (result.Count >= 4096 || serializedBytes > 4 * 1024 * 1024)
+                    throw new InvalidDataException("The source manipulation snapshot is too large.");
+                result.Add(clone);
+            }
+        }
+
+        foreach (var (group, _index) in groups)
+        {
+            var groupName = JsonString(group["Name"]);
+            var selected = enabledOptions.FirstOrDefault(pair =>
+                string.Equals(pair.Key, groupName, StringComparison.OrdinalIgnoreCase)).Value;
+            if (selected is null || selected.Count == 0)
+                continue;
+            var containers = group["Options"] as JsonArray ?? group["Containers"] as JsonArray;
+            if (containers is null)
+                continue;
+            foreach (var selectedName in selected)
+            {
+                var container = containers.OfType<JsonObject>().FirstOrDefault(option =>
+                    string.Equals(JsonString(option["Name"]), selectedName, StringComparison.OrdinalIgnoreCase));
+                if (container is not null)
+                    Append(container);
+            }
+        }
+
+        Append(fileVersion >= 4
+            ? meta["DefaultData"]
+            : LoadJsonObjectStrict(Path.Combine(modFolder, "default_mod.json")));
+        return result;
+    }
 
     /// <summary> Get the resolved resource paths for several game objects in one IPC call. </summary>
     public Dictionary<string, HashSet<string>>?[] GetResourcePaths(ushort[] gameObjectIndices)
@@ -915,7 +1035,12 @@ public sealed class PenumbraService
             foreach (var file in prepared.Files)
                 WriteBytesAtomic(target.Folder, file.Key, file.Value);
             actualName = UniqueMashupGroupName(target.Folder, requestedName);
-            var groupError = WriteMashupGroup(target.Folder, actualName, prepared.Mappings, description);
+            var groupError = WriteMashupGroup(
+                target.Folder,
+                actualName,
+                prepared.Mappings,
+                description,
+                activeContext.ResourceManifest?.Manipulations);
             if (groupError is not null)
                 throw new InvalidDataException(groupError);
             committed = true;
@@ -1005,15 +1130,16 @@ public sealed class PenumbraService
             });
             foreach (var file in prepared.Files)
                 WriteBytesAtomic(staging, file.Key, file.Value);
-            WriteJsonAtomic(Path.Combine(staging, "default_mod.json"), new JsonObject
-            {
-                ["Version"] = 0,
-                ["Files"] = new JsonObject(prepared.Mappings.Select(pair =>
-                    KeyValuePair.Create<string, JsonNode?>(pair.Key, pair.Value))),
-                ["FileSwaps"] = new JsonObject(),
-                ["Manipulations"] = new JsonArray(),
-            });
-            ValidateStagedMashupMod(staging, modName, prepared.Mappings);
+            WriteJsonAtomic(
+                Path.Combine(staging, "default_mod.json"),
+                CreateMashupDefaultData(
+                    prepared.Mappings,
+                    activeContext.ResourceManifest?.Manipulations));
+            ValidateStagedMashupMod(
+                staging,
+                modName,
+                prepared.Mappings,
+                activeContext.ResourceManifest?.Manipulations);
             Directory.Move(staging, finalFolder);
             committed = true;
 
@@ -1528,7 +1654,8 @@ public sealed class PenumbraService
                         gamePath,
                         file,
                         modPath,
-                        OptionMappingFor(modPath, mappings.OptionLabels)));
+                        OptionMappingFor(modPath, mappings.OptionLabels),
+                        OptionMembershipsFor(modPath, mappings.OptionMemberships)));
                 }
 
                 if (resources.Count > 0)
@@ -2013,6 +2140,7 @@ public sealed class PenumbraService
         return version >= 4
             ? (meta["Groups"] as JsonArray ?? []).OfType<JsonObject>().ToArray()
             : Directory.EnumerateFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .Select(LoadJsonObjectStrict).ToArray();
     }
 
@@ -2388,14 +2516,16 @@ public sealed class PenumbraService
 
     private sealed record ModMappings(
         IReadOnlyDictionary<string, string?> GamePaths,
-        IReadOnlyDictionary<string, string> OptionLabels);
+        IReadOnlyDictionary<string, string> OptionLabels,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> OptionMemberships);
 
     private static ModMappings ReadModMappings(string modRoot)
     {
         var gamePathsByModPath = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var labelsByPath = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var membershipsByPath = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
 
-        void AddFileMappings(JsonNode? container, string label)
+        void AddFileMappings(JsonNode? container, string label, string membership)
         {
             if (container is not JsonObject value || value["Files"] is not JsonObject files)
                 return;
@@ -2423,11 +2553,14 @@ public sealed class PenumbraService
                     if (!labelsByPath.TryGetValue(key, out var labels))
                         labelsByPath[key] = labels = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
                     labels.Add(label);
+                    if (!membershipsByPath.TryGetValue(key, out var memberships))
+                        membershipsByPath[key] = memberships = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                    memberships.Add(membership);
                 }
             }
         }
 
-        void AddGroup(JsonNode? group)
+        void AddGroup(JsonNode? group, string scope, int groupIndex)
         {
             if (group is not JsonObject value)
                 return;
@@ -2438,41 +2571,50 @@ public sealed class PenumbraService
 
             if (value["Options"] is JsonArray options)
             {
-                foreach (var option in options.OfType<JsonObject>())
+                for (var optionIndex = 0; optionIndex < options.Count; optionIndex++)
                 {
+                    if (options[optionIndex] is not JsonObject option)
+                        continue;
                     var optionName = JsonString(option["Name"]);
                     var label = string.IsNullOrWhiteSpace(optionName)
                         ? groupName
                         : $"{groupName}: {optionName}";
-                    AddFileMappings(option, label);
+                    AddFileMappings(option, label,
+                        $"{scope}:group:{groupIndex}:option:{optionIndex}");
                 }
             }
 
             if (value["Containers"] is JsonArray containers)
             {
-                foreach (var container in containers.OfType<JsonObject>())
+                for (var containerIndex = 0; containerIndex < containers.Count; containerIndex++)
                 {
+                    if (containers[containerIndex] is not JsonObject container)
+                        continue;
                     var containerName = JsonString(container["Name"]);
                     var label = string.IsNullOrWhiteSpace(containerName)
                         ? groupName
                         : $"{groupName}: {containerName}";
-                    AddFileMappings(container, label);
+                    AddFileMappings(container, label,
+                        $"{scope}:group:{groupIndex}:container:{containerIndex}");
                 }
             }
         }
 
-        AddFileMappings(LoadJsonObject(Path.Combine(modRoot, "default_mod.json")), "Default");
+        AddFileMappings(LoadJsonObject(Path.Combine(modRoot, "default_mod.json")), "Default", "default");
 
         var meta = LoadJsonObject(Path.Combine(modRoot, "meta.json"));
-        AddFileMappings(meta["DefaultData"], "Default");
+        AddFileMappings(meta["DefaultData"], "Default", "default");
         if (meta["Groups"] is JsonArray metaGroups)
-            foreach (var group in metaGroups)
-                AddGroup(group);
+            for (var groupIndex = 0; groupIndex < metaGroups.Count; groupIndex++)
+                AddGroup(metaGroups[groupIndex], "meta", groupIndex);
 
         try
         {
-            foreach (var groupPath in Directory.EnumerateFiles(modRoot, "group_*.json", SearchOption.TopDirectoryOnly))
-                AddGroup(LoadJsonObject(groupPath));
+            foreach (var groupPath in Directory.EnumerateFiles(
+                         modRoot, "group_*.json", SearchOption.TopDirectoryOnly)
+                         .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+                AddGroup(LoadJsonObject(groupPath),
+                    $"legacy:{Path.GetFileName(groupPath)}", 0);
         }
         catch
         {
@@ -2485,6 +2627,10 @@ public sealed class PenumbraService
             labelsByPath.ToDictionary(
                 pair => pair.Key,
                 pair => string.Join(" | ", pair.Value),
+                StringComparer.OrdinalIgnoreCase),
+            membershipsByPath.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<string>)pair.Value.ToArray(),
                 StringComparer.OrdinalIgnoreCase));
     }
 
@@ -2516,6 +2662,16 @@ public sealed class PenumbraService
             if (mappings.TryGetValue(key, out var label))
                 return label;
         return "Unmapped";
+    }
+
+    private static IReadOnlyList<string> OptionMembershipsFor(
+        string relativePath,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> mappings)
+    {
+        foreach (var key in ModPathKeys(relativePath))
+            if (mappings.TryGetValue(key, out var memberships))
+                return memberships;
+        return Array.Empty<string>();
     }
 
     private static IEnumerable<string> ModPathKeys(string path)
@@ -3049,7 +3205,8 @@ public sealed class PenumbraService
         string modFolder,
         string name,
         IReadOnlyDictionary<string, string> mappings,
-        string? description = null)
+        string? description = null,
+        JsonArray? manipulations = null)
     {
         try
         {
@@ -3081,6 +3238,7 @@ public sealed class PenumbraService
                         ["Name"] = name,
                         ["Files"] = new JsonObject(mappings.Select(pair =>
                             KeyValuePair.Create<string, JsonNode?>(pair.Key, pair.Value))),
+                        ["Manipulations"] = CloneManipulations(manipulations),
                     },
                 },
             };
@@ -3156,7 +3314,8 @@ public sealed class PenumbraService
     internal static void ValidateStagedMashupMod(
         string staging,
         string modName,
-        IReadOnlyDictionary<string, string> mappings)
+        IReadOnlyDictionary<string, string> mappings,
+        JsonArray? expectedManipulations = null)
     {
         if ((File.GetAttributes(staging) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("The mashup staging directory is unsafe.");
@@ -3167,6 +3326,11 @@ public sealed class PenumbraService
         var defaultMod = LoadJsonObjectStrict(Path.Combine(staging, "default_mod.json"));
         if (defaultMod["Files"] is not JsonObject files || files.Count != mappings.Count)
             throw new InvalidDataException("The mashup default mappings are incomplete.");
+        var actualManipulations = defaultMod["Manipulations"] as JsonArray;
+        var expected = CloneManipulations(expectedManipulations);
+        if ((expectedManipulations is not null && actualManipulations is null) ||
+            !JsonNode.DeepEquals(actualManipulations ?? new JsonArray(), expected))
+            throw new InvalidDataException("The mashup Meta Manipulations are incomplete.");
         foreach (var mapping in mappings)
         {
             if (!string.Equals(JsonString(files[mapping.Key]), mapping.Value, StringComparison.Ordinal) ||
@@ -3179,6 +3343,21 @@ public sealed class PenumbraService
                 throw new InvalidDataException("A staged mashup resource is missing or unsafe.");
         }
     }
+
+    internal static JsonObject CreateMashupDefaultData(
+        IReadOnlyDictionary<string, string> mappings,
+        JsonArray? manipulations)
+        => new()
+        {
+            ["Version"] = 0,
+            ["Files"] = new JsonObject(mappings.Select(pair =>
+                KeyValuePair.Create<string, JsonNode?>(pair.Key, pair.Value))),
+            ["FileSwaps"] = new JsonObject(),
+            ["Manipulations"] = CloneManipulations(manipulations),
+        };
+
+    private static JsonArray CloneManipulations(JsonArray? manipulations)
+        => manipulations?.DeepClone() as JsonArray ?? new JsonArray();
 
     internal static string StageGameModelMod(
         string staging,
@@ -3711,7 +3890,8 @@ public sealed record PenumbraModResource(
     string GamePath,
     string ActualPath,
     string RelativePath,
-    string OptionMapping);
+    string OptionMapping,
+    IReadOnlyList<string> OptionMemberships);
 
 public sealed record PenumbraModSnapshot(
     string Directory,

@@ -132,7 +132,9 @@ public sealed class BlenderClient : IDisposable
         string? previewManifestPath = null,
         string? sourceModRootPath = null,
         string? targetRelativePath = null,
-        ResourceDependencyManifest? resourceManifest = null)
+        ResourceDependencyManifest? resourceManifest = null,
+        Guid? targetCollectionId = null,
+        string? targetCollectionName = null)
     {
         if (port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -152,7 +154,9 @@ public sealed class BlenderClient : IDisposable
             callbackPort,
             sourceModRootPath,
             targetRelativePath,
-            resourceManifest);
+            resourceManifest,
+            targetCollectionId,
+            targetCollectionName);
 
         return await SendImportAsync(
             port, importFilePath, name, context, cancellationToken,

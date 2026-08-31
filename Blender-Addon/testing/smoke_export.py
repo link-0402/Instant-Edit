@@ -214,6 +214,8 @@ def run() -> None:
             raise AssertionError("Backup models on Export should default to disabled")
         if bpy.context.scene.xiv_ie_settings.keep_shapekeys:
             raise AssertionError("Keep Shape Keys should default to disabled")
+        if bpy.context.scene.xiv_ie_settings.reset_scaling_on_export:
+            raise AssertionError("Reset Scaling on Export should default to disabled")
         if not bpy.context.scene.xiv_ie_settings.simple_import_set_export_directory:
             raise AssertionError("Set Simple Export Folder on Import should default to enabled")
         if not bpy.context.scene.xiv_ie_settings.resolve_mesh_group_conflicts:
@@ -273,6 +275,9 @@ def run() -> None:
 
         materials = importlib.import_module(f"{addon.__name__}.materials")
         operators = importlib.import_module(f"{addon.__name__}.operators")
+        ui_module = importlib.import_module(f"{addon.__name__}.ui")
+        if ui_module._lod_zero_objects(()) != ():
+            raise AssertionError("Mesh Studio empty group LOD selection was not empty-safe")
         groups = materials.group_mesh_objects([obj, second])
         if len(groups) != 1 or groups[0].mesh_index != 0 or len(groups[0].objects) != 2:
             raise AssertionError("Mesh material grouping did not collect both submeshes")
@@ -283,6 +288,26 @@ def run() -> None:
             raise AssertionError("Material path was not assigned to every submesh")
         if obj["instant_edit_xiv_material"] != assigned:
             raise AssertionError("XIV Instant Edit material alias was not kept in sync")
+        if materials.material_mismatch_parts(groups[0].objects):
+            raise AssertionError("Matching mesh parts were incorrectly marked as material mismatches")
+        second["xiv_material"] = "/mt_c0101b0001_other.mtrl"
+        if materials.material_mismatch_parts(groups[0].objects) != {1}:
+            raise AssertionError("Only the divergent mesh part should be marked as a material mismatch")
+        second["xiv_material"] = assigned
+        lod_object = obj.copy()
+        lod_object.data = obj.data.copy()
+        lod_object.name = "0.0 Smoke LOD1"
+        lod_object["xiv_material"] = "/mt_c0101b0001_lod.mtrl"
+        bpy.context.collection.objects.link(lod_object)
+        if materials.material_mismatch_parts([obj, second, lod_object]) != {0}:
+            raise AssertionError("Cross-LOD material divergence did not mark its part row")
+        bpy.data.objects.remove(lod_object, do_unlink=True)
+        second.data.materials.clear()
+        del second["xiv_material"]
+        second.pop("instant_edit_xiv_material", None)
+        if materials.material_mismatch_parts(groups[0].objects) != {1}:
+            raise AssertionError("A missing export material did not mark only its part row")
+        materials.assign_material_path([second], assigned)
         print("[PASS] Per-group material assignment updates every submesh")
 
         added_material = materials.assign_material_path(
@@ -327,7 +352,7 @@ def run() -> None:
             "target_file_path": "C:/Penumbra/Smoke/model.mdl",
             "source_mod_directory": "SmokeMod",
             "source_mod_name": "Smoke Mod",
-            "resource_manifest_version": 1,
+            "resource_manifest_version": 2,
             "resource_manifest_status": "ready",
             "callback_port": 42428,
         })
@@ -461,13 +486,73 @@ def run() -> None:
             "xiv_material": added_material,
             "mesh_index": 2,
         })
+        instant_module = importlib.import_module(f"{addon.__name__}.instant_edit")
+
+        def layer_for(collection):
+            def walk(layer_collection):
+                if layer_collection.collection == collection:
+                    return layer_collection
+                for child in layer_collection.children:
+                    found = walk(child)
+                    if found is not None:
+                        return found
+                return None
+            return walk(bpy.context.view_layer.layer_collection)
+
+        context_layer = layer_for(context_collection)
+        if context_layer is None:
+            raise AssertionError("Context collection was missing from the active view layer")
+        context_layer.hide_viewport = True
+        if context_module.collection_visible_in_view_layer(context_collection):
+            raise AssertionError("Layer-hidden Context was still reported visible")
+        context_layer.hide_viewport = False
+        context_layer.exclude = True
+        if context_module.collection_visible_in_view_layer(context_collection):
+            raise AssertionError("Excluded Context was still reported visible")
+        context_layer.exclude = False
+
+        for selected in bpy.context.selected_objects:
+            selected.select_set(False)
+        mashup_obj.select_set(True)
+        bpy.context.view_layer.objects.active = mashup_obj
+        instant_props.variant_targets.add().selection_id = "stale-target"
+        instant_props.variant_targets_context_id = context_id
+        context_collection.hide_viewport = True
+        instant_module._switch_hidden_export_context()
+        if instant_props.export_destination != mashup_context_id or \
+                instant_props.variant_targets or \
+                instant_props.variant_targets_context_id != mashup_context_id:
+            raise AssertionError(
+                "Hidden Context did not switch to the selected object's visible Context and clear targets: "
+                f"destination={instant_props.export_destination!r}, "
+                f"targets={len(instant_props.variant_targets)}, "
+                f"target_context={instant_props.variant_targets_context_id!r}"
+            )
+        context_collection.hide_viewport = False
+
+        for selected in bpy.context.selected_objects:
+            selected.select_set(False)
+        bpy.context.view_layer.objects.active = None
+        mashup_collection.hide_viewport = True
+        instant_module._switch_hidden_export_context()
+        if instant_props.export_destination != context_id:
+            raise AssertionError("Hidden Context did not use the deterministic next visible fallback")
+        context_collection.hide_viewport = True
+        instant_module._switch_hidden_export_context()
+        if instant_props.export_destination != "NONE":
+            raise AssertionError("No-visible-Context state did not clear the Context selector")
+        context_collection.hide_viewport = False
+        mashup_collection.hide_viewport = False
+        instant_props.export_destination = context_id
+        print("[PASS] Context visibility switching handles layer state, selection, fallback, and empty visibility")
+
         original_scope_for_mashup = instant_props.export_scope
         instant_props.export_scope = "VISIBLE"
         show, enabled, message = instant_ops.mashup_target_state(bpy.context)
         if not show or enabled or "Dependency capture failed" not in message:
             raise AssertionError("Failed mashup capture did not request a re-import")
 
-        context_module._set(mashup_collection, "resource_manifest_version", 1)
+        context_module._set(mashup_collection, "resource_manifest_version", 2)
         context_module._set(mashup_collection, "resource_manifest_status", "ready")
         context_module._set(mashup_collection, "source_mod_directory", "SmokeMod")
         show, enabled, message = instant_ops.mashup_target_state(bpy.context)
@@ -564,7 +649,7 @@ def run() -> None:
         show, enabled, message = instant_ops.save_new_mod_target_state(bpy.context)
         if not show or enabled or "Dependency capture failed" not in message:
             raise AssertionError("Missing single-context dependency capture did not disable Save to new mod")
-        context_module._set(context_collection, "resource_manifest_version", 1)
+        context_module._set(context_collection, "resource_manifest_version", 2)
         context_module._set(context_collection, "resource_manifest_status", "ready")
         bpy.data.objects.remove(mashup_obj, do_unlink=True)
         bpy.data.collections.remove(mashup_collection)
@@ -718,9 +803,46 @@ def run() -> None:
         )
         if export_module._armature_for_object(obj) is not armature:
             raise AssertionError("Smoke mesh is not associated with the expected armature")
+        modifier_armature = armature.copy()
+        modifier_armature.data = armature.data.copy()
+        modifier_armature.name = "ModifierOnlySkeleton"
+        bpy.context.collection.objects.link(modifier_armature)
+        modifier_mesh = obj.copy()
+        modifier_mesh.data = obj.data.copy()
+        modifier_mesh.name = "2.0 Modifier Armature"
+        modifier_mesh.parent = None
+        for copied_modifier in modifier_mesh.modifiers:
+            if copied_modifier.type == "ARMATURE":
+                copied_modifier.object = modifier_armature
+        bpy.context.collection.objects.link(modifier_mesh)
+        if export_module._armature_for_object(modifier_mesh) is not modifier_armature:
+            raise AssertionError("Modifier-only mesh did not resolve its first valid armature")
+        with export_module._clean_export_state(
+            [obj, modifier_mesh], reset_scaling=True
+        ):
+            if armature.data.pose_position != "REST" or \
+                    modifier_armature.data.pose_position != "REST":
+                raise AssertionError("Multiple resolved armatures were not both put in rest pose")
+        bpy.data.objects.remove(modifier_mesh, do_unlink=True)
+        bpy.data.objects.remove(modifier_armature, do_unlink=True)
         with export_module._clean_export_state([obj, second, added_group]):
+            if tuple(armature.scale) != tuple(original_armature_scale):
+                raise AssertionError("Export guard reset scale while the option was disabled")
+            if armature.data.pose_position != "REST":
+                raise AssertionError("Export guard did not enforce rest pose with scale reset disabled")
+        with export_module._clean_export_state(
+            [obj, second, added_group], reset_scaling=True
+        ):
             if tuple(armature.scale) != (1.0, 1.0, 1.0):
                 raise AssertionError(f"Export guard did not neutralize armature scale: {tuple(armature.scale)}")
+        try:
+            with export_module._clean_export_state(
+                [obj, second, added_group], reset_scaling=True
+            ):
+                raise RuntimeError("forced export-state failure")
+        except RuntimeError as error:
+            if str(error) != "forced export-state failure":
+                raise
         if tuple(armature.scale) != (2.0, 2.0, 2.0):
             raise AssertionError(f"Export guard did not restore direct state: {tuple(armature.scale)}")
         if any(
@@ -733,10 +855,12 @@ def run() -> None:
                 f"actual={tuple(tuple(row) for row in pose_bone.matrix_basis)} "
                 f"expected={tuple(tuple(row) for row in original_pose)}"
             )
+        bpy.context.scene.xiv_ie_settings.reset_scaling_on_export = True
         try:
             quick_target = instant_ops.perform_instant_export(bpy.context)
         finally:
             plugin_http.urllib.request.urlopen = original_urlopen
+            bpy.context.scene.xiv_ie_settings.reset_scaling_on_export = False
 
         if tuple(armature.scale) != tuple(original_armature_scale):
             raise AssertionError(
@@ -920,6 +1044,44 @@ def run() -> None:
             raise AssertionError("Mesh Studio group drag did not move the group downward")
         if not obj.name.startswith("1.0 ") or not added_group.name.startswith("0.0 "):
             raise AssertionError("Mesh Studio group drag did not preserve part IDs")
+        slots = materials.material_group_slots(materials.visible_material_groups())
+        if [group.mesh_index for group in slots] != [0, 1, 2] or slots[-1].objects:
+            raise AssertionError("Mesh Studio did not expose one trailing empty group")
+        if operators._move_mesh_group_once(1, "DOWN") != 2:
+            raise AssertionError("Mesh Studio group drag did not move into a new higher group")
+        slots = materials.material_group_slots(materials.visible_material_groups())
+        if [group.mesh_index for group in slots] != [0, 1, 2, 3] or slots[1].objects:
+            raise AssertionError("Mesh Studio did not retain the empty group gap")
+        capped_slots = materials.material_group_slots(
+            materials.visible_material_groups(), maximum_group=2
+        )
+        if [group.mesh_index for group in capped_slots] != [0, 1, 2]:
+            raise AssertionError("Mesh Studio drag preview extended beyond its fixed ceiling")
+        if operators._move_mesh_group_once(2, "DOWN", maximum_group=2) is not None:
+            raise AssertionError("Mesh Studio group drag moved beyond its fixed ceiling")
+        if operators._move_mesh_group_once(2, "UP") != 1:
+            raise AssertionError("Mesh Studio group drag did not fill an empty group gap")
+
+        second_lod = second.copy()
+        second_lod.data = second.data.copy()
+        second_lod.name = "1.1 Renamed Part LOD1"
+        bpy.context.scene.collection.objects.link(second_lod)
+        if operators._move_mesh_part_once(1, 1, "DOWN") != 0:
+            raise AssertionError("Mesh Studio part drag did not enter the trailing empty group")
+        if not second.name.startswith("2.0 ") or not second_lod.name.startswith("2.0 "):
+            raise AssertionError("Mesh Studio cross-group drag did not move every part LOD")
+        if operators._move_mesh_part_once(
+            2, 0, "DOWN", maximum_group=2
+        ) is not None:
+            raise AssertionError("Mesh Studio part drag moved beyond its fixed ceiling")
+        if operators._move_mesh_part_once(2, 0, "UP") != 1:
+            raise AssertionError("Mesh Studio part drag did not choose the lowest free destination part")
+        if not second.name.startswith("1.1 ") or not second_lod.name.startswith("1.1 "):
+            raise AssertionError("Mesh Studio cross-group drag did not restore the destination IDs")
+        second_lod_data = second_lod.data
+        bpy.data.objects.remove(second_lod, do_unlink=True)
+        if second_lod_data.users == 0:
+            bpy.data.meshes.remove(second_lod_data)
         print("[PASS] Mesh Studio rename, attributes, flow, and drag reordering")
     finally:
         addon.unregister()

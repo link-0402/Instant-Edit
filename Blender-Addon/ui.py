@@ -12,14 +12,29 @@ from .instant_edit.ops import (MASHUP_TARGET, SAVE_NEW_MOD_TARGET,
 from .instant_edit.props import IN_PLACE_TARGET, get_instant_edit_props
 from .materials import (
     attribute_display_name,
+    material_mismatch_parts,
     material_paths,
     mesh_display_name,
     mesh_part_attributes,
     mesh_part_objects,
+    material_group_slots,
     visible_material_groups,
 )
+from .operators import active_mesh_drag_state
 from .properties import get_settings
 from .backups import list_backups, target_folder
+
+
+def _lod_zero_objects(objects) -> tuple:
+    """Choose LOD 0, or the lowest available LOD, without failing on empty slots."""
+    objects = tuple(objects)
+    if not objects:
+        return ()
+    lod_zero = tuple(obj for obj in objects if mesh_ids_from_name(obj)[2] == 0)
+    if lod_zero:
+        return lod_zero
+    lowest_lod = min(mesh_ids_from_name(obj)[2] for obj in objects)
+    return tuple(obj for obj in objects if mesh_ids_from_name(obj)[2] == lowest_lod)
 
 
 def draw_status_context_menu(menu, context) -> None:
@@ -245,32 +260,6 @@ class XIVIE_PT_main(Panel):
                 depress=props.variant_target == "NEW_GROUP",
                 icon="ADD",
             ).selection_id = "NEW_GROUP"
-            show_mashup, mashup_enabled, mashup_message = mashup_target_state(context, ref)
-            if show_mashup:
-                mashup_row = targets.row(align=True)
-                mashup_row.enabled = mashup_enabled
-                mashup_row.operator(
-                    "xiv_ie.select_variant_target",
-                    text="Create Mashup",
-                    depress=props.variant_target == MASHUP_TARGET,
-                    icon="EXPERIMENTAL",
-                ).selection_id = MASHUP_TARGET
-                if not mashup_enabled and mashup_message:
-                    targets.label(text=mashup_message, icon="ERROR")
-            else:
-                show_new_mod, new_mod_enabled, new_mod_message = save_new_mod_target_state(
-                    context, ref)
-                if show_new_mod:
-                    new_mod_row = targets.row(align=True)
-                    new_mod_row.enabled = new_mod_enabled
-                    new_mod_row.operator(
-                        "xiv_ie.select_variant_target",
-                        text="Save to new mod",
-                        depress=props.variant_target == SAVE_NEW_MOD_TARGET,
-                        icon="EXPORT",
-                    ).selection_id = SAVE_NEW_MOD_TARGET
-                    if not new_mod_enabled and new_mod_message:
-                        targets.label(text=new_mod_message, icon="ERROR")
             if not props.variant_targets:
                 targets.label(text="Refresh to load compatible groups and options.", icon="INFO")
             group_expanded = True
@@ -300,12 +289,44 @@ class XIVIE_PT_main(Panel):
                         depress=props.variant_target == item.selection_id,
                         icon="FILE",
                     ).selection_id = item.selection_id
+            show_mashup, mashup_enabled, mashup_message = mashup_target_state(context, ref)
+            show_new_mod = new_mod_enabled = False
+            new_mod_message = ""
+            if not show_mashup:
+                show_new_mod, new_mod_enabled, new_mod_message = save_new_mod_target_state(
+                    context, ref)
+            if show_mashup or show_new_mod:
+                targets.separator(type="LINE")
+            if show_mashup:
+                mashup_row = targets.row(align=True)
+                mashup_row.enabled = mashup_enabled
+                mashup_row.operator(
+                    "xiv_ie.select_variant_target",
+                    text="Create Mashup",
+                    depress=props.variant_target == MASHUP_TARGET,
+                    icon="EXPERIMENTAL",
+                ).selection_id = MASHUP_TARGET
+                if not mashup_enabled and mashup_message:
+                    targets.label(text=mashup_message, icon="ERROR")
+            elif show_new_mod:
+                new_mod_row = targets.row(align=True)
+                new_mod_row.enabled = new_mod_enabled
+                new_mod_row.operator(
+                    "xiv_ie.select_variant_target",
+                    text="Save to new mod",
+                    depress=props.variant_target == SAVE_NEW_MOD_TARGET,
+                    icon="EXPORT",
+                ).selection_id = SAVE_NEW_MOD_TARGET
+                if not new_mod_enabled and new_mod_message:
+                    targets.label(text=new_mod_message, icon="ERROR")
             selected_target = next(
                 (item for item in props.variant_targets if item.selection_id == props.variant_target), None)
             if props.variant_target == "NEW_GROUP":
                 _draw_named_text_input(box, props, "variant_group_name", "New Group Name")
             if (
-                props.variant_target not in {IN_PLACE_TARGET, MASHUP_TARGET}
+                props.variant_target not in {
+                    IN_PLACE_TARGET, MASHUP_TARGET, SAVE_NEW_MOD_TARGET,
+                }
                 and (selected_target is None or selected_target.kind != "OPTION")
             ):
                 _draw_named_text_input(box, props, "variant_name", "New Option Name")
@@ -323,13 +344,6 @@ class XIVIE_PT_main(Panel):
         def triangle_count(obj) -> int:
             obj.data.calc_loop_triangles()
             return len(obj.data.loop_triangles)
-
-        def lod_zero_objects(objects) -> tuple:
-            lod_zero = tuple(obj for obj in objects if mesh_ids_from_name(obj)[2] == 0)
-            if lod_zero:
-                return lod_zero
-            lowest_lod = min(mesh_ids_from_name(obj)[2] for obj in objects)
-            return tuple(obj for obj in objects if mesh_ids_from_name(obj)[2] == lowest_lod)
 
         def aligned_control(layout, label: str):
             row = layout.row(align=True).split(factor=0.25, align=True)
@@ -353,10 +367,15 @@ class XIVIE_PT_main(Panel):
         if not expanded:
             return
 
-        groups = visible_material_groups()
-        if not groups:
+        occupied_groups = visible_material_groups()
+        if not occupied_groups:
             box.label(text="No visible FFXIV mesh groups.", icon="INFO")
             return
+        drag_state = active_mesh_drag_state()
+        drag_scope, drag_group, drag_part, drag_maximum = (
+            drag_state if drag_state is not None else ("", -1, -1, None)
+        )
+        groups = material_group_slots(occupied_groups, drag_maximum)
 
         columns = box.row(align=True).split(factor=0.4, align=True)
         for title in ("OBJECT", "PART", "ATTR"):
@@ -366,20 +385,32 @@ class XIVIE_PT_main(Panel):
 
         total_triangles = 0
         for group in groups:
+            if not group.objects:
+                empty_box = box.box()
+                empty_row = empty_box.row(align=True)
+                empty_row.label(text=f"Mesh #{group.mesh_index}")
+                empty_label = empty_row.row(align=True)
+                empty_label.alignment = "RIGHT"
+                empty_label.label(text="Empty", icon="MESH_DATA")
+                continue
             paths = material_paths(group.objects)
-            lod_zero = lod_zero_objects(group.objects)
+            mismatch_parts = material_mismatch_parts(group.objects)
+            lod_zero = _lod_zero_objects(group.objects)
             vertices = sum(len(obj.data.vertices) for obj in lod_zero)
             total_triangles += sum(triangle_count(obj) for obj in lod_zero)
 
             mesh_box = box.box()
             mesh_header = mesh_box.row(align=True).split(factor=0.4, align=True)
+            group_is_dragged = drag_scope == "GROUP" and drag_group == group.mesh_index
+            mesh_header.alert = group_is_dragged
             mesh_id_row = mesh_header.row(align=True)
             mesh_id_row.label(text=f"Mesh #{group.mesh_index}")
             drag = mesh_id_row.operator(
                 "xiv_ie.drag_mesh_order",
                 text="",
                 icon="GRIP_V",
-                emboss=False,
+                emboss=group_is_dragged,
+                depress=group_is_dragged,
             )
             drag.scope = "GROUP"
             drag.mesh_group = group.mesh_index
@@ -395,11 +426,18 @@ class XIVIE_PT_main(Panel):
             mesh_column = mesh_box.column(align=True)
             for part in group.parts:
                 part_objects = mesh_part_objects(group.objects, group.mesh_index, part)
-                display_objects = lod_zero_objects(part_objects)
+                display_objects = _lod_zero_objects(part_objects)
                 representative = display_objects[0]
                 duplicate_ids = len(display_objects) > 1
 
                 object_row = mesh_column.row(align=True).split(factor=0.4, align=True)
+                part_is_dragged = (
+                    drag_scope == "PART"
+                    and drag_group == group.mesh_index
+                    and drag_part == part
+                )
+                material_mismatch = part in mismatch_parts
+                object_row.alert = part_is_dragged or material_mismatch
 
                 name_row = object_row.row(align=True)
                 rename = name_row.operator(
@@ -411,13 +449,17 @@ class XIVIE_PT_main(Panel):
                 rename.mesh_part = part
 
                 part_row = object_row.row(align=True)
-                part_row.label(text="", icon="ERROR" if duplicate_ids else "BLANK1")
+                part_row.label(
+                    text="",
+                    icon="ERROR" if duplicate_ids or material_mismatch else "BLANK1",
+                )
                 part_row.label(text=str(part))
                 drag = part_row.operator(
                     "xiv_ie.drag_mesh_order",
                     text="",
                     icon="GRIP_V",
-                    emboss=False,
+                    emboss=part_is_dragged,
+                    depress=part_is_dragged,
                 )
                 drag.scope = "PART"
                 drag.mesh_group = group.mesh_index
@@ -455,7 +497,7 @@ class XIVIE_PT_main(Panel):
         visible_lod_zero = {
             obj
             for group in groups
-            for obj in lod_zero_objects(group.objects)
+            for obj in _lod_zero_objects(group.objects)
         }
         selected_triangles = sum(
             triangle_count(obj)
@@ -549,6 +591,7 @@ class XIVIE_PT_main(Panel):
         row.prop(settings, "check_tris")
         row = options.row(align=True)
         row.prop(settings, "create_backfaces")
+        row.prop(settings, "reset_scaling_on_export")
         options.prop(settings, "remove_yas")
         options.prop(settings, "backup_models_on_export")
 

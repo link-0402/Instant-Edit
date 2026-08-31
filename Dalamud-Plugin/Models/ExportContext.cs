@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 
 namespace InstantEdit.Models;
 
@@ -55,13 +56,18 @@ public sealed record MaterialDependency
 
 public sealed record ResourceDependencyManifest
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     [JsonPropertyName("version")]
     public int Version { get; init; } = CurrentVersion;
 
     [JsonPropertyName("materials")]
     public required IReadOnlyList<MaterialDependency> Materials { get; init; }
+
+    /// <summary>Import-time snapshot of the source mod's effective Meta Manipulations.</summary>
+    [JsonPropertyName("manipulations")]
+    [Newtonsoft.Json.JsonConverter(typeof(JsonArrayNewtonsoftConverter))]
+    public JsonArray Manipulations { get; init; } = new();
 }
 
 /// <summary> Versioned, plugin-owned context sent to the Blender add-on. </summary>

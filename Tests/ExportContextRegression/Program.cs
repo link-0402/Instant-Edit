@@ -355,6 +355,14 @@ try
                 Textures = [],
             },
         ],
+        Manipulations = new JsonArray
+        {
+            new JsonObject
+            {
+                ["Type"] = "Eqp",
+                ["Manipulation"] = new JsonObject { ["SetId"] = 1, ["Slot"] = "Body", ["Entry"] = 7 },
+            },
+        },
     };
     IReadOnlyList<PersistedExportContext> manifestPersistence = [];
     using var manifestRegistry = new ExportContextRegistry(
@@ -362,11 +370,31 @@ try
     var manifestContext = manifestRegistry.CreateContext(
         effectiveHairPath, 7, "registered-mod", originalTarget, "Registered Mod", 42428,
         originalRoot, relative, manifest);
-    Require(manifestContext.ResourceManifestVersion == 1 &&
+    Require(manifestContext.ResourceManifestVersion == 2 &&
             manifestContext.ResourceManifestStatus == "ready" &&
             manifestPersistence.Single().ResourceManifest?.Materials.Count == 1 &&
             manifestPersistence.Single().ResourceManifestStatus == "ready",
         "new contexts persist an exact mashup dependency manifest");
+    var sourceCollectionId = Guid.NewGuid();
+    var collectionManifestContext = manifestRegistry.CreateContext(
+        effectiveHairPath, 7, "registered-mod", originalTarget, "Registered Mod", 42428,
+        originalRoot, relative, manifest,
+        targetCollectionId: sourceCollectionId,
+        targetCollectionName: "Import Snapshot Collection");
+    Require(collectionManifestContext.TargetCollectionId == sourceCollectionId &&
+            collectionManifestContext.TargetCollectionName == "Import Snapshot Collection" &&
+            manifestPersistence.Any(item => item.ContextId == collectionManifestContext.ContextId &&
+                item.TargetCollectionId == sourceCollectionId &&
+                JsonNode.DeepEquals(item.ResourceManifest?.Manipulations, manifest.Manipulations)),
+        "source contexts persist their Penumbra collection identity and manipulation snapshot");
+    var newtonsoftConfigurationJson = Newtonsoft.Json.JsonConvert.SerializeObject(manifestPersistence);
+    var newtonsoftConfigurationRoundTrip = Newtonsoft.Json.JsonConvert.DeserializeObject<List<PersistedExportContext>>(
+        newtonsoftConfigurationJson);
+    Require(!newtonsoftConfigurationJson.Contains("\"Parent\"", StringComparison.Ordinal) &&
+            JsonNode.DeepEquals(
+                newtonsoftConfigurationRoundTrip?[0].ResourceManifest?.Manipulations,
+                manifest.Manipulations),
+        "Dalamud configuration serialization round-trips manipulation snapshots without JsonNode parent loops");
     var serializedContext = JsonNode.Parse(JsonSerializer.Serialize(manifestContext))!.AsObject();
     Require(serializedContext["sourceGamePath"]?.GetValue<string>() == effectiveHairPath &&
             !serializedContext.ContainsKey("gamePath"),
@@ -376,6 +404,12 @@ try
         originalRoot, relative, null);
     Require(failedManifestContext.ResourceManifestStatus == "capture_failed",
         "new imports record failed dependency capture explicitly");
+    var legacyManifestContext = manifestRegistry.CreateContext(
+        effectiveHairPath, 7, "registered-mod", originalTarget, "Registered Mod", 42428,
+        originalRoot, relative, manifest with { Version = 1 });
+    Require(legacyManifestContext.ResourceManifestStatus == "capture_failed" &&
+            legacyManifestContext.ResourceManifest is null,
+        "manifest-v1 contexts require re-import before new-mod or mashup export");
 
     const string swappedMaterial = "chara/human/c0201/obj/hair/h0179/material/v0001/mt_c0201h0179_hir_b_c0801.mtrl";
     var swappedResources = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
@@ -402,6 +436,61 @@ try
             "/mt_c0801h0154_hir_b_c0801.mtrl")).SequenceEqual(
             ["/mt_c0801h0154_hir_b_c0801.mtrl"]),
         "dependency capture reads V6 material paths without Lumina parsing the full model");
+
+    const string optionMaterial = "chara/equipment/e0001/material/v0001/mt_option.mtrl";
+    const string defaultTexture = "chara/equipment/e0001/texture/default_d.tex";
+    const string unmappedTexture = "chara/equipment/e0001/texture/unmapped_n.tex";
+    const string ambiguousTexture = "chara/equipment/e0001/texture/ambiguous_s.tex";
+    var browserCandidates = new MaterialResourceCandidate[]
+    {
+        new(optionMaterial, @"G:\Mods\Test\Files\option-a.mtrl",
+            "test-mod", @"G:\Mods\Test", "Files/option-a.mtrl",
+            ["meta:group:0:option:0"], "Variant: A"),
+        new(optionMaterial, @"G:\Mods\Test\Files\option-b.mtrl",
+            "test-mod", @"G:\Mods\Test", "Files/option-b.mtrl",
+            ["meta:group:0:option:1"], "Variant: B"),
+        new(defaultTexture, @"G:\Mods\Test\Files\default.tex",
+            "test-mod", @"G:\Mods\Test", "Files/default.tex",
+            ["default"], "Default"),
+        new(defaultTexture, @"G:\Mods\Test\Files\other-option.tex",
+            "test-mod", @"G:\Mods\Test", "Files/other-option.tex",
+            ["meta:group:1:option:1"], "Textures: B"),
+        new(unmappedTexture, @"G:\Mods\Test\Files\unmapped.tex",
+            "test-mod", @"G:\Mods\Test", "Files/unmapped.tex",
+            [], "Unmapped"),
+        new(ambiguousTexture, @"G:\Mods\Test\Files\ambiguous-one.tex",
+            "test-mod", @"G:\Mods\Test", "Files/ambiguous-one.tex",
+            ["meta:group:0:option:0"], "Variant: A"),
+        new(ambiguousTexture, @"G:\Mods\Test\Files\ambiguous-two.tex",
+            "test-mod", @"G:\Mods\Test", "Files/ambiguous-two.tex",
+            ["meta:group:0:option:0"], "Variant: A duplicate"),
+    };
+    var browserWarnings = new List<string>();
+    var scopedBrowserCandidates = MaterialPreviewBundleBuilder.ScopeResourceCandidates(
+        browserCandidates, ["meta:group:0:option:0"], browserWarnings);
+    Require(scopedBrowserCandidates.Single(candidate => candidate.GamePath == optionMaterial).ActualPath
+                .EndsWith("option-a.mtrl", StringComparison.Ordinal) &&
+            scopedBrowserCandidates.Single(candidate => candidate.GamePath == defaultTexture).ActualPath
+                .EndsWith("default.tex", StringComparison.Ordinal) &&
+            scopedBrowserCandidates.Single(candidate => candidate.GamePath == unmappedTexture).ActualPath
+                .EndsWith("unmapped.tex", StringComparison.Ordinal),
+        "Mod Browser dependency capture prefers the clicked option, then Default, then unmapped resources");
+    Require(scopedBrowserCandidates.Count(candidate => candidate.GamePath == ambiguousTexture) == 2 &&
+            browserWarnings.Any(item => item.Contains(ambiguousTexture, StringComparison.Ordinal) &&
+                                        item.Contains("Variant: A duplicate", StringComparison.Ordinal)),
+        "Mod Browser dependency capture reports equal-precedence option ambiguity");
+    var knownLocator = MaterialPreviewBundleBuilder.CreateKnownSourceLocator(
+        optionMaterial,
+        scopedBrowserCandidates.Single(candidate => candidate.GamePath == optionMaterial),
+        new string('b', 64));
+    Require(knownLocator is
+            {
+                Kind: "mod",
+                SourceModDirectory: "test-mod",
+                SourceModRootPath: @"G:\Mods\Test",
+                SourceRelativePath: "Files/option-a.mtrl",
+            },
+        "Mod Browser dependency locators preserve the scanned mod source metadata");
 
     var manifestSourceRoot = Path.Combine(testRoot, "ManifestSource");
     var manifestRelative = "chara/human/c0201/obj/hair/h0154/material/v0001/mt_test.mtrl";
@@ -790,6 +879,7 @@ try
             stagedVanillaMeta["Author"]!.GetValue<string>() == "XIV Instant Edit" &&
             stagedVanillaDefault["Files"]!.AsObject().Count == 1 &&
             stagedVanillaDefault["Files"]![vanillaConsumer]!.GetValue<string>() == stagedVanillaRelative &&
+            stagedVanillaDefault["Manipulations"]!.AsArray().Count == 0 &&
             File.ReadAllBytes(Path.Combine(
                 vanillaStageRoot, stagedVanillaRelative.Replace('/', Path.DirectorySeparatorChar)))
                 .SequenceEqual(new byte[] { 10, 11, 12 }) &&
@@ -809,19 +899,133 @@ try
     Require(unsafeVanillaStageRejected,
         "vanilla mod staging rejects consumer-path traversal before writing files");
 
+    var manipulationV3Root = Path.Combine(testRoot, "ManipulationsV3");
+    Directory.CreateDirectory(manipulationV3Root);
+    File.WriteAllText(Path.Combine(manipulationV3Root, "meta.json"),
+        "{\"FileVersion\":3,\"Name\":\"Manipulations V3\"}");
+    File.WriteAllText(Path.Combine(manipulationV3Root, "default_mod.json"), new JsonObject
+    {
+        ["Manipulations"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["Type"] = "Eqp",
+                ["Manipulation"] = new JsonObject { ["SetId"] = 1, ["Slot"] = "Body", ["Entry"] = 99 },
+            },
+            new JsonObject { ["Type"] = "Atr", ["Entry"] = "default" },
+        },
+    }.ToJsonString());
+    File.WriteAllText(Path.Combine(manipulationV3Root, "group_001_low.json"), new JsonObject
+    {
+        ["Type"] = "Multi",
+        ["Name"] = "Details",
+        ["Priority"] = 2,
+        ["Options"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["Name"] = "Enabled Detail",
+                ["Manipulations"] = new JsonArray
+                {
+                    new JsonObject { ["Type"] = "Eqdp", ["Entry"] = "multi-1" },
+                    new JsonObject { ["Type"] = "Imc", ["Entry"] = "multi-2" },
+                },
+            },
+            new JsonObject
+            {
+                ["Name"] = "Disabled Detail",
+                ["Manipulations"] = new JsonArray { new JsonObject { ["Type"] = "Imc", ["Entry"] = "disabled" } },
+            },
+        },
+    }.ToJsonString());
+    File.WriteAllText(Path.Combine(manipulationV3Root, "group_002_high.json"), new JsonObject
+    {
+        ["Type"] = "Single",
+        ["Name"] = "Shape",
+        ["Priority"] = 9,
+        ["Options"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["Name"] = "Enabled Shape",
+                ["Manipulations"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["Type"] = "Eqp",
+                        ["Manipulation"] = new JsonObject { ["SetId"] = 1, ["Slot"] = "Body", ["Entry"] = 11 },
+                    },
+                    new JsonObject { ["Type"] = "Est", ["Entry"] = "high-2" },
+                },
+            },
+        },
+    }.ToJsonString());
+    var v3Manipulations = PenumbraService.CaptureEffectiveManipulations(
+        manipulationV3Root,
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Details"] = ["Enabled Detail"],
+            ["Shape"] = ["Enabled Shape"],
+        });
+    Require(v3Manipulations.Select(item => item!["Type"]!.GetValue<string>())
+                .SequenceEqual(["Eqp", "Est", "Eqdp", "Imc", "Atr"]) &&
+            v3Manipulations.All(item => item!["Entry"]?.GetValue<string>() != "disabled") &&
+            v3Manipulations[0]!["Manipulation"]!["Entry"]!.GetValue<int>() == 11,
+        "v3 manipulation capture applies selected options before Default with unique first-wins conflicts");
+
+    var manipulationV4Root = Path.Combine(testRoot, "ManipulationsV4");
+    Directory.CreateDirectory(manipulationV4Root);
+    File.WriteAllText(Path.Combine(manipulationV4Root, "meta.json"), new JsonObject
+    {
+        ["FileVersion"] = 4,
+        ["Name"] = "Manipulations V4",
+        ["DefaultData"] = new JsonObject
+        {
+            ["Manipulations"] = new JsonArray { new JsonObject { ["Type"] = "Atr", ["Entry"] = "v4-default" } },
+        },
+        ["Groups"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["Type"] = "Single",
+                ["Name"] = "Variant",
+                ["Priority"] = 4,
+                ["Options"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["Name"] = "Enabled",
+                        ["Manipulations"] = new JsonArray { new JsonObject { ["Type"] = "Eqp", ["Entry"] = "v4-option" } },
+                    },
+                },
+            },
+        },
+    }.ToJsonString());
+    var v4Manipulations = PenumbraService.CaptureEffectiveManipulations(
+        manipulationV4Root,
+        new Dictionary<string, IReadOnlyList<string>> { ["Variant"] = ["Enabled"] });
+    Require(v4Manipulations.Select(item => item!["Entry"]!.GetValue<string>())
+                .SequenceEqual(["v4-option", "v4-default"]),
+        "v4 manipulation capture merges enabled embedded options before DefaultData");
+    var copiedDefault = PenumbraService.CreateMashupDefaultData(mashupMappings, v3Manipulations);
+    Require(JsonNode.DeepEquals(copiedDefault["Manipulations"], v3Manipulations),
+        "new-mod default data preserves the active Context manipulation snapshot");
+
     var v3Root = Path.Combine(testRoot, "MashupV3");
     Directory.CreateDirectory(v3Root);
     File.WriteAllText(Path.Combine(v3Root, "meta.json"), "{\"FileVersion\":3,\"Name\":\"Keep Me\"}");
     const string preservedV3 = "{\"Version\":0,\"Type\":\"Single\",\"Name\":\"Existing\",\"Priority\":2,\"Options\":[]}";
     File.WriteAllText(Path.Combine(v3Root, "group_001_existing.json"), preservedV3);
-    Require(PenumbraService.WriteMashupGroup(v3Root, "Mashup", mashupMappings) is null &&
+    Require(PenumbraService.WriteMashupGroup(
+                v3Root, "Mashup", mashupMappings, manipulations: v3Manipulations) is null &&
             File.ReadAllText(Path.Combine(v3Root, "group_001_existing.json")) == preservedV3,
         "v3 mashup group creation preserves unrelated group metadata");
     var createdV3 = JsonNode.Parse(File.ReadAllText(
         Directory.GetFiles(v3Root, "group_002_*.json").Single()))!.AsObject();
     Require(createdV3["DefaultSettings"]!.GetValue<int>() == 1 &&
-            createdV3["Options"]!.AsArray()[1]!["Files"]!.AsObject().Count == mashupMappings.Count,
-        "v3 mashup group enables its option and maps the full dependency set");
+            createdV3["Options"]!.AsArray()[1]!["Files"]!.AsObject().Count == mashupMappings.Count &&
+            JsonNode.DeepEquals(createdV3["Options"]!.AsArray()[1]!["Manipulations"], v3Manipulations),
+        "v3 mashup group enables its option and attaches the active Context manipulations");
 
     var v4Root = Path.Combine(testRoot, "MashupV4");
     Directory.CreateDirectory(v4Root);

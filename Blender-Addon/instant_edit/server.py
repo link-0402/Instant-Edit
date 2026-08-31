@@ -208,7 +208,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
         resource_manifest_status = data.get("resourceManifestStatus")
         if resource_manifest_status not in {"capture_failed", "ready"}:
             raise ValueError("resourceManifestStatus must be capture_failed or ready")
-        expected_manifest_version = 1 if resource_manifest_status == "ready" else 0
+        expected_manifest_version = 2 if resource_manifest_status == "ready" else 0
         if resource_manifest_version != expected_manifest_version:
             raise ValueError("resource manifest version and status do not agree")
 

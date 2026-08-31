@@ -204,6 +204,27 @@ def context_collections(scene=None) -> list:
     ]
 
 
+def collection_visible_in_view_layer(collection, view_layer=None) -> bool:
+    """Return whether a collection is enabled through the current layer tree."""
+    if getattr(collection, "hide_viewport", False):
+        return False
+    view_layer = view_layer or getattr(bpy.context, "view_layer", None)
+    if view_layer is None:
+        return False
+
+    def walk(layer_collection, ancestors_visible=True) -> bool:
+        visible = (
+            ancestors_visible
+            and not getattr(layer_collection, "exclude", False)
+            and not getattr(layer_collection, "hide_viewport", False)
+        )
+        if layer_collection.collection == collection:
+            return visible
+        return any(walk(child, visible) for child in layer_collection.children)
+
+    return walk(view_layer.layer_collection)
+
+
 def _remove_metadata(obj, fields=CONTEXT_METADATA_FIELDS) -> None:
     for field in fields:
         obj.pop(field, None)

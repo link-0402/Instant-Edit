@@ -16,5 +16,9 @@
       <HintPath>$(DalamudDevPath)\Lumina.dll</HintPath>
       <Private>true</Private>
     </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(DalamudDevPath)\Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 </Project>

@@ -96,7 +96,7 @@ def mashup_export_selection(context: Context, ref=None, *, minimum_contexts: int
     if pending:
         raise ContextValidationError("Create the Penumbra mod for every game-data Context before making a Mashup.")
     incomplete = [refs[context_id] for context_id in materials
-                  if refs[context_id].resource_manifest_version != 1]
+                  if refs[context_id].resource_manifest_version != 2]
     if incomplete:
         raise ContextValidationError(
             "Dependency capture failed; re-import after resolving the missing resources: "

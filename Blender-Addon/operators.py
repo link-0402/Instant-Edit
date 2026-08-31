@@ -15,6 +15,7 @@ from .materials import (
     mesh_part_tags,
     material_paths,
     material_suggestions,
+    move_mesh_part_to_group,
     rename_mesh_part,
     set_mesh_flow_enabled,
     set_mesh_part_attribute,
@@ -22,6 +23,7 @@ from .materials import (
     swap_mesh_groups,
     swap_mesh_parts,
     convert_suffix_mesh_names,
+    visible_material_group_slots,
     visible_material_groups,
 )
 from .mesh.export import check_triangulation, export_result, get_export_stats
@@ -31,14 +33,26 @@ from .xivpy.model import XIVModel
 from .backups import clear_backups, list_backups, restore_local, target_folder
 
 
+_ACTIVE_MESH_DRAG: tuple[str, int, int, int] | None = None
+
+
+def active_mesh_drag_state() -> tuple[str, int, int, int] | None:
+    """Return scope, current group/part, and the fixed group ceiling."""
+    return _ACTIVE_MESH_DRAG
+
+
 def _redraw(context: Context) -> None:
     if context.screen:
         for area in context.screen.areas:
             area.tag_redraw()
 
 
-def _move_mesh_group_once(mesh_group: int, direction: str) -> int | None:
-    groups = visible_material_groups()
+def _move_mesh_group_once(
+    mesh_group: int,
+    direction: str,
+    maximum_group: int | None = None,
+) -> int | None:
+    groups = visible_material_group_slots(maximum_group)
     position = next(
         (index for index, group in enumerate(groups) if group.mesh_index == mesh_group),
         -1,
@@ -55,6 +69,7 @@ def _move_mesh_part_once(
     mesh_group: int,
     mesh_part: int,
     direction: str,
+    maximum_group: int | None = None,
 ) -> int | None:
     group = next(
         (item for item in visible_material_groups() if item.mesh_index == mesh_group),
@@ -65,11 +80,21 @@ def _move_mesh_part_once(
     parts = list(group.parts)
     position = parts.index(mesh_part)
     neighbor = position + (-1 if direction == "UP" else 1)
-    if neighbor < 0 or neighbor >= len(parts):
+    if 0 <= neighbor < len(parts):
+        new_part = parts[neighbor]
+        swap_mesh_parts(visible_meshobj(), mesh_group, mesh_part, new_part)
+        return new_part
+
+    target_group = mesh_group + (-1 if direction == "UP" else 1)
+    if target_group < 0:
         return None
-    new_part = parts[neighbor]
-    swap_mesh_parts(visible_meshobj(), mesh_group, mesh_part, new_part)
-    return new_part
+    highest_group = max(item.mesh_index for item in visible_material_groups())
+    if target_group > highest_group + 1:
+        return None
+    if maximum_group is not None and target_group > maximum_group:
+        return None
+    return move_mesh_part_to_group(
+        visible_meshobj(), mesh_group, mesh_part, target_group)
 
 
 def _simple_import_bind_existing_skeleton(imported_objects: list, skeleton) -> list:
@@ -474,6 +499,7 @@ class XIVIE_OT_drag_mesh_order(Operator):
         return f"Drag vertically to reorder this {item}; Esc or right-click cancels"
 
     def invoke(self, context: Context, event):
+        global _ACTIVE_MESH_DRAG
         if self.scope == "GROUP":
             group = find_material_group(context, self.mesh_group)
             targets = group.objects if group is not None else ()
@@ -493,12 +519,22 @@ class XIVIE_OT_drag_mesh_order(Operator):
         self._drag_distance = 0.0
         self._finish_on_release = event.value == "PRESS"
         self._step = max(18.0, 22.0 * context.preferences.system.ui_scale)
+        self._maximum_group = max(
+            group.mesh_index for group in visible_material_groups()
+        ) + 1
+        _ACTIVE_MESH_DRAG = (
+            self.scope,
+            self.mesh_group,
+            self.mesh_part,
+            self._maximum_group,
+        )
 
         context.window.cursor_modal_set("MOVE_Y")
         context.workspace.status_text_set(
             "Drag vertically to reorder; release/click to drop; Esc or right-click to cancel"
         )
         context.window_manager.modal_handler_add(self)
+        _redraw(context)
         return {"RUNNING_MODAL"}
 
     def modal(self, context: Context, event):
@@ -530,16 +566,37 @@ class XIVIE_OT_drag_mesh_order(Operator):
         return {"RUNNING_MODAL"}
 
     def _move_once(self, context: Context, direction: str) -> bool:
+        global _ACTIVE_MESH_DRAG
         try:
             mesh_group, mesh_part, _lod = mesh_ids_from_name(self._dragged_objects[0])
         except Exception:
             return False
-        if self.scope == "GROUP":
-            moved = _move_mesh_group_once(mesh_group, direction)
-        else:
-            moved = _move_mesh_part_once(mesh_group, mesh_part, direction)
+        try:
+            if self.scope == "GROUP":
+                moved = _move_mesh_group_once(
+                    mesh_group,
+                    direction,
+                    self._maximum_group,
+                )
+            else:
+                moved = _move_mesh_part_once(
+                    mesh_group,
+                    mesh_part,
+                    direction,
+                    self._maximum_group,
+                )
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return False
         if moved is None:
             return False
+        new_group, new_part, _lod = mesh_ids_from_name(self._dragged_objects[0])
+        _ACTIVE_MESH_DRAG = (
+            self.scope,
+            new_group,
+            new_part,
+            self._maximum_group,
+        )
         _redraw(context)
         return True
 
@@ -556,6 +613,8 @@ class XIVIE_OT_drag_mesh_order(Operator):
 
     @staticmethod
     def _finish(context: Context, cancelled: bool):
+        global _ACTIVE_MESH_DRAG
+        _ACTIVE_MESH_DRAG = None
         context.window.cursor_modal_restore()
         context.workspace.status_text_set(None)
         _redraw(context)

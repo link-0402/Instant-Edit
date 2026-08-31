@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 using InstantEdit.Models;
 
 namespace InstantEdit.Services;
@@ -88,10 +89,14 @@ public sealed class ExportContextRegistry : IDisposable
         int callbackPort,
         string? sourceModRootPath = null,
         string? targetRelativePath = null,
-        ResourceDependencyManifest? resourceManifest = null)
+        ResourceDependencyManifest? resourceManifest = null,
+        Guid? targetCollectionId = null,
+        string? targetCollectionName = null)
     {
         if (!PenumbraService.IsSafeGamePath(gamePath) || objectIndex is < 0 or > ushort.MaxValue ||
-            !PenumbraService.IsSafeModName(sourceModDirectory) || callbackPort is < 1 or > 65535)
+            !PenumbraService.IsSafeModName(sourceModDirectory) || callbackPort is < 1 or > 65535 ||
+            targetCollectionId == Guid.Empty ||
+            (targetCollectionName is not null && targetCollectionName.Length > 512))
             throw new ArgumentException("The import target is not safe.");
 
         if (!PenumbraService.IsSafeLocalModelPath(targetFilePath))
@@ -123,6 +128,8 @@ public sealed class ExportContextRegistry : IDisposable
             SourceModName = string.IsNullOrWhiteSpace(sourceModName) ? sourceModDirectory : sourceModName,
             SourceModRootPath = sourceModRootPath,
             TargetRelativePath = targetRelativePath,
+            TargetCollectionId = targetCollectionId,
+            TargetCollectionName = targetCollectionName,
             CallbackPort = callbackPort,
             ResourceManifest = safeManifest,
             ResourceManifestStatus = safeManifest is not null
@@ -814,7 +821,11 @@ public sealed class ExportContextRegistry : IDisposable
         if (manifest is null)
             return true;
         if (manifest.Version != ResourceDependencyManifest.CurrentVersion ||
-            manifest.Materials.Count is < 1 or > 256)
+            manifest.Materials.Count is < 1 or > 256 ||
+            manifest.Manipulations is null ||
+            manifest.Manipulations.Count > 4096 ||
+            manifest.Manipulations.Any(item => item is not JsonObject) ||
+            manifest.Manipulations.ToJsonString().Length > 4 * 1024 * 1024)
             return false;
 
         foreach (var material in manifest.Materials)

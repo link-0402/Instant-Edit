@@ -13,7 +13,14 @@ using InstantEdit.Models;
 
 namespace InstantEdit.Services;
 
-public sealed record MaterialResourceCandidate(string GamePath, string ActualPath);
+public sealed record MaterialResourceCandidate(
+    string GamePath,
+    string ActualPath,
+    string? SourceModDirectory = null,
+    string? SourceModRootPath = null,
+    string? SourceRelativePath = null,
+    IReadOnlyList<string>? OptionMemberships = null,
+    string? OptionLabel = null);
 
 public sealed record MaterialPreviewBundleResult(string? ManifestPath, IReadOnlyList<string> Warnings)
 {
@@ -23,7 +30,8 @@ public sealed record MaterialPreviewBundleResult(string? ManifestPath, IReadOnly
 
 public sealed record MaterialImportBundleResult(
     ResourceDependencyManifest? ResourceManifest,
-    MaterialPreviewBundleResult? Preview);
+    MaterialPreviewBundleResult? Preview,
+    IReadOnlyList<string> DependencyWarnings);
 
 /// <summary>
 /// Builds a display-only material package from the exact resources resolved by Penumbra.
@@ -70,17 +78,22 @@ public sealed class MaterialPreviewBundleBuilder
         string bundleDirectory,
         bool buildPreview,
         bool excludeBodyAndGeneralMaterials,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<string>? preferredOptionMemberships = null)
     {
+        var dependencyWarnings = new List<string>();
+        var scopedCandidates = ScopeResourceCandidates(
+            candidates, preferredOptionMemberships, dependencyWarnings);
         var resourceCache = new Dictionary<string, ResolvedResource?>(StringComparer.OrdinalIgnoreCase);
         var dependencies = await BuildDependencyManifestAsync(
-            modelBytes, modelGamePath, candidates, resourceCache, cancellationToken).ConfigureAwait(false);
+            modelBytes, modelGamePath, scopedCandidates, resourceCache,
+            dependencyWarnings, cancellationToken).ConfigureAwait(false);
         var preview = buildPreview
             ? await BuildAsync(
-                modelBytes, modelGamePath, candidates, bundleDirectory,
+                modelBytes, modelGamePath, scopedCandidates, bundleDirectory,
                 excludeBodyAndGeneralMaterials, resourceCache, cancellationToken).ConfigureAwait(false)
             : null;
-        return new MaterialImportBundleResult(dependencies, preview);
+        return new MaterialImportBundleResult(dependencies, preview, dependencyWarnings);
     }
 
     private async Task<ResourceDependencyManifest?> BuildDependencyManifestAsync(
@@ -88,11 +101,11 @@ public sealed class MaterialPreviewBundleBuilder
         string modelGamePath,
         IReadOnlyCollection<MaterialResourceCandidate> candidates,
         Dictionary<string, ResolvedResource?> resourceCache,
+        List<string> warnings,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var warnings = new List<string>();
             var resources = BuildResourceMap(candidates, warnings);
             var materialNames = ReadModelMaterials(modelBytes)
                 .Where(name => !string.IsNullOrWhiteSpace(name))
@@ -116,18 +129,27 @@ public sealed class MaterialPreviewBundleBuilder
                 var resolvedMaterial = await ResolveResourceAsync(
                     materialPath, resources, MaxMaterialBytes, resourceCache, cancellationToken).ConfigureAwait(false);
                 if (resolvedMaterial is null)
+                {
+                    warnings.Add($"Could not read material dependency: {materialPath}");
                     return null;
+                }
                 var mtrl = LooseLuminaFile.Load<MtrlFile>(resolvedMaterial.Value.Bytes);
-                var materialLocator = CreateLocator(materialPath, resolvedMaterial.Value);
+                var materialLocator = CreateLocator(materialPath, resolvedMaterial.Value, candidates);
                 if (materialLocator is null)
+                {
+                    warnings.Add($"Could not preserve the source location for material: {materialPath}");
                     return null;
+                }
 
                 var textures = new List<TextureDependency>();
                 foreach (var textureOffset in mtrl.TextureOffsets)
                 {
                     var storedPath = NormaliseGamePath(ReadString(mtrl.Strings, textureOffset.Offset));
                     if (!IsSafeGameResourcePath(storedPath, ".tex"))
+                    {
+                        warnings.Add($"Material contains an unsafe texture path: {storedPath}");
                         return null;
+                    }
                     var effectivePath = Dx11TexturePath(storedPath, textureOffset.Flags);
                     var resourceGamePath = effectivePath;
                     var resolvedTexture = await ResolveResourceAsync(
@@ -141,10 +163,16 @@ public sealed class MaterialPreviewBundleBuilder
                         resourceGamePath = storedPath;
                     }
                     if (resolvedTexture is null)
+                    {
+                        warnings.Add($"Could not read texture dependency: {effectivePath}");
                         return null;
-                    var textureLocator = CreateLocator(resourceGamePath, resolvedTexture.Value);
+                    }
+                    var textureLocator = CreateLocator(resourceGamePath, resolvedTexture.Value, candidates);
                     if (textureLocator is null)
+                    {
+                        warnings.Add($"Could not preserve the source location for texture: {resourceGamePath}");
                         return null;
+                    }
                     textures.Add(new TextureDependency
                     {
                         StoredGamePath = storedPath,
@@ -163,13 +191,63 @@ public sealed class MaterialPreviewBundleBuilder
                 });
             }
 
-            return new ResourceDependencyManifest { Materials = materials };
+            return new ResourceDependencyManifest
+            {
+                Materials = materials,
+                Manipulations = new System.Text.Json.Nodes.JsonArray(),
+            };
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _log.Warning(e, "Could not capture mashup resource dependencies.");
+            warnings.Add($"Dependency capture failed: {e.Message}");
             return null;
         }
+    }
+
+    internal static IReadOnlyList<MaterialResourceCandidate> ScopeResourceCandidates(
+        IReadOnlyCollection<MaterialResourceCandidate> candidates,
+        IReadOnlyCollection<string>? preferredOptionMemberships,
+        ICollection<string> warnings)
+    {
+        if (preferredOptionMemberships is null)
+            return candidates.ToArray();
+
+        var preferred = preferredOptionMemberships.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var scoped = new List<MaterialResourceCandidate>();
+        foreach (var group in candidates.GroupBy(
+                     candidate => NormaliseGamePath(candidate.GamePath),
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            var unique = group
+                .GroupBy(candidate => candidate.ActualPath, StringComparer.OrdinalIgnoreCase)
+                .Select(items => items.First())
+                .ToArray();
+            var selected = unique.Where(candidate =>
+                    candidate.OptionMemberships?.Any(preferred.Contains) == true)
+                .ToArray();
+            if (selected.Length == 0)
+                selected = unique.Where(candidate =>
+                        candidate.OptionMemberships?.Contains("default", StringComparer.OrdinalIgnoreCase) == true)
+                    .ToArray();
+            if (selected.Length == 0)
+                selected = unique.Where(candidate => candidate.OptionMemberships is null ||
+                                                      candidate.OptionMemberships.Count == 0)
+                    .ToArray();
+
+            if (selected.Length > 1)
+            {
+                var labels = selected
+                    .Select(candidate => string.IsNullOrWhiteSpace(candidate.OptionLabel)
+                        ? "Unmapped"
+                        : candidate.OptionLabel!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase);
+                warnings.Add(
+                    $"Ambiguous dependency {group.Key} in options: {string.Join(", ", labels)}");
+            }
+            scoped.AddRange(selected);
+        }
+        return scoped;
     }
 
     private async Task<MaterialPreviewBundleResult> BuildAsync(
@@ -588,7 +666,10 @@ public sealed class MaterialPreviewBundleBuilder
         return resolved;
     }
 
-    private SourceResourceLocator? CreateLocator(string gamePath, ResolvedResource resource)
+    private SourceResourceLocator? CreateLocator(
+        string gamePath,
+        ResolvedResource resource,
+        IReadOnlyCollection<MaterialResourceCandidate> candidates)
     {
         var hash = Convert.ToHexString(SHA256.HashData(resource.Bytes)).ToLowerInvariant();
         if (resource.ActualPath is null)
@@ -600,6 +681,14 @@ public sealed class MaterialPreviewBundleBuilder
                 Sha256 = hash,
             };
         }
+
+        var knownSource = candidates.FirstOrDefault(candidate =>
+            string.Equals(NormaliseGamePath(candidate.GamePath), NormaliseGamePath(gamePath),
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(candidate.ActualPath, resource.ActualPath, StringComparison.OrdinalIgnoreCase));
+        var knownLocator = CreateKnownSourceLocator(gamePath, knownSource, hash);
+        if (knownLocator is not null)
+            return knownLocator;
 
         var source = _sourceAttributor?.AttributionFor(resource.ActualPath);
         if (source is not { State: ResourceSourceState.LoadedMod } ||
@@ -613,6 +702,26 @@ public sealed class MaterialPreviewBundleBuilder
             SourceModDirectory = source.ModDirectory,
             SourceModRootPath = source.ModRootPath,
             SourceRelativePath = source.RelativePath,
+            Sha256 = hash,
+        };
+    }
+
+    internal static SourceResourceLocator? CreateKnownSourceLocator(
+        string gamePath,
+        MaterialResourceCandidate? source,
+        string hash)
+    {
+        if (source is null ||
+            string.IsNullOrWhiteSpace(source.SourceModDirectory) ||
+            string.IsNullOrWhiteSpace(source.SourceRelativePath))
+            return null;
+        return new SourceResourceLocator
+        {
+            Kind = "mod",
+            GamePath = NormaliseGamePath(gamePath),
+            SourceModDirectory = source.SourceModDirectory,
+            SourceModRootPath = source.SourceModRootPath,
+            SourceRelativePath = source.SourceRelativePath,
             Sha256 = hash,
         };
     }

@@ -34,12 +34,12 @@ def _armature_for_object(obj):
 
 
 @contextmanager
-def _clean_export_state(export_objects):
-    """Temporarily export meshes at neutral scale and armature rest pose.
+def _clean_export_state(export_objects, reset_scaling=False):
+    """Temporarily export armatures at rest pose and optionally neutral scale.
 
     Blender users may pose or scale an imported model for display. FFXIV MDL
-    exports must instead be evaluated from the armature rest pose at neutral
-    scale, so capture all affected state and restore it even if export fails.
+    exports must be evaluated from the armature rest pose. Scale neutralization
+    is optional; every affected value is restored even if export fails.
     """
     objects = tuple(dict.fromkeys(export_objects or ()))
     armatures = tuple(
@@ -49,7 +49,10 @@ def _clean_export_state(export_objects):
             if (armature := _armature_for_object(obj)) is not None
         )
     )
-    scales = [(obj, obj.scale.copy()) for obj in (*objects, *armatures)]
+    scales = (
+        [(obj, obj.scale.copy()) for obj in (*objects, *armatures)]
+        if reset_scaling else []
+    )
     poses = [
         (
             armature,
@@ -141,7 +144,8 @@ def get_export_path(directory: Path, file_name: str, subfolder: bool, body_slot:
     return export_path
 
 def export_result(file_path: Path, file_format: str, logger: YetAnotherLogger=None, batch=False, export_objects=None) -> None:
-    with _clean_export_state(export_objects):
+    settings = get_settings()
+    with _clean_export_state(export_objects, settings.reset_scaling_on_export):
         bpy.context.evaluated_depsgraph_get().update()
         export = FileExport(file_path, file_format, logger=logger, batch=batch, export_objects=export_objects)
         export.export_template()
