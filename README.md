@@ -44,7 +44,7 @@ Note that you will not receive automatic feature and compatibility updates this 
 - In-place overwrites the exact model that you imported.
 - New Group sets up a new option group in the mod you imported from and automatically configures the paths for you.
 - (Existing group) creates a new option in an existing option group.
-- (Option in existing group overwrites the model file that is mapped to this option.
+- (Option in existing group) overwrites the model file that is mapped to this option.
 - Create Mashup creates a new mod or group in an existing mod containing the combined model + all required textures and materials. Only visible with 2+ mods imported into the scene, otherwise switches to "Create as new mod".
 The context dropdown controls which mod structure is being shown.
 5. Hit export. Immediately see the result ingame.
@@ -52,13 +52,15 @@ Creating new options on existing mods requires you to refresh the view in Penumb
 
 ## Additional notes
 
+The Blender plugin manages it's mappings to mods via the automatically created "Instant Edit [context_id]" collections. To ensure the addon works properly, do not move, rename, delete or otherwise edit them until you exported the model you were working on. You can easily remove an old context by removing the collection along with it's context afterwards, should you wish to continue other work in the same scene.
+
 ### Main Features
 Main Features
 - One-click import of models through an on-screen browser or simplified mod file browser.
 - Easy export context selection. Export in-place, pick any existing mod option or easily create a new one. The plugin sets up everything for you automatically.
 - Instant creation of mashups. The plugin automatically sets up all required textures, materials and paths for you.
 - Seamlessly integrates into any existing Blender scene, independent of body, devkit, etc.
-- Simple Importer / Exporter for general FBX and MDL files with various QoL functions and automations optimized for FFXIV workflows 
+- Simple Importer / Exporter for general FBX and MDL files with various QoL functions and automations optimized for FFXIV workflows
 
 ### Material preview
 
