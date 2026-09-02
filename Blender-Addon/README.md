@@ -21,12 +21,18 @@ plus a standalone Simple Import/Export panel.
   scenes into the prefix naming convention.
 - Quick Export back to the original source mod, including variants and optional
   Penumbra setup.
-- Saves a single-context export as a self-contained new Penumbra mod with its
-  captured material and texture dependencies.
-- Creates self-contained multi-context mashups as a new group in the active mod
-  or as a new Penumbra mod, with isolated material and texture dependencies.
-- Automatically shifts incoming MDL mesh groups away from visible conflicts
-  while preserving incoming part numbers and labels.
+- Saves a single-context export as a new Penumbra mod, bundling material and
+  texture files owned by participating mods.
+- Creates multi-context mashups as a new group in the active mod or as a new
+  Penumbra mod. The creation popup can optionally bundle eligible materials and
+  textures from non-participating mods. Vanilla resources and shared body/skin,
+  pube, and piercing materials remain pass-through dependencies; any remaining
+  required external mods are listed in the result and mod description.
+- Automatically collapses imported parts into existing matching-material mesh
+  groups, while shifting unmatched MDL groups away from visible conflicts.
+  Matching uses the complete normalized material path, with the shared
+  `_bibo.mtrl` body material as an intentional exception.
+- Includes an explicit **Auto-collapse materials** action for visible mesh groups.
 - Persists import authorization in the Dalamud plugin and reconnects saved scene
   contexts after Blender or plugin restarts.
 - Recovers export receipts after network timeouts without submitting a second

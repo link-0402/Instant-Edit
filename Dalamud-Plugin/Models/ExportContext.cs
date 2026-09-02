@@ -259,4 +259,5 @@ public sealed record ExportReceipt(
     IReadOnlyList<string>? Warnings = null,
     string? TargetFilePath = null,
     string? DestinationName = null,
-    InstantEditImportContext? Context = null);
+    InstantEditImportContext? Context = null,
+    IReadOnlyList<string>? RequiredExternalMods = null);

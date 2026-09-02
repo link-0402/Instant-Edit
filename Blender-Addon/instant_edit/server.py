@@ -2,7 +2,9 @@
 import json
 import socket
 import threading
+import tomllib
 import uuid
+from pathlib import Path
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue       import Empty, Full, Queue
@@ -25,6 +27,36 @@ _server              = None
 _thread               = None
 _port                 = 42424
 _server_error         = ""
+
+
+def _load_addon_version(manifest_path: Path | None = None) -> str | None:
+    """Read the installed extension version from its manifest."""
+    manifest_path = manifest_path or Path(__file__).resolve().parents[1] / "blender_manifest.toml"
+    try:
+        with manifest_path.open("rb") as manifest_file:
+            version = tomllib.load(manifest_file).get("version")
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
+ADDON_VERSION = _load_addon_version()
+
+
+def _status_payload() -> dict:
+    return {
+        "ok": True,
+        "ready": True,
+        "addon": "XIV Instant Edit",
+        "addonId": "xiv_instant_edit",
+        "addonVersion": ADDON_VERSION,
+        "capabilities": [
+            IMPORT_OPTIONS_CAPABILITY,
+            MATERIAL_PREVIEW_CAPABILITY,
+            CACHE_HANDOFF_CAPABILITY,
+            VANILLA_CONTEXT_CAPABILITY,
+        ],
+    }
 
 
 def _string(data: dict, *names: str, required: bool = False, max_length: int = 1024) -> str:
@@ -79,18 +111,7 @@ class _ImportHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.rstrip("/") == "/status":
-            self._respond(200, {
-                "ok": True,
-                "ready": True,
-                "addon": "XIV Instant Edit",
-                "addonId": "xiv_instant_edit",
-                "capabilities": [
-                    IMPORT_OPTIONS_CAPABILITY,
-                    MATERIAL_PREVIEW_CAPABILITY,
-                    CACHE_HANDOFF_CAPABILITY,
-                    VANILLA_CONTEXT_CAPABILITY,
-                ],
-            })
+            self._respond(200, _status_payload())
         else:
             self._respond(404, {"ok": False, "error": "not found"})
 

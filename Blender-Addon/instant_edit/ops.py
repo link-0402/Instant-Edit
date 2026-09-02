@@ -1,11 +1,13 @@
 # Modified for XIV Instant Edit, 2026.
 import bpy
-from bpy.props import StringProperty, EnumProperty
+from bpy.props import BoolProperty, StringProperty, EnumProperty
 import json
 import hashlib
 import re
+import threading
 import uuid
 import time
+from queue import Empty, Queue
 from urllib.error import URLError
 
 from pathlib   import Path
@@ -33,6 +35,17 @@ EXPORT_STATUS_POLL_ATTEMPTS = 30
 INVALID_VARIANT_CHARS = frozenset('<>:"/\\|?*')
 MASHUP_TARGET = "CREATE_MASHUP"
 SAVE_NEW_MOD_TARGET = "SAVE_NEW_MOD"
+MATERIAL_COVERAGE_SCHEMA = "instant-edit.material-coverage"
+MATERIAL_COVERAGE_WARNING = (
+    "Warning: the output mod is missing material or texture files from one or more non-active source mods. "
+    "Use Create Mashup to include them."
+)
+MATERIAL_COVERAGE_CACHE_SECONDS = 10.0
+_material_coverage_cache: dict[str, tuple[float, bool]] = {}
+_material_coverage_pending: set[str] = set()
+_material_coverage_results: Queue = Queue()
+_material_coverage_lock = threading.Lock()
+_material_coverage_generation = 0
 
 
 class PluginResponseError(ValueError):
@@ -61,8 +74,8 @@ def _object_material_name(obj) -> str:
     return _normalize_mashup_material(value)
 
 
-def mashup_export_selection(context: Context, ref=None, *, minimum_contexts: int = 2):
-    """Return (objects, refs, material map) for a self-contained export."""
+def _collect_export_context_materials(context: Context, ref):
+    """Collect context/material dependencies from exactly the selected export scope."""
     ref = ref or export_destination_context(context)
     props = get_instant_edit_props()
     objects = export_objects_for_scope(ref, getattr(props, "export_scope", "VISIBLE"))
@@ -84,6 +97,15 @@ def mashup_export_selection(context: Context, ref=None, *, minimum_contexts: int
             context_materials.append(material)
         object_contexts[obj.as_pointer()] = (context_id, material)
 
+    ordered_refs = [refs[key] for key in context_order if key in materials]
+    return objects, ordered_refs, materials, object_contexts
+
+
+def mashup_export_selection(context: Context, ref=None, *, minimum_contexts: int = 2):
+    """Return (objects, refs, material map) for a dependency-aware export."""
+    ref = ref or export_destination_context(context)
+    objects, ordered_refs, materials, object_contexts = _collect_export_context_materials(context, ref)
+
     if ref.context_id not in materials:
         raise ContextValidationError("The active Context must contribute at least one exported mesh.")
     if len(materials) < minimum_contexts:
@@ -92,6 +114,7 @@ def mashup_export_selection(context: Context, ref=None, *, minimum_contexts: int
             if minimum_contexts > 1 else
             "Save to new mod requires visible exported meshes from a Context."
         )
+    refs = {item.context_id: item for item in ordered_refs}
     pending = [refs[context_id] for context_id in materials if refs[context_id].destination_state != "ready"]
     if pending:
         raise ContextValidationError("Create the Penumbra mod for every game-data Context before making a Mashup.")
@@ -102,7 +125,6 @@ def mashup_export_selection(context: Context, ref=None, *, minimum_contexts: int
             "Dependency capture failed; re-import after resolving the missing resources: "
             + ", ".join(sorted({item.source_mod_name for item in incomplete})))
 
-    ordered_refs = [refs[key] for key in context_order if key in materials]
     return objects, ordered_refs, materials, object_contexts
 
 
@@ -123,8 +145,185 @@ def mashup_target_state(context: Context, ref=None) -> tuple[bool, bool, str]:
         return True, False, str(error)
 
 
+def _material_coverage_cache_key(context: Context, ref, refs, materials, objects) -> str:
+    props = get_instant_edit_props()
+    composition = {
+        "scope": getattr(props, "export_scope", "VISIBLE"),
+        "excluded": getattr(getattr(props, "export_excluded_mesh", None), "name", ""),
+        "active": ref.context_id,
+        "contexts": [
+            {
+                "contextId": item.context_id,
+                "capability": item.capability,
+                "sourceMod": item.source_mod_directory,
+                "materials": list(materials[item.context_id]),
+            }
+            for item in refs
+        ],
+        "objects": [
+            (
+                getattr(obj, "name", ""),
+                context_id_for_object(obj) or ref.context_id,
+                _object_material_name(obj),
+            )
+            for obj in objects
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(composition, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _material_coverage_payload(ref, contributors: list[dict]) -> dict:
+    return {
+        "schema": MATERIAL_COVERAGE_SCHEMA,
+        "version": 1,
+        "pluginInstanceId": ref.plugin_instance_id,
+        "contextId": ref.context_id,
+        "capability": ref.capability,
+        "contributors": contributors,
+    }
+
+
+def _request_material_coverage(callback_port: int, payload: dict) -> bool:
+    try:
+        status, body = post_json(
+            callback_port, "/material-coverage", payload,
+            timeout=3, max_response_size=MAX_PLUGIN_RESPONSE_SIZE)
+        if not 200 <= status < 300:
+            raise _plugin_error_from_body(body, status)
+        result = _decode_plugin_response(body, status)
+        available = result.get("available")
+        covered = result.get("covered")
+        if not isinstance(available, bool) or not isinstance(covered, bool):
+            raise ValueError("plugin returned an invalid material coverage response")
+        return available and not covered
+    except (URLError, TimeoutError, OSError, ValueError, UnicodeError):
+        # Coverage is advisory. An unavailable or older plugin must not alter
+        # the ordinary target eligibility or selection behavior.
+        return False
+
+
+def _material_coverage_worker(
+    generation: int,
+    cache_key: str,
+    callback_port: int,
+    payload: dict,
+) -> None:
+    try:
+        warning = _request_material_coverage(callback_port, payload)
+    except Exception:
+        warning = False
+    _material_coverage_results.put((generation, cache_key, warning))
+
+
+def _schedule_material_coverage(
+    cache_key: str,
+    callback_port: int,
+    payload: dict,
+) -> bool:
+    with _material_coverage_lock:
+        # Keep the advisory probe single-flight. If the composition changes
+        # while a scan is running, the completion redraw schedules the newest
+        # composition without stacking Penumbra scans behind the UI.
+        if _material_coverage_pending:
+            return False
+        _material_coverage_pending.add(cache_key)
+        generation = _material_coverage_generation
+    try:
+        threading.Thread(
+            target=_material_coverage_worker,
+            args=(generation, cache_key, callback_port, payload),
+            name="XIV Instant Edit material coverage",
+            daemon=True,
+        ).start()
+    except RuntimeError:
+        with _material_coverage_lock:
+            _material_coverage_pending.discard(cache_key)
+        return False
+    return True
+
+
+def material_coverage_probe_pending() -> bool:
+    with _material_coverage_lock:
+        return bool(_material_coverage_pending)
+
+
+def poll_material_coverage_results() -> float:
+    """Apply background probe results on Blender's main thread."""
+    changed = False
+    while True:
+        try:
+            generation, cache_key, warning = _material_coverage_results.get_nowait()
+        except Empty:
+            break
+        with _material_coverage_lock:
+            if generation != _material_coverage_generation:
+                continue
+            _material_coverage_pending.discard(cache_key)
+            _material_coverage_cache[cache_key] = (
+                time.monotonic() + MATERIAL_COVERAGE_CACHE_SECONDS,
+                bool(warning),
+            )
+            changed = True
+
+    if changed:
+        try:
+            for window in bpy.context.window_manager.windows:
+                for area in window.screen.areas:
+                    area.tag_redraw()
+        except (AttributeError, ReferenceError, RuntimeError):
+            pass
+    return 0.1 if material_coverage_probe_pending() else 1.0
+
+
+def reset_material_coverage_state() -> None:
+    global _material_coverage_generation
+    with _material_coverage_lock:
+        _material_coverage_generation += 1
+        _material_coverage_cache.clear()
+        _material_coverage_pending.clear()
+    while True:
+        try:
+            _material_coverage_results.get_nowait()
+        except Empty:
+            break
+
+
+def material_coverage_warning_state(context: Context, ref=None, *, cache_only: bool = False) -> bool:
+    """Return whether the current export composition is missing non-active materials."""
+    try:
+        ref = ref or export_destination_context(context)
+        objects, refs, materials, _ = _collect_export_context_materials(context, ref)
+        if ref.context_id not in materials or len(materials) < 2:
+            return False
+        cache_key = _material_coverage_cache_key(context, ref, refs, materials, objects)
+        now = time.monotonic()
+        with _material_coverage_lock:
+            cached = _material_coverage_cache.get(cache_key)
+            if cached is not None:
+                expires_at, warning = cached
+                if expires_at > now:
+                    return warning
+                _material_coverage_cache.pop(cache_key, None)
+            probe_running = bool(_material_coverage_pending)
+        if cache_only:
+            return False
+
+        if not probe_running:
+            contributors = _mashup_contributor_payload(refs, materials)
+            _schedule_material_coverage(
+                cache_key,
+                ref.callback_port,
+                _material_coverage_payload(ref, contributors),
+            )
+        return False
+    except (ContextValidationError, AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def save_new_mod_target_state(context: Context, ref=None) -> tuple[bool, bool, str]:
-    """Return whether the single-context self-contained target is available."""
+    """Return whether the single-context new-mod target is available."""
     try:
         ref = ref or export_destination_context(context)
         objects = export_objects_for_scope(
@@ -676,8 +875,11 @@ class SelectVariantTarget(Operator):
     selection_id: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
 
     @classmethod
-    def description(cls, _context, properties):
+    def description(cls, context, properties):
         selection_id = getattr(properties, "selection_id", "")
+        if selection_id != MASHUP_TARGET and material_coverage_warning_state(
+                context, cache_only=True):
+            return MATERIAL_COVERAGE_WARNING
         if selection_id == "NEW_GROUP":
             return "Creates a new Group on Export. Define group and option names below."
         if selection_id == IN_PLACE_TARGET:
@@ -685,7 +887,7 @@ class SelectVariantTarget(Operator):
         if selection_id == MASHUP_TARGET:
             return "Combines the visible exported meshes and their material and texture dependencies."
         if selection_id == SAVE_NEW_MOD_TARGET:
-            return "Saves the visible exported model as a self-contained new Penumbra mod."
+            return "Saves the visible model as a new mod, bundling participating-mod resources and retaining external dependencies."
         try:
             target = next(
                 (
@@ -772,19 +974,45 @@ class QuickExport(Operator):
         return {"FINISHED"}
 
 
+def mashup_name_operator_args(
+    destination: str,
+    bundle_external_dependencies: bool,
+) -> dict:
+    return {
+        "destination": destination,
+        "bundle_external_dependencies": bool(bundle_external_dependencies),
+        "name": "Mashup" if destination == "ACTIVE_MOD" else "",
+    }
+
+
 class MashupDestination(Operator):
     bl_idname = "xiv_ie.mashup_destination"
     bl_label = "Create Mashup"
-    bl_description = "Choose where the self-contained mashup will be created"
+    bl_description = "Choose where the dependency-aware mashup will be created"
 
     destination: EnumProperty(
         name="Destination",
         items=[
             ("ACTIVE_MOD", "Combine in active context mod...", "Create a new group in the active Context mod"),
-            ("NEW_MOD", "Create as new mod...", "Create a new self-contained Penumbra mod"),
+            ("NEW_MOD", "Create as new mod...", "Create a new Penumbra mod and list required external dependencies"),
         ],
         default="ACTIVE_MOD",
     )  # type: ignore
+
+    bundle_external_dependencies: BoolProperty(
+        name="Bundle external dependencies",
+        description=(
+            "Copy eligible materials and textures from non-participating mods into the mashup; "
+            "shared body, skin, pube, and piercing materials remain external"
+        ),
+        default=False,
+    )  # type: ignore
+
+    def draw(self, _context):
+        self.layout.prop(self, "destination")
+        self.layout.prop(self, "bundle_external_dependencies")
+        help_box = self.layout.box()
+        help_box.label(text="Shared skin, pube, and piercing materials remain external.", icon="INFO")
 
     def invoke(self, context: Context, _event):
         try:
@@ -797,8 +1025,10 @@ class MashupDestination(Operator):
     def execute(self, _context):
         return bpy.ops.xiv_ie.mashup_name(
             "INVOKE_DEFAULT",
-            destination=self.destination,
-            name="Mashup" if self.destination == "ACTIVE_MOD" else "",
+            **mashup_name_operator_args(
+                self.destination,
+                self.bundle_external_dependencies,
+            ),
         )
 
 
@@ -808,6 +1038,10 @@ class MashupName(Operator):
     bl_description = "Name the Penumbra mashup destination"
 
     destination: StringProperty(options={"HIDDEN", "SKIP_SAVE"})  # type: ignore
+    bundle_external_dependencies: BoolProperty(
+        default=False,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )  # type: ignore
     name: StringProperty(name="Name", default="", maxlen=120)  # type: ignore
 
     def draw(self, _context):
@@ -822,7 +1056,12 @@ class MashupName(Operator):
 
     def execute(self, context: Context):
         try:
-            perform_mashup_export(context, self.destination, self.name)
+            perform_mashup_export(
+                context,
+                self.destination,
+                self.name,
+                bundle_external_dependencies=self.bundle_external_dependencies,
+            )
         except Exception as error:
             props = get_instant_edit_props()
             props.last_status = f"Mashup failed: {error}"
@@ -837,7 +1076,7 @@ class MashupName(Operator):
 class SaveNewModName(Operator):
     bl_idname = "xiv_ie.save_new_mod_name"
     bl_label = "Save to new mod"
-    bl_description = "Name the self-contained Penumbra mod"
+    bl_description = "Name the new Penumbra mashup mod"
 
     name: StringProperty(name="Mod Name", default="", maxlen=120)  # type: ignore
 
@@ -1013,6 +1252,15 @@ def _decode_plugin_response(body: bytes, status: int) -> dict:
     if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
         raise ValueError("plugin returned invalid warnings")
     result["warnings"] = [item[:2048] for item in warnings[:64] if item]
+    required_external_mods = result.get("requiredExternalMods", [])
+    if (
+        not isinstance(required_external_mods, list) or
+        any(not isinstance(item, str) for item in required_external_mods)
+    ):
+        raise ValueError("plugin returned invalid external mod requirements")
+    result["requiredExternalMods"] = [
+        item[:160] for item in required_external_mods[:64] if item
+    ]
     return result
 
 
@@ -1092,13 +1340,17 @@ def _send_plugin_mashup(ref, payload: dict) -> dict:
     return _send_plugin_export_to(ref, payload, "/mashup/export")
 
 
-def _send_plugin_mashup_plan(ref, contributors: list[dict]) -> dict:
+def _send_plugin_mashup_plan(
+    ref, contributors: list[dict], destination: str, bundle_external_dependencies: bool = False
+) -> dict:
     payload = {
         "schema": "instant-edit.mashup-plan",
         "version": 1,
         "pluginInstanceId": ref.plugin_instance_id,
         "contextId": ref.context_id,
         "capability": ref.capability,
+        "destination": destination,
+        "bundleExternalDependencies": bool(bundle_external_dependencies),
         "contributors": contributors,
     }
     result = _send_plugin_export_to(ref, payload, "/mashup/plan")
@@ -1239,6 +1491,7 @@ def perform_mashup_export(
     name: str,
     *,
     allow_single_context: bool = False,
+    bundle_external_dependencies: bool = False,
 ) -> Path:
     name = (name or "").strip()
     if not name or len(name) > 120 or any(ord(char) < 32 for char in name):
@@ -1267,8 +1520,10 @@ def perform_mashup_export(
         raise ValueError("Not Triangulated: " + ", ".join(not_triangulated) + ".")
 
     contributors = _mashup_contributor_payload(refs, materials)
+    plugin_destination = "active_mod" if destination == "ACTIVE_MOD" else "new_mod"
     try:
-        plan = _send_plugin_mashup_plan(ref, contributors)
+        plan = _send_plugin_mashup_plan(
+            ref, contributors, plugin_destination, bundle_external_dependencies)
     except PluginResponseError as error:
         if error.status != 410 and not (
             error.status == 401 and error.code == "plugin_instance_mismatch"
@@ -1284,7 +1539,8 @@ def perform_mashup_export(
         export_objects, refs, materials, object_contexts = mashup_export_selection(
             context, ref, minimum_contexts=minimum_contexts)
         contributors = _mashup_contributor_payload(refs, materials)
-        plan = _send_plugin_mashup_plan(ref, contributors)
+        plan = _send_plugin_mashup_plan(
+            ref, contributors, plugin_destination, bundle_external_dependencies)
     assignments = _mashup_assignment_map(plan, materials)
 
     export_id = uuid.uuid4().hex
@@ -1319,7 +1575,8 @@ def perform_mashup_export(
             "filePath": str(mdl_path),
             "size": len(data),
             "sha256": digest,
-            "destination": "active_mod" if destination == "ACTIVE_MOD" else "new_mod",
+            "destination": plugin_destination,
+            "bundleExternalDependencies": bool(bundle_external_dependencies),
             "name": name,
             "planFingerprint": plan["planFingerprint"],
             "contributors": contributors,

@@ -6,6 +6,28 @@ using InstantEdit.Models;
 
 namespace InstantEdit.Services;
 
+public enum BlenderConnectionState
+{
+    Offline,
+    Online,
+    VersionMismatch,
+}
+
+public sealed record BlenderStatus(bool Reachable, string? AddonVersion)
+{
+    public BlenderConnectionState Classify(string expectedPluginVersion)
+    {
+        if (!Reachable)
+            return BlenderConnectionState.Offline;
+
+        var expected = BlenderClient.NormalizeVersion(expectedPluginVersion);
+        var actual = BlenderClient.NormalizeVersion(AddonVersion);
+        return !string.IsNullOrEmpty(expected) && string.Equals(actual, expected, StringComparison.Ordinal)
+            ? BlenderConnectionState.Online
+            : BlenderConnectionState.VersionMismatch;
+    }
+}
+
 /// <summary> Talks to the HTTP listener hosted by XIV Instant Edit in Blender. </summary>
 public sealed class BlenderClient : IDisposable
 {
@@ -17,18 +39,97 @@ public sealed class BlenderClient : IDisposable
     private readonly HttpClient _http;
     private readonly IPluginLog _log;
     private readonly ExportContextRegistry _contexts;
+    private readonly bool _disposeHttp;
 
     public BlenderClient(IPluginLog log, ExportContextRegistry contexts)
-    {
-        _log         = log;
-        _contexts    = contexts;
-        _http        = new HttpClient
+        : this(log, contexts, new HttpClient
         {
             // Import handoff can include a bounded material-preview bundle. The
             // caller supplies short cancellation tokens for status probes, while
             // an actual local handoff is allowed enough time to copy large files.
             Timeout = TimeSpan.FromMinutes(2),
-        };
+        }, true)
+    {
+    }
+
+    internal BlenderClient(IPluginLog log, ExportContextRegistry contexts, HttpClient http)
+        : this(log, contexts, http, false)
+    {
+    }
+
+    private BlenderClient(IPluginLog log, ExportContextRegistry contexts, HttpClient http, bool disposeHttp)
+    {
+        _log         = log;
+        _contexts    = contexts;
+        _http        = http;
+        _disposeHttp = disposeHttp;
+    }
+
+    public static string CurrentPluginVersion
+    {
+        get
+        {
+            var version = typeof(Plugin).Assembly.GetName().Version;
+            return version is null || version.Build < 0
+                ? "unknown"
+                : $"{version.Major}.{version.Minor}.{version.Build}";
+        }
+    }
+
+    public static string NormalizeVersion(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version) || !Version.TryParse(version.Trim(), out var parsed) || parsed.Build < 0)
+            return string.Empty;
+        return $"{parsed.Major}.{parsed.Minor}.{parsed.Build}";
+    }
+
+    public static string VersionMismatchMessage(string pluginVersion)
+        => $"Version mismatch. Verify Blender addon version is in sync with Plugin version {pluginVersion}.";
+
+    /// <summary>Reads the Blender add-on status and its declared release version.</summary>
+    public async Task<BlenderStatus> GetStatusAsync(int port, CancellationToken cancellationToken = default)
+    {
+        if (port is < 1 or > 65535)
+            return new BlenderStatus(false, null);
+
+        try
+        {
+            using var resp = await _http.GetAsync(
+                $"http://127.0.0.1:{port}/status",
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+                return new BlenderStatus(false, null);
+
+            var responseBody = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                using var document = JsonDocument.Parse(responseBody);
+                if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                    !document.RootElement.TryGetProperty("addonVersion", out var addonVersion) ||
+                    addonVersion.ValueKind != JsonValueKind.String)
+                    return new BlenderStatus(true, null);
+
+                var version = addonVersion.GetString();
+                return new BlenderStatus(true, string.IsNullOrWhiteSpace(version) ? null : version.Trim());
+            }
+            catch (JsonException)
+            {
+                return new BlenderStatus(true, null);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return new BlenderStatus(false, null);
+        }
+        catch (HttpRequestException)
+        {
+            return new BlenderStatus(false, null);
+        }
+        catch (InvalidOperationException)
+        {
+            return new BlenderStatus(false, null);
+        }
     }
 
     /// <summary>
@@ -37,31 +138,7 @@ public sealed class BlenderClient : IDisposable
     /// are reported as false rather than escaping to the UI thread.
     /// </summary>
     public async Task<bool> IsReachableAsync(int port, CancellationToken cancellationToken = default)
-    {
-        if (port is < 1 or > 65535)
-            return false;
-
-        try
-        {
-            using var resp = await _http.GetAsync(
-                $"http://127.0.0.1:{port}/status",
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken).ConfigureAwait(false);
-            return resp.IsSuccessStatusCode;
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
-        catch (HttpRequestException)
-        {
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
-    }
+        => (await GetStatusAsync(port, cancellationToken).ConfigureAwait(false)).Reachable;
 
     /// <summary>Returns whether the connected add-on advertises import options support.</summary>
     public async Task<bool> SupportsImportOptionsAsync(int port, CancellationToken cancellationToken = default)
@@ -259,5 +336,8 @@ public sealed class BlenderClient : IDisposable
     }
 
     public void Dispose()
-        => _http.Dispose();
+    {
+        if (_disposeHttp)
+            _http.Dispose();
+    }
 }

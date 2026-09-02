@@ -2,6 +2,7 @@
 import bpy
 import numpy as np
 import random
+import uuid
 
 from bpy.types       import Mesh, Material
 from numpy           import ushort, byte
@@ -27,10 +28,10 @@ def mesh_group_conflict_offset(incoming_groups, visible_groups) -> int:
     return offset
 
 
-def visible_mesh_group_ids() -> set[int]:
+def visible_mesh_group_ids(objects=None) -> set[int]:
     """Read numeric groups from visible mesh objects, ignoring unrelated names."""
     groups = set()
-    for obj in getattr(bpy.context, "visible_objects", ()):
+    for obj in objects if objects is not None else getattr(bpy.context, "visible_objects", ()):
         if obj.type != "MESH":
             continue
         try:
@@ -170,6 +171,7 @@ class ModelImport:
     def _import_mdl(self, model: XIVModel, import_name: str) -> tuple:
         self.model    = model
         self.obj_name = import_name
+        self.import_instance_id = uuid.uuid4().hex
         self.created_mesh_objects = []
         self.material_cache = {}
 
@@ -184,10 +186,16 @@ class ModelImport:
             for mesh_idx, mesh in enumerate(model.meshes[:mesh_count])
             if mesh.vertex_count > 0
         }
+        existing_visible_objects = tuple(
+            obj
+            for obj in getattr(bpy.context, "visible_objects", ())
+            if obj.type == "MESH"
+        )
         settings = getattr(getattr(bpy.context, "scene", None), "xiv_ie_settings", None)
+        resolve_mesh_group_conflicts = getattr(settings, "resolve_mesh_group_conflicts", True)
         self.mesh_group_offset = (
-            mesh_group_conflict_offset(incoming_groups, visible_mesh_group_ids())
-            if getattr(settings, "resolve_mesh_group_conflicts", True)
+            mesh_group_conflict_offset(incoming_groups, visible_mesh_group_ids(existing_visible_objects))
+            if resolve_mesh_group_conflicts
             else 0
         )
 
@@ -210,6 +218,11 @@ class ModelImport:
             self.mesh_idx, self.mesh = mesh_idx, mesh
             
             self._read_xiv_mesh(lod_buffer, indices)
+
+        if resolve_mesh_group_conflicts:
+            from ...materials import collapse_imported_materials
+
+            collapse_imported_materials(self.created_mesh_objects, existing_visible_objects)
 
         return tuple(self.created_mesh_objects)
             
@@ -325,6 +338,7 @@ class ModelImport:
         new_obj["material_index"] = int(self.mesh.material_idx)
         new_obj["mesh_index"] = int(effective_mesh_idx)
         new_obj["submesh_index"] = int(self.submesh_idx)
+        new_obj["instant_edit_import_instance_id"] = self.import_instance_id
         if self.context_metadata:
             for key, value in self.context_metadata.items():
                 new_obj[key] = value

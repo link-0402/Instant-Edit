@@ -5,6 +5,7 @@ import importlib
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -129,6 +130,163 @@ def assert_mesh_group_conflict_resolution(addon) -> None:
                 bpy.data.meshes.remove(mesh)
 
 
+def assert_material_group_collapse(addon) -> None:
+    materials = importlib.import_module(f"{addon.__name__}.materials")
+    mesh_objects = []
+    body_material = "/mt_c0101b0001_bibo.mtrl"
+    alternate_body_material = "/mt_c0201b0001_bibo.mtrl"
+    other_material = "/mt_c0101e0001_top_a.mtrl"
+
+    def create(name: str, material_path: str | None = None, import_id: str = "", hidden: bool = False):
+        mesh = bpy.data.meshes.new(f"{name} Data")
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        mesh.update()
+        obj = bpy.data.objects.new(name, mesh)
+        bpy.context.collection.objects.link(obj)
+        if material_path is not None:
+            obj["xiv_material"] = material_path
+        if import_id:
+            obj["instant_edit_import_instance_id"] = import_id
+        if hidden:
+            obj.hide_set(True)
+        mesh_objects.append(obj)
+        return obj
+
+    try:
+        existing_target = [
+            create(f"0.{part} Existing Body {part}", body_material, "existing-target")
+            for part in range(4)
+        ]
+        existing_higher = create("1.3 Existing Body", alternate_body_material, "existing-higher")
+        imported_body = [
+            create(f"2.{part} Imported Body", alternate_body_material, "incoming-body")
+            for part in range(3)
+        ]
+        imported_body_lod = create(
+            "2.0 Imported Body LOD1",
+            alternate_body_material,
+            "incoming-body",
+        )
+        imported_other = create("2.3 Imported Other", other_material, "incoming-body")
+        mixed_lod0 = create("3.0 Mixed Material", body_material, "mixed")
+        mixed_lod1 = create("3.0 Mixed Material LOD1", other_material, "mixed")
+        missing_material = create("3.1 Missing Material", None, "missing")
+
+        before_existing = {obj.as_pointer(): obj.name for obj in existing_target + [existing_higher]}
+        moved = materials.collapse_imported_materials(
+            imported_body + [imported_body_lod, imported_other, mixed_lod0, mixed_lod1, missing_material],
+            existing_target + [existing_higher],
+        )
+        if moved != 3:
+            raise AssertionError(f"Imported material collapse moved {moved} parts instead of 3")
+        expected_body_names = {
+            imported_body[0]: "0.4 Imported Body",
+            imported_body[1]: "0.5 Imported Body",
+            imported_body[2]: "0.6 Imported Body",
+            imported_body_lod: "0.4 Imported Body LOD1",
+        }
+        for obj, expected in expected_body_names.items():
+            if obj.name != expected:
+                raise AssertionError(f"Imported material collapse produced {obj.name!r}, expected {expected!r}")
+        if existing_higher.name != "1.3 Existing Body":
+            raise AssertionError("Import-only material collapse moved an existing part")
+        if not imported_other.name.startswith("2.3 "):
+            raise AssertionError("Import-only material collapse moved a different-material part")
+        if not mixed_lod0.name.startswith("3.0 ") or not mixed_lod1.name.startswith("3.0 "):
+            raise AssertionError("Mixed-material LOD part was not skipped")
+        if not missing_material.name.startswith("3.1 "):
+            raise AssertionError("Missing-material part was not skipped")
+        if any(obj.name != before_existing[obj.as_pointer()] for obj in existing_target + [existing_higher]):
+            raise AssertionError("Import-only material collapse changed an existing object")
+
+        cross_race_lod = create(
+            "8.0 Cross-race Bibo LOD0",
+            alternate_body_material,
+            "cross-race-bibo",
+        )
+        cross_race_lod1 = create(
+            "8.0 Cross-race Bibo LOD1",
+            body_material,
+            "cross-race-bibo",
+        )
+        cross_race_existing = [
+            obj for obj in mesh_objects
+            if obj not in (cross_race_lod, cross_race_lod1)
+        ]
+        moved = materials.collapse_imported_materials(
+            [cross_race_lod, cross_race_lod1],
+            cross_race_existing,
+        )
+        if moved != 1 or not cross_race_lod.name.startswith("0.7 ") or \
+                not cross_race_lod1.name.startswith("0.7 "):
+            raise AssertionError("Cross-race Bibo LOD materials were treated as a mismatch")
+        mesh_objects.remove(cross_race_lod)
+        mesh_objects.remove(cross_race_lod1)
+        for cross_race_obj in (cross_race_lod, cross_race_lod1):
+            cross_race_data = cross_race_obj.data
+            bpy.data.objects.remove(cross_race_obj, do_unlink=True)
+            if cross_race_data.users == 0:
+                bpy.data.meshes.remove(cross_race_data)
+
+        moved = materials.auto_collapse_materials(mesh_objects)
+        if moved != 1 or existing_higher.name != "0.7 Existing Body":
+            raise AssertionError("Explicit material collapse did not keep the lowest group canonical")
+        if materials.material_paths(existing_target + [existing_higher]) != [body_material] or \
+                materials.material_mismatch_parts(existing_target + [existing_higher]):
+            raise AssertionError("Bibo material variants were still treated as different after collapse")
+        if materials.auto_collapse_materials(mesh_objects) != 0:
+            raise AssertionError("Repeated material collapse was not idempotent")
+
+        oversized_material = "/mt_c0101e9999_top_a.mtrl"
+        oversized_target = create("6.0 Oversized Target", oversized_material, "oversized-target")
+        oversized_source = create("7.0 Oversized Source", oversized_material, "oversized-source")
+        original_vertex_bound = materials._export_vertex_upper_bound
+        try:
+            materials._export_vertex_upper_bound = (
+                lambda obj, _depsgraph=None: 40_000
+                if obj in {oversized_target, oversized_source}
+                else original_vertex_bound(obj, _depsgraph)
+            )
+            if materials.auto_collapse_materials((oversized_target, oversized_source)) != 0:
+                raise AssertionError("Material collapse exceeded the MDL mesh vertex budget")
+        finally:
+            materials._export_vertex_upper_bound = original_vertex_bound
+        if oversized_target.name != "6.0 Oversized Target" or \
+                oversized_source.name != "7.0 Oversized Source":
+            raise AssertionError("Vertex-budget rejection partially renamed mesh parts")
+
+        operator_source = create("4.0 Operator Body", body_material, "operator")
+        if bpy.ops.xiv_ie.auto_collapse_materials() != {"FINISHED"}:
+            raise AssertionError("Auto-collapse materials operator did not finish")
+        if operator_source.name != "0.8 Operator Body":
+            raise AssertionError("Auto-collapse materials operator did not move its matching part")
+
+        hidden_collision = create("0.9 Collision", body_material, "hidden-collision", hidden=True)
+        collision_source = create("5.0 Collision", body_material, "collision")
+        before_collision = {
+            obj.as_pointer(): obj.name
+            for obj in (operator_source, collision_source, hidden_collision)
+        }
+        try:
+            materials.auto_collapse_materials(bpy.context.visible_objects)
+        except ValueError as error:
+            if "collide" not in str(error).lower():
+                raise
+        else:
+            raise AssertionError("Material collapse did not abort on a hidden name collision")
+        if any(obj.name != before_collision[obj.as_pointer()] for obj in (operator_source, collision_source, hidden_collision)):
+            raise AssertionError("Material collapse partially renamed objects after a collision")
+        print("[PASS] Material-aware import and explicit mesh-group collapse")
+    finally:
+        for obj in mesh_objects:
+            if obj.name not in bpy.data.objects:
+                continue
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+
 def assert_mesh_name_conversion(addon) -> None:
     objects = []
 
@@ -206,6 +364,7 @@ def run() -> None:
     try:
         assert_corner_aware_uv_export(addon)
         assert_mesh_group_conflict_resolution(addon)
+        assert_material_group_collapse(addon)
         assert_mesh_name_conversion(addon)
 
         if bpy.context.scene.xiv_ie_settings.create_backfaces:
@@ -339,6 +498,11 @@ def run() -> None:
             initial_settings.export_name = initial_export_name
         print("[PASS] Simple Export rejects XIV Instant Edit Collection without a Context")
 
+        instant_module = importlib.import_module(f"{addon.__name__}.instant_edit")
+        instant_module._switch_hidden_export_context()
+        if initial_instant_props.export_destination:
+            raise AssertionError("An empty scene unexpectedly selected an export Context")
+
         context_module = importlib.import_module(f"{addon.__name__}.instant_edit.context")
         context_id = "smoke-context"
         context_collection = context_module.create_collection(bpy.context.scene, {
@@ -422,8 +586,30 @@ def run() -> None:
         }
         mashup_plan_payloads = []
         mashup_export_payloads = []
+        material_coverage_payloads = []
+        material_coverage_warning = True
+        material_coverage_delay = 0.2
 
         def fake_urlopen(request, timeout=0):
+            nonlocal material_coverage_warning
+            if request.full_url.endswith("/material-coverage"):
+                time.sleep(material_coverage_delay)
+                payload = json.loads(request.data.decode("utf-8"))
+                material_coverage_payloads.append(payload)
+                body = json.dumps({
+                    "ok": True,
+                    "code": "material_coverage_missing" if material_coverage_warning else "material_coverage_complete",
+                    "available": True,
+                    "covered": not material_coverage_warning,
+                    "missing": [] if not material_coverage_warning else [{
+                        "contextId": "smoke-mashup-context",
+                        "sourceModName": "Other Smoke Mod",
+                        "modelMaterial": added_material,
+                        "gamePath": "chara/equipment/e0001/texture/missing_d.tex",
+                        "resourceType": "texture",
+                    }],
+                }).encode("utf-8")
+                return FakeResponse(body)
             if request.full_url.endswith("/mashup/plan"):
                 payload = json.loads(request.data.decode("utf-8"))
                 mashup_plan_payloads.append(payload)
@@ -451,10 +637,22 @@ def run() -> None:
                 return FakeResponse(body)
             if request.full_url.endswith("/mashup/export"):
                 mashup_export_payloads.append(json.loads(request.data.decode("utf-8")))
+                return FakeResponse(json.dumps({
+                    "ok": True,
+                    "code": "mashup_applied_with_warnings",
+                    "message": "created",
+                    "warnings": ["Keep these external mods enabled: External Smoke Skin."],
+                    "requiredExternalMods": ["External Smoke Skin"],
+                    "targetFilePath": "C:/Penumbra/SmokeMod/Files/mashup.mdl",
+                    "destinationName": "Smoke Mashup",
+                }).encode("utf-8"))
             return FakeResponse()
 
         plugin_http.urllib.request.urlopen = fake_urlopen
         instant_props = bpy.context.scene.xiv_ie_instant_edit_props
+        instant_module._switch_hidden_export_context()
+        if instant_props.export_destination != context_id:
+            raise AssertionError("A newly available Context was not selected automatically")
         instant_props.export_destination = context_id
         instant_props.variant_target = "NEW_GROUP"
         instant_props.variant_group_name = "Smoke Group"
@@ -486,8 +684,6 @@ def run() -> None:
             "xiv_material": added_material,
             "mesh_index": 2,
         })
-        instant_module = importlib.import_module(f"{addon.__name__}.instant_edit")
-
         def layer_for(collection):
             def walk(layer_collection):
                 if layer_collection.collection == collection:
@@ -542,9 +738,12 @@ def run() -> None:
         if instant_props.export_destination != "NONE":
             raise AssertionError("No-visible-Context state did not clear the Context selector")
         context_collection.hide_viewport = False
+        instant_module._switch_hidden_export_context()
+        if instant_props.export_destination != context_id:
+            raise AssertionError("A newly visible Context was not selected automatically")
         mashup_collection.hide_viewport = False
         instant_props.export_destination = context_id
-        print("[PASS] Context visibility switching handles layer state, selection, fallback, and empty visibility")
+        print("[PASS] Context visibility switching handles layer state, selection, fallback, empty visibility, and recovery")
 
         original_scope_for_mashup = instant_props.export_scope
         instant_props.export_scope = "VISIBLE"
@@ -562,6 +761,87 @@ def run() -> None:
         show, enabled, message = instant_ops.mashup_target_state(bpy.context)
         if not show or not enabled or message:
             raise AssertionError(f"Valid multi-mod Contexts did not enable Create Mashup: {message}")
+
+        def await_material_coverage(expected_requests: int, expected_warning: bool) -> None:
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                instant_ops.poll_material_coverage_results()
+                warning = instant_ops.material_coverage_warning_state(
+                    bpy.context, cache_only=True)
+                if len(material_coverage_payloads) >= expected_requests and \
+                        not instant_ops.material_coverage_probe_pending():
+                    if warning != expected_warning:
+                        raise AssertionError(
+                            f"Material coverage warning was {warning}, expected {expected_warning}")
+                    return
+                time.sleep(0.01)
+            raise AssertionError("Timed out waiting for the background material coverage probe")
+
+        instant_props.export_scope = "VISIBLE"
+        instant_ops.reset_material_coverage_state()
+        coverage_started = time.monotonic()
+        if instant_ops.material_coverage_warning_state(bpy.context):
+            raise AssertionError("Material coverage blocked while starting its background probe")
+        if time.monotonic() - coverage_started >= material_coverage_delay / 2:
+            raise AssertionError("Material coverage performed network work on Blender's main thread")
+        await_material_coverage(1, True)
+        material_coverage_delay = 0.0
+        coverage_payload = material_coverage_payloads[-1]
+        if coverage_payload.get("schema") != "instant-edit.material-coverage" or \
+                coverage_payload.get("version") != 1 or \
+                coverage_payload.get("pluginInstanceId") != "smoke-plugin" or \
+                coverage_payload.get("contextId") != context_id or \
+                coverage_payload.get("capability") != "smoke-capability" or \
+                {item.get("contextId") for item in coverage_payload.get("contributors", [])} != {
+                    context_id, mashup_context_id
+                } or any(
+                    not isinstance(item.get("materials"), list) or not item.get("materials")
+                    or not isinstance(item.get("capability"), str)
+                    for item in coverage_payload.get("contributors", [])
+                ):
+            raise AssertionError(f"Material coverage request payload was incomplete: {coverage_payload}")
+        if not instant_ops.material_coverage_warning_state(bpy.context) or len(material_coverage_payloads) != 1:
+            raise AssertionError("Material coverage did not use its ten-second composition cache")
+        material_coverage_warning = False
+        instant_props.export_scope = "VISIBLE_NO_MANNEQUIN"
+        if instant_ops.material_coverage_warning_state(bpy.context):
+            raise AssertionError("Material coverage cache was not invalidated when Export Parts changed")
+        await_material_coverage(2, False)
+        instant_props.export_scope = "VISIBLE"
+        material_coverage_warning = True
+        instant_ops.reset_material_coverage_state()
+        if instant_ops.material_coverage_warning_state(bpy.context):
+            raise AssertionError("Reset material coverage reused a stale warning")
+        await_material_coverage(3, True)
+        instant_props.variant_targets.clear()
+        smoke_group_target = instant_props.variant_targets.add()
+        smoke_group_target.selection_id = "smoke-group-target"
+        smoke_group_target.kind = "GROUP"
+        smoke_group_target.group_name = "Smoke Group"
+        smoke_group_target.expanded = True
+        smoke_option_target = instant_props.variant_targets.add()
+        smoke_option_target.selection_id = "smoke-option-target"
+        smoke_option_target.kind = "OPTION"
+        smoke_option_target.group_name = "Smoke Group"
+        smoke_option_target.option_name = "Smoke Option"
+        warning_targets = [
+            instant_ops.IN_PLACE_TARGET,
+            "NEW_GROUP",
+            smoke_group_target.selection_id,
+            smoke_option_target.selection_id,
+            instant_ops.SAVE_NEW_MOD_TARGET,
+        ]
+        for selection_id in warning_targets:
+            description = instant_ops.SelectVariantTarget.description(
+                bpy.context, SimpleNamespace(selection_id=selection_id))
+            if description != instant_ops.MATERIAL_COVERAGE_WARNING:
+                raise AssertionError(
+                    f"Material coverage warning description missing for {selection_id}: {description!r}")
+        if instant_ops.SelectVariantTarget.description(
+                bpy.context, SimpleNamespace(selection_id=instant_ops.MASHUP_TARGET)) != \
+                "Combines the visible exported meshes and their material and texture dependencies.":
+            raise AssertionError("Create Mashup hover text changed when material coverage is missing")
+        print("[PASS] Material coverage requests, cache invalidation, and target warning descriptions")
         instant_props.export_scope = "CURRENT_COLLECTION"
         if instant_ops.mashup_target_state(bpy.context)[0]:
             raise AssertionError("Current-collection Export Parts incorrectly admitted another Context")
@@ -583,9 +863,21 @@ def run() -> None:
         }
         original_finish_job = instant_ops.finish_job
         instant_ops.finish_job = lambda _job: None
+        bundle_property = bpy.ops.xiv_ie.mashup_destination.get_rna_type().properties[
+            "bundle_external_dependencies"]
+        if bundle_property.default:
+            raise AssertionError("Mashup external dependency bundling did not default off")
+        handoff = instant_ops.mashup_name_operator_args("ACTIVE_MOD", True)
+        if handoff != {
+            "destination": "ACTIVE_MOD",
+            "bundle_external_dependencies": True,
+            "name": "Mashup",
+        }:
+            raise AssertionError("Mashup destination popup did not preserve external dependency bundling")
         try:
             mashup_target = instant_ops.perform_mashup_export(
-                bpy.context, "ACTIVE_MOD", "Smoke Mashup")
+                bpy.context, "ACTIVE_MOD", "Smoke Mashup",
+                bundle_external_dependencies=True)
         finally:
             instant_ops.finish_job = original_finish_job
         mashup_model = instant_ops.XIVModel.from_file(mashup_target)
@@ -599,6 +891,14 @@ def run() -> None:
                 f"Mashup MDL aliases differ: actual={set(mashup_model.materials)} "
                 f"expected={expected_aliases}"
             )
+        if mashup_plan_payloads[-1].get("destination") != "active_mod":
+            raise AssertionError("Active mashup plan did not include its destination")
+        if mashup_plan_payloads[-1].get("bundleExternalDependencies") is not True:
+            raise AssertionError("Active mashup plan did not include external dependency bundling")
+        if mashup_export_payloads[-1].get("bundleExternalDependencies") is not True:
+            raise AssertionError("Active mashup export did not preserve external dependency bundling")
+        if "External Smoke Skin" not in instant_props.last_status or "warnings:" not in instant_props.last_status:
+            raise AssertionError("External dependency warning was not shown in the mashup receipt")
         if any(
             (item.get("xiv_material"), item.get("instant_edit_xiv_material")) !=
             original_material_properties[item.as_pointer()]
@@ -642,7 +942,7 @@ def run() -> None:
         if instant_ops.SelectVariantTarget.description(
                 bpy.context,
                 SimpleNamespace(selection_id=instant_ops.SAVE_NEW_MOD_TARGET),
-        ) != "Saves the visible exported model as a self-contained new Penumbra mod.":
+        ) != "Saves the visible model as a new mod, bundling participating-mod resources and retaining external dependencies.":
             raise AssertionError("Save to new mod target hover text is incorrect")
         context_module._set(context_collection, "resource_manifest_version", 0)
         context_module._set(context_collection, "resource_manifest_status", "capture_failed")
@@ -662,8 +962,14 @@ def run() -> None:
             instant_ops.finish_job = original_finish_job
         if not mashup_plan_payloads or len(mashup_plan_payloads[-1]["contributors"]) != 1:
             raise AssertionError("Save to new mod did not submit one contributor")
+        if mashup_plan_payloads[-1].get("destination") != "new_mod":
+            raise AssertionError("Save to new mod plan did not include its destination")
+        if mashup_plan_payloads[-1].get("bundleExternalDependencies") is not False:
+            raise AssertionError("Save to new mod did not preserve the default external dependency behavior")
         if not mashup_export_payloads or mashup_export_payloads[-1]["destination"] != "new_mod":
             raise AssertionError("Save to new mod did not submit a new-mod export")
+        if mashup_export_payloads[-1].get("bundleExternalDependencies") is not False:
+            raise AssertionError("Save to new mod unexpectedly enabled external dependency bundling")
         importlib.import_module(f"{addon.__name__}.instant_edit.cache").remove_job(
             Path(single_mod_target).parent)
         instant_props.export_scope = original_scope_for_mashup
@@ -859,6 +1165,7 @@ def run() -> None:
         try:
             quick_target = instant_ops.perform_instant_export(bpy.context)
         finally:
+            instant_ops.reset_material_coverage_state()
             plugin_http.urllib.request.urlopen = original_urlopen
             bpy.context.scene.xiv_ie_settings.reset_scaling_on_export = False
 
@@ -1070,6 +1377,29 @@ def run() -> None:
             raise AssertionError("Mesh Studio part drag did not enter the trailing empty group")
         if not second.name.startswith("2.0 ") or not second_lod.name.startswith("2.0 "):
             raise AssertionError("Mesh Studio cross-group drag did not move every part LOD")
+        cross_anchor = obj.copy()
+        cross_anchor.data = obj.data.copy()
+        cross_anchor.name = "2.1 Cross Group Anchor"
+        bpy.context.scene.collection.objects.link(cross_anchor)
+        try:
+            if operators._move_mesh_part_once(
+                2, 0, "DOWN", cross_group_only=True
+            ) != 0 or not second.name.startswith("3.0 ") or \
+                    not second_lod.name.startswith("3.0 ") or \
+                    not cross_anchor.name.startswith("2.1 "):
+                raise AssertionError(
+                    "Cross-group-only part movement reordered the destination group"
+                )
+            if operators._move_mesh_part_once(
+                3, 0, "UP", cross_group_only=True
+            ) != 0 or not second.name.startswith("2.0 ") or \
+                    not second_lod.name.startswith("2.0 "):
+                raise AssertionError("Cross-group-only part movement did not restore the source group")
+        finally:
+            cross_anchor_data = cross_anchor.data
+            bpy.data.objects.remove(cross_anchor, do_unlink=True)
+            if cross_anchor_data.users == 0:
+                bpy.data.meshes.remove(cross_anchor_data)
         if operators._move_mesh_part_once(
             2, 0, "DOWN", maximum_group=2
         ) is not None:
@@ -1082,6 +1412,63 @@ def run() -> None:
         bpy.data.objects.remove(second_lod, do_unlink=True)
         if second_lod_data.users == 0:
             bpy.data.meshes.remove(second_lod_data)
+
+        duplicate_a = obj.copy()
+        duplicate_a.data = obj.data.copy()
+        duplicate_a.name = "0.0 Duplicate A"
+        duplicate_a["instant_edit_import_instance_id"] = "duplicate-a"
+        bpy.context.collection.objects.link(duplicate_a)
+        duplicate_b = obj.copy()
+        duplicate_b.data = obj.data.copy()
+        duplicate_b.name = "0.0 Duplicate B"
+        duplicate_b["instant_edit_import_instance_id"] = "duplicate-b"
+        bpy.context.collection.objects.link(duplicate_b)
+        duplicate_target = obj.copy()
+        duplicate_target.data = obj.data.copy()
+        duplicate_target.name = "0.1 Duplicate Target"
+        duplicate_target["instant_edit_import_instance_id"] = "duplicate-target"
+        bpy.context.collection.objects.link(duplicate_target)
+        try:
+            duplicate_instances = materials.mesh_part_instances(
+                [duplicate_a, duplicate_b, duplicate_target], 0
+            )
+            if [item.part_index for item in duplicate_instances] != [0, 0, 1]:
+                raise AssertionError("Duplicate mesh IDs were collapsed into one Mesh Studio row")
+            first_key = duplicate_instances[0].instance_key
+            second_key = duplicate_instances[1].instance_key
+            target_key = duplicate_instances[2].instance_key
+            materials.move_mesh_part_to_group(
+                [duplicate_a, duplicate_b, duplicate_target],
+                0,
+                0,
+                1,
+                first_key,
+            )
+            if (
+                not duplicate_a.name.startswith("1.0 ")
+                or not duplicate_b.name.startswith("0.0 ")
+                or not duplicate_target.name.startswith("0.1 ")
+            ):
+                raise AssertionError("Moving one duplicate mesh part changed its sibling")
+            materials.swap_mesh_part_instances(
+                [duplicate_b, duplicate_target],
+                0,
+                0,
+                second_key,
+                1,
+                target_key,
+            )
+            if (
+                not duplicate_b.name.startswith("0.1 ")
+                or not duplicate_target.name.startswith("0.0 ")
+            ):
+                raise AssertionError("Duplicate-safe part ID swapping did not target one instance")
+        finally:
+            for duplicate in (duplicate_a, duplicate_b, duplicate_target):
+                duplicate_data = duplicate.data
+                bpy.data.objects.remove(duplicate, do_unlink=True)
+                if duplicate_data.users == 0:
+                    bpy.data.meshes.remove(duplicate_data)
         print("[PASS] Mesh Studio rename, attributes, flow, and drag reordering")
     finally:
         addon.unregister()

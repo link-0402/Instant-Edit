@@ -10,7 +10,7 @@ import bpy
 import numpy as np
 
 from .io.model.com.space import lin_to_srgb
-from .io.model.exp.validators import clean_material_path
+from .io.model.exp.validators import clean_material_path, USHORT_LIMIT
 from .instant_edit.context import context_id_for_object, mesh_ids_from_name, mesh_name_info
 from .mesh.objects import visible_meshobj
 from .xivpy.model import XIV_ATTR
@@ -65,6 +65,20 @@ class MaterialGroup:
     def parts(self) -> tuple[int, ...]:
         return tuple(sorted({mesh_ids_from_name(obj)[1] for obj in self.objects}))
 
+    @property
+    def part_instances(self) -> tuple["MeshPartInstance", ...]:
+        return mesh_part_instances(self.objects, self.mesh_index)
+
+
+@dataclass(frozen=True)
+class MeshPartInstance:
+    """One visible part, kept separate from other objects with the same IDs."""
+
+    mesh_index: int
+    part_index: int
+    instance_key: str
+    objects: tuple
+
 
 def mesh_part_objects(objects, mesh_index: int, part_index: int) -> tuple:
     """Return all visible objects representing one part, including its LODs."""
@@ -77,6 +91,92 @@ def mesh_part_objects(objects, mesh_index: int, part_index: int) -> tuple:
         if group == mesh_index and part == part_index:
             result.append(obj)
     return tuple(sorted(result, key=lambda obj: obj.name))
+
+
+def mesh_part_instance_key(obj) -> str:
+    """Return the stable identity used to separate duplicate visible parts.
+
+    Numeric mesh IDs are export coordinates, not object identity.  Imported
+    objects carry a per-import key; older context imports fall back to their
+    context and display label so their LODs remain together.  Untagged scene
+    objects use their collection and label as the least-invasive fallback.
+    """
+    imported = obj.get("instant_edit_import_instance_id", "")
+    if isinstance(imported, str) and imported:
+        return f"import:{imported}"
+
+    try:
+        context_id = context_id_for_object(obj)
+    except Exception:
+        context_id = ""
+    try:
+        label = " ".join(mesh_name_info(obj).label.split()).casefold()
+    except Exception:
+        label = str(getattr(obj, "name", "")).strip().casefold()
+
+    if context_id:
+        return f"context:{context_id}|label:{label}"
+
+    collection_ids = sorted(
+        str(collection.as_pointer())
+        for collection in getattr(obj, "users_collection", ())
+    )
+    return f"collection:{','.join(collection_ids)}|label:{label}"
+
+
+def mesh_part_instances(
+    objects,
+    mesh_index: int,
+    part_index: int | None = None,
+) -> tuple[MeshPartInstance, ...]:
+    """Group visible objects into independently movable part instances."""
+    grouped = defaultdict(list)
+    for obj in objects:
+        if getattr(obj, "type", None) != "MESH":
+            continue
+        try:
+            group, part, _lod = mesh_ids_from_name(obj)
+        except Exception:
+            continue
+        if group != mesh_index or (part_index is not None and part != part_index):
+            continue
+        grouped[(part, mesh_part_instance_key(obj))].append(obj)
+
+    instances = []
+    for (part, instance_key), part_objects in grouped.items():
+        instances.append(
+            MeshPartInstance(
+                mesh_index,
+                part,
+                instance_key,
+                tuple(sorted(part_objects, key=lambda obj: obj.name.casefold())),
+            )
+        )
+    return tuple(
+        sorted(
+            instances,
+            key=lambda item: (
+                item.part_index,
+                item.objects[0].name.casefold() if item.objects else "",
+                item.instance_key,
+            ),
+        )
+    )
+
+
+def mesh_part_instance_objects(
+    objects,
+    mesh_index: int,
+    part_index: int,
+    instance_key: str | None = None,
+) -> tuple:
+    """Return one duplicate-safe part instance, including all of its LODs."""
+    if instance_key is None:
+        return mesh_part_objects(objects, mesh_index, part_index)
+    for instance in mesh_part_instances(objects, mesh_index, part_index):
+        if instance.instance_key == instance_key:
+            return instance.objects
+    return ()
 
 
 def mesh_display_name(obj) -> str:
@@ -211,11 +311,12 @@ def set_mesh_part_attribute(
     part_index: int,
     value: str,
     enabled: bool,
+    instance_key: str | None = None,
 ) -> str:
     attribute = normalize_mesh_attribute(value) if enabled else str(value or "").strip()
     if not attribute.startswith(XIV_ATTR):
         raise ValueError("This is not an XIV mesh attribute.")
-    for obj in mesh_part_objects(objects, mesh_index, part_index):
+    for obj in mesh_part_instance_objects(objects, mesh_index, part_index, instance_key):
         if enabled:
             obj[attribute] = True
         elif attribute in obj:
@@ -284,9 +385,15 @@ def normalize_mesh_tags(value: str) -> str:
     return ", ".join(tags)
 
 
-def set_mesh_part_tags(objects, mesh_index: int, part_index: int, value: str) -> str:
+def set_mesh_part_tags(
+    objects,
+    mesh_index: int,
+    part_index: int,
+    value: str,
+    instance_key: str | None = None,
+) -> str:
     tags = normalize_mesh_tags(value)
-    for obj in mesh_part_objects(objects, mesh_index, part_index):
+    for obj in mesh_part_instance_objects(objects, mesh_index, part_index, instance_key):
         if tags:
             obj["instant_edit_tags"] = tags
         elif "instant_edit_tags" in obj:
@@ -350,12 +457,18 @@ def _rename_mesh_targets(targets) -> int:
     return len(desired)
 
 
-def rename_mesh_part(objects, mesh_index: int, part_index: int, value: str) -> str:
+def rename_mesh_part(
+    objects,
+    mesh_index: int,
+    part_index: int,
+    value: str,
+    instance_key: str | None = None,
+) -> str:
     """Rename one part across every visible LOD without changing its export ID."""
     label = " ".join(str(value or "").strip().split())
     if not label:
         raise ValueError("Part name cannot be empty")
-    targets = mesh_part_objects(objects, mesh_index, part_index)
+    targets = mesh_part_instance_objects(objects, mesh_index, part_index, instance_key)
     if not targets:
         raise ValueError(f"Mesh part {mesh_index}.{part_index} is no longer visible")
     lods = []
@@ -408,14 +521,45 @@ def swap_mesh_parts(objects, mesh_index: int, first_part: int, second_part: int)
     )
 
 
+def swap_mesh_part_instances(
+    objects,
+    mesh_index: int,
+    first_part: int,
+    first_instance_key: str,
+    second_part: int,
+    second_instance_key: str,
+) -> int:
+    """Swap IDs for two selected part instances without touching duplicates."""
+    first_objects = mesh_part_instance_objects(
+        objects, mesh_index, first_part, first_instance_key
+    )
+    second_objects = mesh_part_instance_objects(
+        objects, mesh_index, second_part, second_instance_key
+    )
+    if not first_objects or not second_objects:
+        return 0
+
+    renames = []
+    for obj in first_objects:
+        _group, _part, lod = mesh_ids_from_name(obj)
+        renames.append((obj, mesh_index, second_part, lod, mesh_display_name(obj)))
+    for obj in second_objects:
+        _group, _part, lod = mesh_ids_from_name(obj)
+        renames.append((obj, mesh_index, first_part, lod, mesh_display_name(obj)))
+    return _rename_mesh_targets(renames)
+
+
 def move_mesh_part_to_group(
     objects,
     source_group: int,
     source_part: int,
     target_group: int,
+    instance_key: str | None = None,
 ) -> int:
     """Move one complete part, including every LOD, to another group."""
-    source_objects = mesh_part_objects(objects, source_group, source_part)
+    source_objects = mesh_part_instance_objects(
+        objects, source_group, source_part, instance_key
+    )
     if not source_objects:
         raise ValueError(f"Mesh part {source_group}.{source_part} is no longer visible")
 
@@ -492,12 +636,12 @@ def visible_material_group_slots(maximum_group: int | None = None) -> list[Mater
 
 def material_paths(objects) -> list[str]:
     """Return the distinct export material paths represented by a mesh group."""
-    paths = set()
+    paths = {}
     for obj in objects:
         path = export_material_path(obj)
         if path:
-            paths.add(path)
-    return sorted(paths)
+            paths.setdefault(_material_collapse_key(path), path)
+    return sorted(paths.values())
 
 
 def export_material_path(obj) -> str:
@@ -512,6 +656,198 @@ def export_material_path(obj) -> str:
         return clean_material_path(value.strip())
     except (AttributeError, TypeError, ValueError):
         return ""
+
+
+def _mesh_part_material_path(objects) -> str:
+    """Return one material path when every object in a part agrees on it."""
+    paths = {}
+    for obj in objects:
+        path = export_material_path(obj)
+        key = _material_collapse_key(path) if path else None
+        paths.setdefault(key, path)
+    if len(paths) != 1 or None in paths:
+        return ""
+    return next(iter(paths.values()))
+
+
+def _material_collapse_key(material: str) -> tuple[str, str]:
+    """Return the material identity used when collapsing mesh groups.
+
+    FFXIV's Bibo body material is intentionally shared by several model
+    prefixes, so its full path is the one supported exception to exact-path
+    matching.  Other materials retain their complete normalized path as the
+    identity used for collapsing.
+    """
+    filename = material.rsplit("/", 1)[-1].casefold()
+    if filename.endswith("_bibo.mtrl"):
+        return ("bibo", "_bibo.mtrl")
+    return ("path", material)
+
+
+def _collapsible_mesh_parts(objects) -> list[tuple[int, int, str, tuple, str]]:
+    """Return material-consistent visible part instances with their material."""
+    candidates = []
+    for group in group_mesh_objects(objects):
+        for instance in mesh_part_instances(group.objects, group.mesh_index):
+            material = _mesh_part_material_path(instance.objects)
+            if material:
+                candidates.append(
+                    (
+                        group.mesh_index,
+                        instance.part_index,
+                        instance.instance_key,
+                        instance.objects,
+                        material,
+                    )
+                )
+    return candidates
+
+
+def _canonical_material_groups(candidates) -> dict[tuple[str, str], int]:
+    canonical = {}
+    for group, _part, _instance_key, _objects, material in candidates:
+        key = _material_collapse_key(material)
+        previous = canonical.get(key)
+        if previous is None or group < previous:
+            canonical[key] = group
+    return canonical
+
+
+def _occupied_mesh_parts(objects) -> defaultdict[int, set[int]]:
+    occupied = defaultdict(set)
+    for obj in objects:
+        try:
+            group, part, _lod = mesh_ids_from_name(obj)
+        except Exception:
+            continue
+        if group >= 0 and part >= 0:
+            occupied[group].add(part)
+    return occupied
+
+
+def _export_vertex_upper_bound(obj, depsgraph=None) -> int:
+    """Return a safe upper bound for the vertices emitted by one submesh."""
+    try:
+        evaluated = obj.evaluated_get(depsgraph) if depsgraph is not None else obj
+        mesh = evaluated.data
+        # The corner-aware exporter emits at most one vertex per evaluated loop.
+        # Using loops remains safe when UVs, normals, colours, or flow data split
+        # a Blender vertex into several MDL vertices.
+        return len(mesh.loops)
+    except (AttributeError, ReferenceError, RuntimeError):
+        return USHORT_LIMIT + 1
+
+
+def _mesh_lod_vertex_budgets(objects, depsgraph=None) -> defaultdict[tuple[int, int], int]:
+    budgets = defaultdict(int)
+    for obj in objects:
+        try:
+            group, _part, lod = mesh_ids_from_name(obj)
+        except Exception:
+            continue
+        budgets[(group, lod)] += _export_vertex_upper_bound(obj, depsgraph)
+    return budgets
+
+
+def _material_collapse_plan(
+    candidates,
+    target_groups: dict[tuple[str, str], int],
+    occupied_objects,
+    *,
+    only_move_down: bool,
+) -> tuple[list[tuple], int]:
+    """Build one atomic rename plan for material-based part moves."""
+    occupied = _occupied_mesh_parts(occupied_objects)
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+    except (AttributeError, RuntimeError):
+        depsgraph = None
+    vertex_budgets = _mesh_lod_vertex_budgets(occupied_objects, depsgraph)
+    moves = []
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            target_groups.get(_material_collapse_key(item[4]), item[0]),
+            item[0],
+            item[1],
+            item[2],
+        ),
+    )
+    for source_group, source_part, instance_key, objects, material in ordered:
+        target_group = target_groups.get(_material_collapse_key(material))
+        if target_group is None or source_group == target_group:
+            continue
+        if only_move_down and source_group < target_group:
+            continue
+
+        moving_vertices = defaultdict(int)
+        for obj in objects:
+            try:
+                _group, _part, lod = mesh_ids_from_name(obj)
+            except Exception:
+                continue
+            moving_vertices[lod] += _export_vertex_upper_bound(obj, depsgraph)
+        if any(
+            vertex_budgets[(target_group, lod)] + count > USHORT_LIMIT
+            for lod, count in moving_vertices.items()
+        ):
+            continue
+
+        target_part = max(occupied[target_group], default=-1) + 1
+        occupied[target_group].add(target_part)
+        for lod, count in moving_vertices.items():
+            source_key = (source_group, lod)
+            target_key = (target_group, lod)
+            vertex_budgets[source_key] = max(0, vertex_budgets[source_key] - count)
+            vertex_budgets[target_key] += count
+        moves.append((source_group, source_part, instance_key, objects, target_group, target_part))
+
+    renames = []
+    for _source_group, _source_part, _instance_key, objects, target_group, target_part in moves:
+        for obj in objects:
+            _group, _part, lod = mesh_ids_from_name(obj)
+            renames.append(
+                (
+                    obj,
+                    target_group,
+                    target_part,
+                    lod,
+                    mesh_display_name(obj),
+                )
+            )
+    return renames, len(moves)
+
+
+def auto_collapse_materials(objects) -> int:
+    """Move visible matching-material parts into their lowest mesh group."""
+    objects = tuple(objects)
+    candidates = _collapsible_mesh_parts(objects)
+    target_groups = _canonical_material_groups(candidates)
+    renames, moved = _material_collapse_plan(
+        candidates,
+        target_groups,
+        objects,
+        only_move_down=True,
+    )
+    _rename_mesh_targets(renames)
+    return moved
+
+
+def collapse_imported_materials(imported_objects, existing_objects) -> int:
+    """Move imported matching-material parts into pre-existing visible groups."""
+    imported_objects = tuple(imported_objects)
+    existing_objects = tuple(existing_objects)
+    imported_candidates = _collapsible_mesh_parts(imported_objects)
+    existing_candidates = _collapsible_mesh_parts(existing_objects)
+    target_groups = _canonical_material_groups(existing_candidates)
+    renames, moved = _material_collapse_plan(
+        imported_candidates,
+        target_groups,
+        existing_objects + imported_objects,
+        only_move_down=False,
+    )
+    _rename_mesh_targets(renames)
+    return moved
 
 
 def material_mismatch_parts(objects) -> set[int]:
@@ -532,10 +868,12 @@ def material_mismatch_parts(objects) -> set[int]:
     if not ordered:
         return set()
     authoritative = export_material_path(ordered[0])
+    authoritative_key = _material_collapse_key(authoritative) if authoritative else None
     mismatches = set()
     for obj in ordered:
         _group, part, _lod = mesh_ids_from_name(obj)
-        if not authoritative or export_material_path(obj) != authoritative:
+        path = export_material_path(obj)
+        if not authoritative_key or not path or _material_collapse_key(path) != authoritative_key:
             mismatches.add(part)
     return mismatches
 

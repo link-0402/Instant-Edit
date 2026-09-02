@@ -21,6 +21,7 @@ public sealed class MainWindow : Window, IDisposable
     private const string ModBrowserAmbiguityWarning = "The Mod Browser selection is potentially ambiguous. Use the On Screen tab instead.";
     private readonly Configuration _config; private readonly PenumbraService _penumbra; private readonly OnScreenService _onScreen;
     private readonly BlenderClient _blender; private readonly IDataManager _data; private readonly IChatGui _chat; private readonly IPluginLog _log;
+    private readonly string _pluginVersion;
     private readonly MaterialPreviewBundleBuilder _materialPreviews;
     private readonly ResourceSourceAttributor _resourceSources;
     private readonly Action _saveConfig;
@@ -30,7 +31,8 @@ public sealed class MainWindow : Window, IDisposable
     private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
     private readonly HashSet<string> _collapsedFiltered = new(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, IDalamudTextureWrap> _slotIcons = new Dictionary<string, IDalamudTextureWrap>();
-    private bool _blenderOk, _blenderChecking; private int _editing;
+    private BlenderConnectionState _blenderState = BlenderConnectionState.Offline;
+    private bool _blenderChecking; private int _editing;
     private DateTime _lastBlenderCheck = DateTime.MinValue;
     private DateTime _lastModListRefresh = DateTime.MinValue;
     private string _filter = string.Empty, _modFilter = string.Empty, _resourceTypeFilter = "Models", _status = string.Empty;
@@ -47,6 +49,7 @@ public sealed class MainWindow : Window, IDisposable
         : base("XIV Instant Edit##Main")
     {
         _config = config; _penumbra = penumbra; _onScreen = onScreen; _blender = blender; _data = data; _chat = chat; _log = log;
+        _pluginVersion = BlenderClient.CurrentPluginVersion;
         _resourceSources = new ResourceSourceAttributor(penumbra, log);
         _materialPreviews = new MaterialPreviewBundleBuilder(data, log, _resourceSources);
         _saveConfig = saveConfig;
@@ -229,8 +232,15 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine(0, 12); if (ImGui.SmallButton("Refresh character list")) RequestRefresh();
         var penumbra = false;
         try { penumbra = _penumbra.Available; } catch (Exception e) { _log.Debug(e.Message); }
-        StartBlenderCheckIfNeeded(); bool blender; lock (_stateLock) blender = _blenderOk;
-        Status("Penumbra", penumbra, penumbra ? "OK" : "Unavailable"); ImGui.SameLine(0, 10); Status("Blender", blender, blender ? "Online" : "Offline");
+        StartBlenderCheckIfNeeded(); BlenderConnectionState blender; lock (_stateLock) blender = _blenderState;
+        Status("Penumbra", penumbra, penumbra ? "OK" : "Unavailable"); ImGui.SameLine(0, 10);
+        var blenderMessage = blender switch
+        {
+            BlenderConnectionState.Online => "Online",
+            BlenderConnectionState.VersionMismatch => BlenderClient.VersionMismatchMessage(_pluginVersion),
+            _ => "Offline",
+        };
+        Status("Blender", blender, blenderMessage);
         ImGui.Separator();
         DrawImportOptions();
     }
@@ -300,7 +310,18 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     private static void Status(string name, bool good, string value)
-    { ImGui.TextColored(good ? new Vector4(.3f, .78f, .5f, 1) : new Vector4(.9f, .45f, .32f, 1), "●"); ImGui.SameLine(0, 3); ImGui.TextColored(new Vector4(.7f, .72f, .78f, 1), $"{name}: {value}"); }
+        => Status(name, good ? BlenderConnectionState.Online : BlenderConnectionState.Offline, value);
+
+    private static void Status(string name, BlenderConnectionState state, string value)
+    {
+        var color = state switch
+        {
+            BlenderConnectionState.Online => new Vector4(.3f, .78f, .5f, 1),
+            BlenderConnectionState.VersionMismatch => new Vector4(1f, .65f, .1f, 1),
+            _ => new Vector4(.9f, .45f, .32f, 1),
+        };
+        ImGui.TextColored(color, "●"); ImGui.SameLine(0, 3); ImGui.TextColored(new Vector4(.7f, .72f, .78f, 1), $"{name}: {value}");
+    }
 
     private void DrawResources(IReadOnlyList<ActorView> actors, string? emptyMessage = null)
     {
@@ -1172,8 +1193,19 @@ public sealed class MainWindow : Window, IDisposable
             var resolved = await _penumbra.GetResourcePathsAsync((ushort)actor.ImportObjectIndex).ConfigureAwait(false);
             if (resolved is not null)
             {
-                return resolved.SelectMany(pair => pair.Value.Select(gamePath =>
-                    new MaterialResourceCandidate(gamePath, pair.Key))).ToArray();
+                return resolved.SelectMany(pair =>
+                {
+                    var attribution = _resourceSources.AttributionFor(pair.Key);
+                    return pair.Value
+                        .Where(gamePath => gamePath.EndsWith(".mtrl", StringComparison.OrdinalIgnoreCase) ||
+                                           gamePath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+                        .Select(gamePath => new MaterialResourceCandidate(
+                            gamePath,
+                            pair.Key,
+                            attribution.State == ResourceSourceState.LoadedMod ? attribution.ModDirectory : null,
+                            attribution.State == ResourceSourceState.LoadedMod ? attribution.ModRootPath : null,
+                            attribution.State == ResourceSourceState.LoadedMod ? attribution.RelativePath : null));
+                }).ToArray();
             }
         }
 
@@ -1192,12 +1224,15 @@ public sealed class MainWindow : Window, IDisposable
             .ToArray();
     }
 
-    private async Task<bool> CheckBlenderAsync(int port, CancellationToken cancellationToken = default)
+    private async Task<BlenderStatus> CheckBlenderStatusAsync(int port, CancellationToken cancellationToken = default)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(1));
-        return await _blender.IsReachableAsync(port, timeout.Token).ConfigureAwait(false);
+        return await _blender.GetStatusAsync(port, timeout.Token).ConfigureAwait(false);
     }
+
+    private async Task<bool> CheckBlenderAsync(int port, CancellationToken cancellationToken = default)
+        => (await CheckBlenderStatusAsync(port, cancellationToken).ConfigureAwait(false)).Reachable;
 
     private void StartBlenderCheckIfNeeded()
     {
@@ -1210,10 +1245,11 @@ public sealed class MainWindow : Window, IDisposable
 
         _ = Task.Run(async () =>
         {
-            var ok = false;
+            var state = BlenderConnectionState.Offline;
             try
             {
-                ok = await CheckBlenderAsync(_config.BlenderPort).ConfigureAwait(false);
+                var status = await CheckBlenderStatusAsync(_config.BlenderPort).ConfigureAwait(false);
+                state = status.Classify(_pluginVersion);
             }
             catch (Exception e)
             {
@@ -1223,7 +1259,7 @@ public sealed class MainWindow : Window, IDisposable
             {
                 lock (_stateLock)
                 {
-                    _blenderOk = ok;
+                    _blenderState = state;
                     _blenderChecking = false;
                     _lastBlenderCheck = DateTime.UtcNow;
                 }

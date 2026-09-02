@@ -58,8 +58,8 @@ class ModelExport:
         
         for lod_level, active_lod in enumerate(self.model.lods[:max_lod]):
             if self.logger:
-                self.logger.last_item = f"LOD{lod_level}"
-                self.logger.log(f"Configuring LOD{lod_level}...", 2)
+                self.logger.last_item = "Model geometry"
+                self.logger.log("Configuring model geometry...", 2)
                 
             sorted_meshes = prepare_submeshes(export_obj, self.model.attributes, lod_level)
             if not sorted_meshes:

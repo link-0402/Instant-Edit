@@ -89,7 +89,7 @@ class XIVIEExportSettings(PropertyGroup):
     )  # type: ignore
     resolve_mesh_group_conflicts: BoolProperty(
         name="Resolve Mesh Group Name Conflicts",
-        description="Automatically offset imported mesh groups to avoid conflicts with visible mesh groups",
+        description="Collapse imported parts into existing matching-material groups (including shared _bibo materials) and offset unmatched groups",
         default=True,
     )  # type: ignore
     simple_import_skeleton: PointerProperty(
@@ -111,7 +111,11 @@ class XIVIEExportSettings(PropertyGroup):
         items=[("KEEP", "Keep", "Keep all groups"), ("NO_GEN", "Remove Genitalia", "Remove genital groups"), ("REMOVE", "Remove All", "Remove iv_/ya_ groups")],
         default="KEEP",
     )  # type: ignore
-    use_lods: BoolProperty(name="Export LODs", default=False)  # type: ignore
+    use_lods: BoolProperty(
+        name="Internal export option",
+        default=False,
+        options={"HIDDEN"},
+    )  # type: ignore
     neck_morph: EnumProperty(
         name="Neck Morph",
         items=NECK_MORPH_ITEMS,

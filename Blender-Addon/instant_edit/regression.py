@@ -141,6 +141,29 @@ def run_staging_isolation_regression() -> None:
         material_preview = importlib.import_module(
             f"{package_name}.instant_edit.material_preview"
         )
+        manifest_version = server._load_addon_version(addon_root / "blender_manifest.toml")
+        status_payload = server._status_payload()
+        _require(
+            manifest_version is not None and
+            status_payload["addonVersion"] == manifest_version and
+            status_payload["ok"] and
+            status_payload["ready"] and
+            status_payload["addonId"] == "xiv_instant_edit" and
+            isinstance(status_payload["capabilities"], list),
+            "the Blender status response reports the manifest version and existing readiness data",
+        )
+        with tempfile.TemporaryDirectory() as version_temp:
+            version_root = Path(version_temp)
+            _require(
+                server._load_addon_version(version_root / "missing.toml") is None,
+                "a missing Blender manifest produces an unknown add-on version",
+            )
+            invalid_manifest = version_root / "invalid.toml"
+            invalid_manifest.write_text("version = [", encoding="utf-8")
+            _require(
+                server._load_addon_version(invalid_manifest) is None,
+                "an invalid Blender manifest produces an unknown add-on version",
+            )
         _require(
             props._export_destination_items(None, bpy.context) == [],
             "an empty scene context list does not expose a placeholder choice",

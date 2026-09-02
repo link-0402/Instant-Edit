@@ -8,7 +8,8 @@ from bpy.types import Context, Panel
 from .instant_edit.context import ContextValidationError, mesh_ids_from_name
 from .instant_edit.ops import (MASHUP_TARGET, SAVE_NEW_MOD_TARGET,
                                export_destination_context, mashup_target_state,
-                               normalise_variant_name, save_new_mod_target_state)
+                               material_coverage_warning_state, normalise_variant_name,
+                               save_new_mod_target_state)
 from .instant_edit.props import IN_PLACE_TARGET, get_instant_edit_props
 from .materials import (
     attribute_display_name,
@@ -16,7 +17,7 @@ from .materials import (
     material_paths,
     mesh_display_name,
     mesh_part_attributes,
-    mesh_part_objects,
+    mesh_part_instances,
     material_group_slots,
     visible_material_groups,
 )
@@ -246,7 +247,9 @@ class XIVIE_PT_main(Panel):
             )
             if props.variant_targets_context_id and props.variant_targets_context_id != getattr(ref, "context_id", ""):
                 targets.label(text="Refresh targets for this Context.", icon="INFO")
+            material_coverage_warning = material_coverage_warning_state(context, ref)
             in_place = targets.row(align=True)
+            in_place.alert = material_coverage_warning
             in_place.operator(
                 "xiv_ie.select_variant_target",
                 text="In-place",
@@ -254,6 +257,7 @@ class XIVIE_PT_main(Panel):
                 icon="FILE_TICK",
             ).selection_id = IN_PLACE_TARGET
             new_group = targets.row(align=True)
+            new_group.alert = material_coverage_warning
             new_group.operator(
                 "xiv_ie.select_variant_target",
                 text="New Group",
@@ -261,12 +265,18 @@ class XIVIE_PT_main(Panel):
                 icon="ADD",
             ).selection_id = "NEW_GROUP"
             if not props.variant_targets:
-                targets.label(text="Refresh to load compatible groups and options.", icon="INFO")
+                status = (
+                    "No existing mod options found."
+                    if props.variant_targets_context_id == getattr(ref, "context_id", "")
+                    else "Refresh to load compatible groups and options."
+                )
+                targets.label(text=status, icon="INFO")
             group_expanded = True
             for item in props.variant_targets:
                 if item.kind == "GROUP":
                     group_expanded = item.expanded
                     group_row = targets.row(align=True)
+                    group_row.alert = material_coverage_warning
                     toggle = group_row.operator(
                         "xiv_ie.toggle_variant_target_group",
                         text="",
@@ -282,6 +292,7 @@ class XIVIE_PT_main(Panel):
                     ).selection_id = item.selection_id
                 elif item.kind == "OPTION" and group_expanded:
                     option_row = targets.row(align=True)
+                    option_row.alert = material_coverage_warning
                     option_row.label(text="", icon="BLANK1")
                     option_row.operator(
                         "xiv_ie.select_variant_target",
@@ -310,6 +321,7 @@ class XIVIE_PT_main(Panel):
                     targets.label(text=mashup_message, icon="ERROR")
             elif show_new_mod:
                 new_mod_row = targets.row(align=True)
+                new_mod_row.alert = material_coverage_warning
                 new_mod_row.enabled = new_mod_enabled
                 new_mod_row.operator(
                     "xiv_ie.select_variant_target",
@@ -370,10 +382,11 @@ class XIVIE_PT_main(Panel):
         occupied_groups = visible_material_groups()
         if not occupied_groups:
             box.label(text="No visible FFXIV mesh groups.", icon="INFO")
+            box.operator("xiv_ie.auto_collapse_materials", text="Auto-collapse materials")
             return
         drag_state = active_mesh_drag_state()
-        drag_scope, drag_group, drag_part, drag_maximum = (
-            drag_state if drag_state is not None else ("", -1, -1, None)
+        drag_scope, drag_group, drag_part, drag_maximum, drag_instance = (
+            drag_state if drag_state is not None else ("", -1, -1, None, "")
         )
         groups = material_group_slots(occupied_groups, drag_maximum)
 
@@ -402,13 +415,15 @@ class XIVIE_PT_main(Panel):
             mesh_box = box.box()
             mesh_header = mesh_box.row(align=True).split(factor=0.4, align=True)
             group_is_dragged = drag_scope == "GROUP" and drag_group == group.mesh_index
-            mesh_header.alert = group_is_dragged
             mesh_id_row = mesh_header.row(align=True)
-            mesh_id_row.label(text=f"Mesh #{group.mesh_index}")
+            mesh_id_row.label(
+                text=f"Mesh #{group.mesh_index}",
+                icon="MOUSE_LMB_DRAG" if group_is_dragged else "BLANK1",
+            )
             drag = mesh_id_row.operator(
                 "xiv_ie.drag_mesh_order",
                 text="",
-                icon="GRIP_V",
+                icon="MOUSE_LMB_DRAG" if group_is_dragged else "GRIP_V",
                 emboss=group_is_dragged,
                 depress=group_is_dragged,
             )
@@ -424,22 +439,31 @@ class XIVIE_PT_main(Panel):
 
             mesh_box.separator(type="LINE", factor=0.2)
             mesh_column = mesh_box.column(align=True)
-            for part in group.parts:
-                part_objects = mesh_part_objects(group.objects, group.mesh_index, part)
+            part_instances = mesh_part_instances(group.objects, group.mesh_index)
+            for part_instance in part_instances:
+                part = part_instance.part_index
+                part_objects = part_instance.objects
                 display_objects = _lod_zero_objects(part_objects)
                 representative = display_objects[0]
-                duplicate_ids = len(display_objects) > 1
+                duplicate_ids = sum(
+                    item.part_index == part for item in part_instances
+                ) > 1
 
                 object_row = mesh_column.row(align=True).split(factor=0.4, align=True)
                 part_is_dragged = (
                     drag_scope == "PART"
                     and drag_group == group.mesh_index
                     and drag_part == part
+                    and drag_instance == part_instance.instance_key
                 )
                 material_mismatch = part in mismatch_parts
-                object_row.alert = part_is_dragged or material_mismatch
+                object_row.alert = material_mismatch and not part_is_dragged
 
                 name_row = object_row.row(align=True)
+                name_row.label(
+                    text="",
+                    icon="MOUSE_LMB_DRAG" if part_is_dragged else "BLANK1",
+                )
                 rename = name_row.operator(
                     "xiv_ie.rename_mesh_part",
                     text=mesh_display_name(representative),
@@ -447,6 +471,7 @@ class XIVIE_PT_main(Panel):
                 )
                 rename.mesh_group = group.mesh_index
                 rename.mesh_part = part
+                rename.mesh_part_instance = part_instance.instance_key
 
                 part_row = object_row.row(align=True)
                 part_row.label(
@@ -457,13 +482,14 @@ class XIVIE_PT_main(Panel):
                 drag = part_row.operator(
                     "xiv_ie.drag_mesh_order",
                     text="",
-                    icon="GRIP_V",
+                    icon="MOUSE_LMB_DRAG" if part_is_dragged else "GRIP_V",
                     emboss=part_is_dragged,
                     depress=part_is_dragged,
                 )
                 drag.scope = "PART"
                 drag.mesh_group = group.mesh_index
                 drag.mesh_part = part
+                drag.mesh_part_instance = part_instance.instance_key
 
                 attribute_row = object_row.row(align=True)
                 attribute_row.alignment = "EXPAND"
@@ -477,10 +503,12 @@ class XIVIE_PT_main(Panel):
                     )
                     remove.mesh_group = group.mesh_index
                     remove.mesh_part = part
+                    remove.mesh_part_instance = part_instance.instance_key
                     remove.attribute = attribute
                 add = attribute_row.operator("xiv_ie.mesh_attribute", text="", icon="ADD")
                 add.mesh_group = group.mesh_index
                 add.mesh_part = part
+                add.mesh_part_instance = part_instance.instance_key
                 add.attribute = "NEW"
 
             mesh_box.separator(type="LINE", factor=0.5)
@@ -508,6 +536,7 @@ class XIVIE_PT_main(Panel):
         summary.alignment = "RIGHT"
         count = f"{selected_triangles:,} / {total_triangles:,}" if selected_triangles else f"{total_triangles:,}"
         summary.label(text=f"Triangles: {count}")
+        box.operator("xiv_ie.auto_collapse_materials", text="Auto-collapse materials")
 
     @staticmethod
     def _draw_simple_export(layout) -> None:

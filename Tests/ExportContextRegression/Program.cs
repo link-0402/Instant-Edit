@@ -479,6 +479,19 @@ try
             browserWarnings.Any(item => item.Contains(ambiguousTexture, StringComparison.Ordinal) &&
                                         item.Contains("Variant: A duplicate", StringComparison.Ordinal)),
         "Mod Browser dependency capture reports equal-precedence option ambiguity");
+    var effectiveCandidates = MaterialPreviewBundleBuilder.ScopeResourceCandidates(
+        browserCandidates.Append(new MaterialResourceCandidate(
+            optionMaterial,
+            @"G:\Mods\Other\option.mtrl",
+            "other-mod",
+            @"G:\Mods\Other",
+            "Files/option.mtrl"))
+            .ToArray(),
+        null,
+        []);
+    Require(effectiveCandidates.Count == browserCandidates.Length + 1 &&
+            effectiveCandidates.Any(candidate => candidate.SourceModDirectory == "other-mod"),
+        "dependency capture retains effective resources from layered non-participating mods");
     var knownLocator = MaterialPreviewBundleBuilder.CreateKnownSourceLocator(
         optionMaterial,
         scopedBrowserCandidates.Single(candidate => candidate.GamePath == optionMaterial),
@@ -605,7 +618,7 @@ try
     ]);
     Require(canonicalPlan.Success && canonicalPlan.Assignments.Select(item => item.Alias).SequenceEqual(
         [
-            "/mt_c0201h0154_hir_b_c0801.mtrl",
+            "/mt_c0801h0154_hir_b_c0801.mtrl",
             "/mt_c0201h0154_hir_c_c0801.mtrl",
             "/mt_c0201h0154_hir_d_c0801.mtrl",
             "/mt_c0201h0154_hir_e_c0801.mtrl",
@@ -654,6 +667,27 @@ try
     Require(singleContextPlan.Success && singleContextPlan.Assignments.Count == 1 &&
             singleContextPlan.Assignments[0].Alias == "/bloodspiller.mtrl",
         "single-context plans preserve the captured material for a standalone new mod");
+    var mappedAliasManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial(
+                "/model-alias.mtrl",
+                "chara/equipment/e0118/material/v0001/resolved-target.mtrl",
+                '0'),
+        ],
+    };
+    var mappedAliasContext = manifestRegistry.CreateContext(
+        "chara/equipment/e0118/model/c0201e0118_top.mdl", 21,
+        "mapped-alias", originalTarget, "Mapped Alias", 42428, originalRoot, relative, mappedAliasManifest);
+    var mappedAliasPlan = PenumbraService.BuildMashupPlan(mappedAliasContext,
+    [
+        new MashupContributor(mappedAliasContext, ["/model-alias.mtrl"]),
+    ]);
+    Require(mappedAliasPlan.Success && mappedAliasPlan.Assignments.Count == 1 &&
+            mappedAliasPlan.Assignments[0].Alias == "/model-alias.mtrl" &&
+            mappedAliasPlan.Assignments[0].GamePath.EndsWith("/resolved-target.mtrl", StringComparison.Ordinal),
+        "active model aliases remain independent from their captured effective material paths");
     var sameSourceContext = incomingTopContext with
     {
         SourceModDirectory = customTopContext.SourceModDirectory,
@@ -666,6 +700,459 @@ try
     ]);
     Require(sameSourcePlan.Success && sameSourcePlan.Assignments.Count == 2,
         "multi-context plans accept contributors from the same source mod");
+
+    static MaterialDependency CapturedModMaterial(
+        string modelMaterial,
+        string gamePath,
+        string sourceModDirectory,
+        string sourceRelativePath,
+        char hashCharacter) => new()
+    {
+        ModelMaterial = modelMaterial,
+        GamePath = gamePath,
+        Resource = new SourceResourceLocator
+        {
+            Kind = InstantEditImportContext.ModSource,
+            GamePath = gamePath,
+            SourceModDirectory = sourceModDirectory,
+            SourceRelativePath = sourceRelativePath,
+            Sha256 = new string(hashCharacter, 64),
+        },
+        Textures = [],
+    };
+
+    var sourceBoundaryManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedModMaterial(
+                "/owned.mtrl",
+                "chara/equipment/e0118/material/v0001/owned.mtrl",
+                "custom-top",
+                "Files/owned.mtrl",
+                '1'),
+            CapturedModMaterial(
+                "/external.mtrl",
+                "chara/human/c0201/obj/body/b0001/material/v0001/external.mtrl",
+                "other-mod",
+                "Files/external.mtrl",
+                '2'),
+        ],
+    };
+    var sourceBoundaryContext = customTopContext with
+    {
+        ResourceManifest = sourceBoundaryManifest,
+    };
+    var sourceBoundaryPlan = PenumbraService.BuildMashupPlan(sourceBoundaryContext,
+    [
+        new MashupContributor(sourceBoundaryContext, ["/owned.mtrl", "/external.mtrl"]),
+        new MashupContributor(incomingTopContext, ["/anything.mtrl"]),
+    ]);
+    Require(sourceBoundaryPlan.Success &&
+            sourceBoundaryPlan.Assignments.Count == 3 &&
+            sourceBoundaryPlan.Assignments.Any(item => item.ModelMaterial == "/external.mtrl"),
+        "mashup planning assigns pass-through materials attributed to a non-participating source mod");
+    var bundledSourceBoundaryPlan = PenumbraService.BuildMashupPlan(sourceBoundaryContext,
+    [
+        new MashupContributor(sourceBoundaryContext, ["/owned.mtrl", "/external.mtrl"]),
+        new MashupContributor(incomingTopContext, ["/anything.mtrl"]),
+    ], bundleExternalDependencies: true);
+    Require(bundledSourceBoundaryPlan.Success &&
+            bundledSourceBoundaryPlan.Assignments.Select(item => (item.ContextId, item.ModelMaterial, item.Alias, item.GamePath))
+                .SequenceEqual(sourceBoundaryPlan.Assignments.Select(item =>
+                    (item.ContextId, item.ModelMaterial, item.Alias, item.GamePath))) &&
+            bundledSourceBoundaryPlan.Fingerprint != sourceBoundaryPlan.Fingerprint,
+        "external bundling preserves material assignments while binding the option into the plan fingerprint");
+
+    var participantDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "custom-top" };
+    var participantLocator = sourceBoundaryManifest.Materials[0].Resource;
+    var externalLocator = sourceBoundaryManifest.Materials[1].Resource;
+    var gameLocator = externalLocator with
+    {
+        Kind = InstantEditImportContext.GameSource,
+        SourceModDirectory = null,
+        SourceRelativePath = null,
+    };
+    Require(PenumbraService.ShouldBundleMashupDependency(
+                participantDirectories, participantLocator, bundleExternalDependencies: false) &&
+            PenumbraService.ShouldBundleMashupDependency(
+                participantDirectories, participantLocator, bundleExternalDependencies: true) &&
+            !PenumbraService.ShouldBundleMashupDependency(
+                participantDirectories, externalLocator, bundleExternalDependencies: false) &&
+            PenumbraService.ShouldBundleMashupDependency(
+                participantDirectories, externalLocator, bundleExternalDependencies: true) &&
+            !PenumbraService.ShouldBundleMashupDependency(
+                participantDirectories, gameLocator, bundleExternalDependencies: true),
+        "mashup dependency classification always bundles participants, optionally bundles external mods, and never bundles game data");
+    Require(
+        MaterialPreviewBundleBuilder.IsBodyOrGeneralMaterial("/mt_c0201b0001_a.mtrl") &&
+        MaterialPreviewBundleBuilder.IsBodyOrGeneralMaterial("/mt_c0201b0001_bibo.mtrl") &&
+        MaterialPreviewBundleBuilder.IsBodyOrGeneralMaterial("/mt_c0201b0001_skin.mtrl") &&
+        MaterialPreviewBundleBuilder.IsBodyOrGeneralMaterial("/mt_c0201b0001_bibopube.mtrl") &&
+        MaterialPreviewBundleBuilder.IsBodyOrGeneralMaterial("/mt_c0201b0001_piercings.mtrl") &&
+        !MaterialPreviewBundleBuilder.IsBodyOrGeneralMaterial("/mt_c0201e6106_top_crop.mtrl"),
+        "external bundling reuses the established body, skin, pube, and piercing material exclusions");
+    var externalGear = CapturedModMaterial(
+        "/mt_c0201e6106_top_crop.mtrl",
+        "chara/equipment/e6106/material/v0001/mt_c0201e6106_top_crop.mtrl",
+        "external-gear",
+        "Files/gear.mtrl",
+        '8');
+    var externalBody = CapturedModMaterial(
+        "/mt_c0201b0001_bibo.mtrl",
+        "chara/human/c0201/obj/body/b0001/material/v0001/mt_c0201b0001_bibo.mtrl",
+        "external-body",
+        "Files/body.mtrl",
+        '9');
+    Require(PenumbraService.CanBundleExternalMashupDependencies(
+                externalGear, bundleExternalDependencies: true) &&
+            !PenumbraService.CanBundleExternalMashupDependencies(
+                externalGear, bundleExternalDependencies: false) &&
+            !PenumbraService.CanBundleExternalMashupDependencies(
+                externalBody, bundleExternalDependencies: true),
+        "external gear dependencies are opt-in while shared body dependency sets remain pass-through");
+    var incompletePlan = PenumbraService.BuildMashupPlan(sourceBoundaryContext,
+    [
+        new MashupContributor(sourceBoundaryContext, ["/missing.mtrl"]),
+    ]);
+    Require(!incompletePlan.Success && incompletePlan.Code == "mashup_reimport_required",
+        "mashup planning rejects incomplete manifests instead of silently omitting requested materials");
+
+    const string bodyMaterialDirectory = "chara/human/c0201/obj/body/b0001/material/v0001";
+    const string urgfMaterialDirectory = "chara/equipment/e6106/material/v0001";
+    const string microkiniMaterialDirectory = "chara/equipment/e6166/material/v0001";
+    var urgfManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial("/mt_c0201b0001_bibo.mtrl",
+                $"{bodyMaterialDirectory}/mt_c0201b0001_bibo.mtrl", '2'),
+            CapturedMaterial("/mt_c0201b0001_piercings.mtrl",
+                $"{bodyMaterialDirectory}/mt_c0201b0001_piercings.mtrl", '3'),
+            CapturedMaterial("/mt_c0201e6106_top_crop.mtrl",
+                $"{urgfMaterialDirectory}/mt_c0201e6106_top_crop.mtrl", '4'),
+        ],
+    };
+    var microkiniManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial("/mt_c0201b0001_bibo.mtrl",
+                $"{bodyMaterialDirectory}/mt_c0201b0001_bibo.mtrl", '5'),
+            CapturedMaterial("/mt_c0201b0001_bibopube.mtrl",
+                $"{bodyMaterialDirectory}/mt_c0201b0001_bibopube.mtrl", '6'),
+            CapturedMaterial("/mt_c0201e6166_dwn_wundies.mtrl",
+                $"{microkiniMaterialDirectory}/mt_c0201e6166_dwn_wundies.mtrl", '7'),
+        ],
+    };
+    var urgfContext = manifestRegistry.CreateContext(
+        "chara/equipment/e6106/model/c0201e6106_top.mdl", 14,
+        "urgf-mod", originalTarget, "[lex] URGF", 42428, originalRoot, relative, urgfManifest);
+    var microkiniContext = manifestRegistry.CreateContext(
+        "chara/equipment/e6166/model/c0201e6166_dwn.mdl", 15,
+        "microkini-mod", originalTarget, "Microkini Bottoms", 42428, originalRoot, relative,
+        microkiniManifest);
+    var urgfActivePlan = PenumbraService.BuildMashupPlan(urgfContext,
+    [
+        new MashupContributor(urgfContext, urgfManifest.Materials.Select(item => item.ModelMaterial).ToArray()),
+        new MashupContributor(microkiniContext,
+            microkiniManifest.Materials.Select(item => item.ModelMaterial).ToArray()),
+    ]);
+    Require(urgfActivePlan.Success &&
+            urgfActivePlan.Assignments.Take(3).Select(item => item.GamePath).SequenceEqual(
+                urgfManifest.Materials.Select(item => item.GamePath)) &&
+            urgfActivePlan.Assignments.Skip(3).Select(item => item.Alias).SequenceEqual(
+            [
+                "/mt_c0201e6106_top_b.mtrl",
+                "/mt_c0201e6106_top_c.mtrl",
+                "/mt_c0201e6106_top_d.mtrl",
+            ]) &&
+            urgfActivePlan.Assignments.Skip(3).All(item =>
+                item.GamePath.StartsWith(urgfMaterialDirectory + "/", StringComparison.Ordinal)),
+        "URGF preserves body and equipment material paths while Microkini uses the URGF local namespace");
+    var microkiniActivePlan = PenumbraService.BuildMashupPlan(microkiniContext,
+    [
+        new MashupContributor(microkiniContext,
+            microkiniManifest.Materials.Select(item => item.ModelMaterial).ToArray()),
+        new MashupContributor(urgfContext, urgfManifest.Materials.Select(item => item.ModelMaterial).ToArray()),
+    ]);
+    Require(microkiniActivePlan.Success &&
+            microkiniActivePlan.Assignments.Take(3).Select(item => item.GamePath).SequenceEqual(
+                microkiniManifest.Materials.Select(item => item.GamePath)) &&
+            microkiniActivePlan.Assignments.Skip(3).Select(item => item.Alias).SequenceEqual(
+            [
+                "/mt_c0201e6166_dwn_b.mtrl",
+                "/mt_c0201e6166_dwn_c.mtrl",
+                "/mt_c0201e6166_dwn_d.mtrl",
+            ]) &&
+            microkiniActivePlan.Assignments.Skip(3).All(item =>
+                item.GamePath.StartsWith(microkiniMaterialDirectory + "/", StringComparison.Ordinal)),
+        "Microkini preserves body and equipment material paths while URGF uses the Microkini local namespace");
+    var urgfSingleContextPlan = PenumbraService.BuildMashupPlan(urgfContext,
+    [
+        new MashupContributor(urgfContext, urgfManifest.Materials.Select(item => item.ModelMaterial).ToArray()),
+    ]);
+    Require(urgfSingleContextPlan.Success &&
+            urgfSingleContextPlan.Assignments.Select(item => item.GamePath).SequenceEqual(
+                urgfManifest.Materials.Select(item => item.GamePath)),
+        "single-context Save to new mod preserves active materials spanning multiple directories");
+
+    var versionedManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial("/local-one.mtrl",
+                "chara/equipment/e7777/material/v0001/local-one.mtrl", '8'),
+            CapturedMaterial("/local-two.mtrl",
+                "chara/equipment/e7777/material/v0002/local-two.mtrl", '9'),
+            CapturedMaterial("/local-three.mtrl",
+                "chara/equipment/e7777/material/v0002/local-three.mtrl", 'a'),
+            CapturedMaterial("/mt_c0201b0001_body.mtrl",
+                $"{bodyMaterialDirectory}/mt_c0201b0001_body.mtrl", 'b'),
+        ],
+    };
+    var versionedContext = manifestRegistry.CreateContext(
+        "chara/equipment/e7777/model/c0201e7777_top.mdl", 16,
+        "versioned-mod", originalTarget, "Versioned", 42428, originalRoot, relative, versionedManifest);
+    var versionedPlan = PenumbraService.BuildMashupPlan(versionedContext,
+    [
+        new MashupContributor(versionedContext,
+            versionedManifest.Materials.Select(item => item.ModelMaterial).ToArray()),
+        new MashupContributor(incomingTopContext, ["/anything.mtrl"]),
+    ]);
+    Require(versionedPlan.Success &&
+            versionedPlan.Assignments[^1].GamePath ==
+            "chara/equipment/e7777/material/v0002/mt_c0201e7777_top_b.mtrl",
+        "the most-used model-local material version receives incoming materials");
+
+    var tiedManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial("/tie-one.mtrl",
+                "chara/equipment/e7778/material/v0001/tie-one.mtrl", 'c'),
+            CapturedMaterial("/tie-two.mtrl",
+                "chara/equipment/e7778/material/v0002/tie-two.mtrl", 'd'),
+        ],
+    };
+    var tiedContext = manifestRegistry.CreateContext(
+        "chara/equipment/e7778/model/c0201e7778_top.mdl", 17,
+        "tied-mod", originalTarget, "Tied", 42428, originalRoot, relative, tiedManifest);
+    var tiedPlan = PenumbraService.BuildMashupPlan(tiedContext,
+    [
+        new MashupContributor(tiedContext, tiedManifest.Materials.Select(item => item.ModelMaterial).ToArray()),
+        new MashupContributor(incomingTopContext, ["/anything.mtrl"]),
+    ]);
+    Require(!tiedPlan.Success && tiedPlan.Code == "mashup_target_material_directory_ambiguous",
+        "equally represented model-local material versions remain an explicit ambiguity");
+
+    var bodyOnlyManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial("/mt_c0201b0001_bibo.mtrl",
+                $"{bodyMaterialDirectory}/mt_c0201b0001_bibo.mtrl", 'e'),
+        ],
+    };
+    var bodyOnlyContext = manifestRegistry.CreateContext(
+        "chara/equipment/e8888/model/c0201e8888_top.mdl", 18,
+        "body-only-mod", originalTarget, "Body Only", 42428, originalRoot, relative, bodyOnlyManifest);
+    var bodyOnlyPlan = PenumbraService.BuildMashupPlan(bodyOnlyContext,
+    [
+        new MashupContributor(bodyOnlyContext, ["/mt_c0201b0001_bibo.mtrl"]),
+        new MashupContributor(incomingTopContext, ["/anything.mtrl"]),
+    ]);
+    Require(bodyOnlyPlan.Success && bodyOnlyPlan.Assignments[^1].GamePath ==
+            "chara/equipment/e8888/material/v0001/mt_c0201e8888_top_b.mtrl",
+        "models without a local active material derive the standard model-local fallback namespace");
+
+    var duplicateAliasManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial("/first.mtrl", "custom/one/shared.mtrl", '1'),
+            CapturedMaterial("/second.mtrl", "custom/two/shared.mtrl", '2'),
+        ],
+    };
+    var duplicateAliasContext = manifestRegistry.CreateContext(
+        "chara/equipment/e8889/model/c0201e8889_top.mdl", 19,
+        "duplicate-alias-mod", originalTarget, "Duplicate Alias", 42428, originalRoot, relative,
+        duplicateAliasManifest);
+    var sameBasenamePlan = PenumbraService.BuildMashupPlan(duplicateAliasContext,
+    [
+        new MashupContributor(duplicateAliasContext, ["/first.mtrl", "/second.mtrl"]),
+    ]);
+    Require(sameBasenamePlan.Success &&
+            sameBasenamePlan.Assignments.Select(item => item.Alias).SequenceEqual(
+                ["/first.mtrl", "/second.mtrl"]),
+        "same-basename active materials from different directories retain distinct model aliases");
+    var duplicateAliasPlan = PenumbraService.BuildMashupPlan(duplicateAliasContext,
+    [
+        new MashupContributor(duplicateAliasContext, ["/first.mtrl"]),
+        new MashupContributor(duplicateAliasContext, ["/first.mtrl"]),
+    ]);
+    Require(!duplicateAliasPlan.Success && duplicateAliasPlan.Code == "mashup_material_alias_conflict",
+        "duplicate active model aliases remain rejected");
+
+    var duplicatePathManifest = new ResourceDependencyManifest
+    {
+        Materials =
+        [
+            CapturedMaterial("/first.mtrl", "custom/shared.mtrl", '3'),
+            CapturedMaterial("/second.mtrl", "custom/shared.mtrl", '4'),
+        ],
+    };
+    var duplicatePathContext = manifestRegistry.CreateContext(
+        "chara/equipment/e8890/model/c0201e8890_top.mdl", 20,
+        "duplicate-path-mod", originalTarget, "Duplicate Path", 42428, originalRoot, relative,
+        duplicatePathManifest);
+    var duplicatePathPlan = PenumbraService.BuildMashupPlan(duplicatePathContext,
+    [
+        new MashupContributor(duplicatePathContext, ["/first.mtrl", "/second.mtrl"]),
+    ]);
+    Require(!duplicatePathPlan.Success && duplicatePathPlan.Code == "mashup_material_path_conflict",
+        "duplicate active virtual material paths remain rejected");
+
+    var materialAddressA = PenumbraService.ContentAddressedMashupMaterialPath(
+        "0123456789abcdef", [1, 2, 3]);
+    var materialAddressARepeat = PenumbraService.ContentAddressedMashupMaterialPath(
+        "0123456789abcdef", [1, 2, 3]);
+    var materialAddressB = PenumbraService.ContentAddressedMashupMaterialPath(
+        "0123456789abcdef", [3, 2, 1]);
+    Require(materialAddressA == materialAddressARepeat && materialAddressA != materialAddressB &&
+            materialAddressA.EndsWith(".mtrl", StringComparison.Ordinal),
+        "rewritten materials use deterministic content-addressed physical paths independent of source basenames");
+
+    static MaterialDependency ModCoverageMaterial(
+        string modelMaterial, string gamePath, string sourceModDirectory, string sourceRelativePath,
+        string sha256) => new()
+    {
+        ModelMaterial = modelMaterial,
+        GamePath = gamePath,
+        Resource = new SourceResourceLocator
+        {
+            Kind = InstantEditImportContext.ModSource,
+            GamePath = gamePath,
+            SourceModDirectory = sourceModDirectory,
+            SourceRelativePath = sourceRelativePath,
+            Sha256 = sha256,
+        },
+        Textures = [],
+    };
+
+    const string coverageGamePath = "chara/equipment/e0118/material/v0001/mt_coverage.mtrl";
+    var coverageOutputPath = Path.Combine(testRoot, "CoverageOutput", "Files", "coverage.mtrl");
+    Directory.CreateDirectory(Path.GetDirectoryName(coverageOutputPath)!);
+    var coverageBytes = Encoding.UTF8.GetBytes("captured coverage material");
+    File.WriteAllBytes(coverageOutputPath, coverageBytes);
+    var coverageHash = Convert.ToHexString(SHA256.HashData(coverageBytes));
+    const string coverageTextureGamePath = "chara/equipment/e0118/texture/coverage_d.tex";
+    var coverageTextureOutputPath = Path.Combine(testRoot, "CoverageOutput", "Files", "coverage.tex");
+    var coverageTextureBytes = Encoding.UTF8.GetBytes("captured coverage texture");
+    File.WriteAllBytes(coverageTextureOutputPath, coverageTextureBytes);
+    var coverageTextureHash = Convert.ToHexString(SHA256.HashData(coverageTextureBytes));
+    var coverageMaterial = ModCoverageMaterial(
+        "/mt_coverage.mtrl", coverageGamePath, "external-material-mod", "Files/coverage.mtrl", coverageHash) with
+    {
+        Textures =
+        [
+            new TextureDependency
+            {
+                StoredGamePath = coverageTextureGamePath,
+                EffectiveGamePath = coverageTextureGamePath,
+                Flags = 0,
+                Resource = new SourceResourceLocator
+                {
+                    Kind = InstantEditImportContext.ModSource,
+                    GamePath = coverageTextureGamePath,
+                    SourceModDirectory = "external-texture-mod",
+                    SourceRelativePath = "Files/coverage.tex",
+                    Sha256 = coverageTextureHash,
+                },
+            },
+        ],
+    };
+    var coverageContext = incomingTopContext with
+    {
+        ResourceManifest = new ResourceDependencyManifest { Materials = [coverageMaterial] },
+    };
+    var coverageResource = new PenumbraModResource(
+        coverageGamePath, coverageOutputPath, "Files/coverage.mtrl", "", []);
+    var coverageTextureResource = new PenumbraModResource(
+        coverageTextureGamePath, coverageTextureOutputPath, "Files/coverage.tex", "", []);
+    var matchingCoverage = await PenumbraService.EvaluateMaterialCoverageAsync(
+        customTopContext,
+        [new MashupContributor(coverageContext, ["/mt_coverage.mtrl"])],
+        [coverageResource, coverageTextureResource]);
+    Require(matchingCoverage.Available && matchingCoverage.Covered && matchingCoverage.Missing.Count == 0,
+        "material coverage accepts an effective game path with matching captured bytes");
+    File.Delete(coverageOutputPath);
+    var missingCoverage = await PenumbraService.EvaluateMaterialCoverageAsync(
+        customTopContext,
+        [new MashupContributor(coverageContext, ["/mt_coverage.mtrl"])],
+        []);
+    Require(missingCoverage.Available && !missingCoverage.Covered && missingCoverage.Missing.Count == 2 &&
+            missingCoverage.Missing.Select(item => item.ResourceType).ToHashSet().SetEquals(["material", "texture"]),
+        "material coverage reports required material and texture files absent from the output mod");
+    File.WriteAllBytes(coverageOutputPath, Encoding.UTF8.GetBytes("different coverage material"));
+    var differingHashCoverage = await PenumbraService.EvaluateMaterialCoverageAsync(
+        customTopContext,
+        [new MashupContributor(coverageContext, ["/mt_coverage.mtrl"])],
+        [coverageResource, coverageTextureResource]);
+    Require(differingHashCoverage.Available && !differingHashCoverage.Covered &&
+            differingHashCoverage.Missing.Count == 1,
+        "material coverage rejects an output material with the same path but different bytes");
+    File.WriteAllBytes(coverageOutputPath, coverageBytes);
+    File.Delete(coverageTextureOutputPath);
+    var missingTextureCoverage = await PenumbraService.EvaluateMaterialCoverageAsync(
+        customTopContext,
+        [new MashupContributor(coverageContext, ["/mt_coverage.mtrl"])],
+        [coverageResource]);
+    Require(missingTextureCoverage.Available && !missingTextureCoverage.Covered &&
+            missingTextureCoverage.Missing is [{ ResourceType: "texture", GamePath: coverageTextureGamePath }],
+        "material coverage detects a texture-only miss even when its parent material is covered");
+    var sameModCoverageContext = coverageContext with
+    {
+        ResourceManifest = new ResourceDependencyManifest
+        {
+            Materials = [ModCoverageMaterial(
+                "/mt_coverage.mtrl", coverageGamePath, customTopContext.SourceModDirectory!,
+                "Files/coverage.mtrl", new string('0', 64))],
+        },
+    };
+    var sameModCoverage = await PenumbraService.EvaluateMaterialCoverageAsync(
+        customTopContext,
+        [new MashupContributor(sameModCoverageContext, ["/mt_coverage.mtrl"])],
+        []);
+    Require(sameModCoverage.Available && sameModCoverage.Covered,
+        "material coverage ignores dependencies sourced from the active output mod");
+    var gameDataCoverageContext = coverageContext with
+    {
+        ResourceManifest = new ResourceDependencyManifest
+        {
+            Materials =
+            [
+                new MaterialDependency
+                {
+                    ModelMaterial = "/mt_game.mtrl",
+                    GamePath = coverageGamePath,
+                    Resource = new SourceResourceLocator
+                    {
+                        Kind = InstantEditImportContext.GameSource,
+                        GamePath = coverageGamePath,
+                        Sha256 = new string('0', 64),
+                    },
+                    Textures = [],
+                },
+            ],
+        },
+    };
+    var gameDataCoverage = await PenumbraService.EvaluateMaterialCoverageAsync(
+        customTopContext,
+        [new MashupContributor(gameDataCoverageContext, ["/mt_game.mtrl"])],
+        []);
+    Require(gameDataCoverage.Available && gameDataCoverage.Covered,
+        "material coverage ignores game-data material dependencies");
     Require(PenumbraService.IsValidMashupContributorCount("new_mod", 1) &&
             !PenumbraService.IsValidMashupContributorCount("active_mod", 1) &&
             PenumbraService.IsValidMashupContributorCount("active_mod", 2),
@@ -837,6 +1324,11 @@ try
         ["chara/equipment/e0001/material/v0001/mt_test.mtrl"] =
             "Files/xiv-instant-edit/mashups/test/materials/mt_test.mtrl",
     };
+    var mashupFileSwaps = new Dictionary<string, string>
+    {
+        ["chara/equipment/e0001/material/v0001/mt_external.mtrl"] =
+            "chara/equipment/e9999/material/v0001/mt_external.mtrl",
+    };
     var markerlessMashupRoot = Path.Combine(testRoot, "MarkerlessMashup");
     var markerlessMapping = new Dictionary<string, string>
     {
@@ -852,11 +1344,15 @@ try
     {
         ["Version"] = 0,
         ["Files"] = new JsonObject { [effectiveHairPath] = markerlessMapping[effectiveHairPath] },
+        ["FileSwaps"] = new JsonObject(mashupFileSwaps.Select(pair =>
+            KeyValuePair.Create<string, JsonNode?>(pair.Key, pair.Value))),
     }.ToJsonString());
     var markerlessValidation = true;
     try
     {
-        PenumbraService.ValidateStagedMashupMod(markerlessMashupRoot, "Markerless Mashup", markerlessMapping);
+        PenumbraService.ValidateStagedMashupMod(
+            markerlessMashupRoot, "Markerless Mashup", markerlessMapping,
+            expectedFileSwaps: mashupFileSwaps);
     }
     catch
     {
@@ -1007,9 +1503,11 @@ try
     Require(v4Manipulations.Select(item => item!["Entry"]!.GetValue<string>())
                 .SequenceEqual(["v4-option", "v4-default"]),
         "v4 manipulation capture merges enabled embedded options before DefaultData");
-    var copiedDefault = PenumbraService.CreateMashupDefaultData(mashupMappings, v3Manipulations);
-    Require(JsonNode.DeepEquals(copiedDefault["Manipulations"], v3Manipulations),
-        "new-mod default data preserves the active Context manipulation snapshot");
+    var copiedDefault = PenumbraService.CreateMashupDefaultData(
+        mashupMappings, v3Manipulations, mashupFileSwaps);
+    Require(JsonNode.DeepEquals(copiedDefault["Manipulations"], v3Manipulations) &&
+            copiedDefault["FileSwaps"]!.AsObject().Count == mashupFileSwaps.Count,
+        "new-mod default data preserves active manipulations and pass-through FileSwaps");
 
     var v3Root = Path.Combine(testRoot, "MashupV3");
     Directory.CreateDirectory(v3Root);
@@ -1017,28 +1515,33 @@ try
     const string preservedV3 = "{\"Version\":0,\"Type\":\"Single\",\"Name\":\"Existing\",\"Priority\":2,\"Options\":[]}";
     File.WriteAllText(Path.Combine(v3Root, "group_001_existing.json"), preservedV3);
     Require(PenumbraService.WriteMashupGroup(
-                v3Root, "Mashup", mashupMappings, manipulations: v3Manipulations) is null &&
+                v3Root, "Mashup", mashupMappings, manipulations: v3Manipulations,
+                fileSwaps: mashupFileSwaps) is null &&
             File.ReadAllText(Path.Combine(v3Root, "group_001_existing.json")) == preservedV3,
         "v3 mashup group creation preserves unrelated group metadata");
     var createdV3 = JsonNode.Parse(File.ReadAllText(
         Directory.GetFiles(v3Root, "group_002_*.json").Single()))!.AsObject();
     Require(createdV3["DefaultSettings"]!.GetValue<int>() == 1 &&
             createdV3["Options"]!.AsArray()[1]!["Files"]!.AsObject().Count == mashupMappings.Count &&
+            createdV3["Options"]!.AsArray()[1]!["FileSwaps"]!.AsObject().Count == mashupFileSwaps.Count &&
             JsonNode.DeepEquals(createdV3["Options"]!.AsArray()[1]!["Manipulations"], v3Manipulations),
-        "v3 mashup group enables its option and attaches the active Context manipulations");
+        "v3 mashup group enables its option and attaches manipulations and FileSwaps");
 
     var v4Root = Path.Combine(testRoot, "MashupV4");
     Directory.CreateDirectory(v4Root);
     File.WriteAllText(Path.Combine(v4Root, "meta.json"),
         "{\"FileVersion\":4,\"Name\":\"Keep Me\",\"Custom\":17," +
         "\"Groups\":[{\"Version\":0,\"Type\":\"Single\",\"Id\":\"b8297758-0ef7-4ca0-8b9d-c08421c1ab2c\",\"Name\":\"Existing\",\"Priority\":3,\"Options\":[]}]}" );
-    Require(PenumbraService.WriteMashupGroup(v4Root, "Mashup", mashupMappings) is null,
+    Require(PenumbraService.WriteMashupGroup(
+            v4Root, "Mashup", mashupMappings, fileSwaps: mashupFileSwaps) is null,
         "v4 mashup group creation succeeds");
     var updatedV4 = JsonNode.Parse(File.ReadAllText(Path.Combine(v4Root, "meta.json")))!.AsObject();
     Require(updatedV4["Custom"]!.GetValue<int>() == 17 && updatedV4["Groups"]!.AsArray().Count == 2 &&
             updatedV4["Groups"]!.AsArray()[1]!["Options"]!.AsArray()[1]!["Files"]!.AsObject().Count ==
-            mashupMappings.Count,
-        "v4 mashup group creation preserves metadata and maps the full dependency set");
+            mashupMappings.Count &&
+            updatedV4["Groups"]!.AsArray()[1]!["Options"]!.AsArray()[1]!["FileSwaps"]!.AsObject().Count ==
+            mashupFileSwaps.Count,
+        "v4 mashup group creation preserves metadata, files, and FileSwaps");
 
     var cleanupV3Root = Path.Combine(testRoot, "CleanupV3");
     Directory.CreateDirectory(Path.Combine(cleanupV3Root, "legacy"));
@@ -1163,6 +1666,12 @@ try
     ]);
     Require(sourceDescription == "Mashup created by XIV Instant Edit from \"Galian Hair\" and \"[178] Buckler (Swapped)\".",
         "mashup descriptions list source mods in contributor order");
+    var externalDescription = PenumbraService.FormatMashupDescription(
+        [new MashupContributor(galianContext with { SourceModName = "Galian Hair" }, [])],
+        ["External Skin", "External Hair"]);
+    Require(externalDescription.EndsWith(
+            "Requires external mods: External Skin, External Hair.", StringComparison.Ordinal),
+        "mashup descriptions list required external mods without blocking export");
     var describedGroupRoot = Path.Combine(testRoot, "DescribedGroup");
     Directory.CreateDirectory(describedGroupRoot);
     File.WriteAllText(Path.Combine(describedGroupRoot, "meta.json"), "{\"FileVersion\":3,\"Name\":\"Described\"}");

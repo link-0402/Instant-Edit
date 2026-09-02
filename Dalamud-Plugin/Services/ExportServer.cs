@@ -118,6 +118,8 @@ public sealed class ExportServer : IDisposable
         public string? Sha256 { get; set; }
         [JsonPropertyName("destination")]
         public string? Destination { get; set; }
+        [JsonPropertyName("bundleExternalDependencies")]
+        public bool BundleExternalDependencies { get; set; }
         [JsonPropertyName("name")]
         public string? Name { get; set; }
         [JsonPropertyName("contributors")]
@@ -139,6 +141,10 @@ public sealed class ExportServer : IDisposable
         public string? ContextId { get; set; }
         [JsonPropertyName("capability")]
         public string? Capability { get; set; }
+        [JsonPropertyName("destination")]
+        public string? Destination { get; set; }
+        [JsonPropertyName("bundleExternalDependencies")]
+        public bool BundleExternalDependencies { get; set; }
         [JsonPropertyName("contributors")]
         public List<MashupContributorRequest>? Contributors { get; set; }
     }
@@ -198,6 +204,27 @@ public sealed class ExportServer : IDisposable
 
         [JsonPropertyName("capability")]
         public string? Capability { get; set; }
+    }
+
+    private sealed class MaterialCoverageRequest
+    {
+        [JsonPropertyName("schema")]
+        public string? Schema { get; set; }
+
+        [JsonPropertyName("version")]
+        public int Version { get; set; }
+
+        [JsonPropertyName("pluginInstanceId")]
+        public string? PluginInstanceId { get; set; }
+
+        [JsonPropertyName("contextId")]
+        public string? ContextId { get; set; }
+
+        [JsonPropertyName("capability")]
+        public string? Capability { get; set; }
+
+        [JsonPropertyName("contributors")]
+        public List<MashupContributorRequest>? Contributors { get; set; }
     }
 
     private sealed class BackupRestoreRequest
@@ -436,6 +463,7 @@ public sealed class ExportServer : IDisposable
                     "instant-edit.context-revoke.v1",
                     "instant-edit.export-status.v1",
                     "instant-edit.variant-targets.v1",
+                    "instant-edit.material-coverage.v1",
                     "instant-edit.backup-restore.v1",
                 },
             }));
@@ -541,6 +569,56 @@ public sealed class ExportServer : IDisposable
             }));
         }
 
+        if (method == "POST" && path.TrimEnd('/') == "/material-coverage")
+        {
+            var parsed = DeserializeRequest<MaterialCoverageRequest>(request.Body, "material coverage", out var parseError);
+            if (parseError is not null)
+                return parseError.Value;
+            var coverageRequest = parsed!;
+            var envelopeError = ValidateMaterialCoverageEnvelope(coverageRequest);
+            if (envelopeError is not null)
+                return Error(StatusForCode(envelopeError), envelopeError, "unsupported or malformed material-coverage envelope");
+            if (!_contexts.TryAuthorizeOperation(
+                    coverageRequest.PluginInstanceId!, coverageRequest.ContextId!, coverageRequest.Capability!,
+                    out var activeContext, out var activeCode) || activeContext is null)
+                return Error(StatusForCode(activeCode), activeCode, "active export context was rejected");
+            if (activeContext.DestinationState != InstantEditImportContext.ReadyDestination)
+                return Error(409, "destination_not_ready", "create the Penumbra mod before checking material coverage");
+
+            var contributors = new List<MashupContributor>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var contributor in coverageRequest.Contributors!)
+            {
+                if (!seen.Add(contributor.ContextId!))
+                    return Error(400, "duplicate_context", "a material-coverage context was supplied more than once");
+                if (!_contexts.TryAuthorizeOperation(
+                        coverageRequest.PluginInstanceId!, contributor.ContextId!, contributor.Capability!,
+                        out var contributorContext, out var contributorCode) || contributorContext is null)
+                    return Error(StatusForCode(contributorCode), contributorCode, "a material-coverage context was rejected");
+                if (!IsMashupContributorState(contributorContext))
+                    return Error(409, "destination_not_ready", "a contributing Context is not ready for material coverage");
+                contributors.Add(new MashupContributor(contributorContext, contributor.Materials!));
+            }
+
+            var coverage = await _penumbra.GetMaterialCoverageAsync(activeContext, contributors).ConfigureAwait(false);
+            return (200, Json(new
+            {
+                ok = true,
+                code = coverage.Code,
+                available = coverage.Available,
+                covered = coverage.Covered,
+                message = coverage.Message,
+                missing = coverage.Missing.Select(item => new
+                {
+                    contextId = item.ContextId,
+                    sourceModName = item.SourceModName,
+                    modelMaterial = item.ModelMaterial,
+                    gamePath = item.GamePath,
+                    resourceType = item.ResourceType,
+                }),
+            }));
+        }
+
         if (method == "POST" && path.TrimEnd('/') == "/backup/restore")
         {
             var parsed = DeserializeRequest<BackupRestoreRequest>(request.Body, "backup restore", out var parseError);
@@ -585,8 +663,9 @@ public sealed class ExportServer : IDisposable
                     requestPlan.PluginInstanceId!, requestPlan.ContextId!, requestPlan.Capability!,
                     out var activeContext, out var activeCode) || activeContext is null)
                 return Error(StatusForCode(activeCode), activeCode, "active export context was rejected");
-            if (activeContext.DestinationState != InstantEditImportContext.ReadyDestination)
-                return Error(409, "destination_not_ready", "create the Penumbra mod before creating a mashup");
+            var planDestination = requestPlan.Destination ?? "active_mod";
+            if (!IsMashupActiveState(activeContext, planDestination))
+                return Error(409, "destination_not_ready", "the active Context is not ready for this mashup destination");
 
             var contributors = new List<MashupContributor>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -598,12 +677,13 @@ public sealed class ExportServer : IDisposable
                         requestPlan.PluginInstanceId!, contributor.ContextId!, contributor.Capability!,
                         out var contributorContext, out var contributorCode) || contributorContext is null)
                     return Error(StatusForCode(contributorCode), contributorCode, "a contributor context was rejected");
-                if (contributorContext.DestinationState != InstantEditImportContext.ReadyDestination)
-                    return Error(409, "destination_not_ready", "create every contributor's Penumbra mod before making a mashup");
+                if (!IsMashupContributorState(contributorContext))
+                    return Error(409, "destination_not_ready", "a contributor Context is not ready for mashup export");
                 contributors.Add(new MashupContributor(contributorContext, contributor.Materials!));
             }
 
-            var plan = PenumbraService.BuildMashupPlan(activeContext, contributors);
+            var plan = PenumbraService.BuildMashupPlan(
+                activeContext, contributors, requestPlan.BundleExternalDependencies);
             if (!plan.Success)
                 return Error(StatusForCode(plan.Code), plan.Code, plan.Message);
             return (200, Json(new
@@ -637,8 +717,8 @@ public sealed class ExportServer : IDisposable
                     mashup.PluginInstanceId!, mashup.ContextId!, mashup.Capability!,
                     out var activeContext, out var activeCode) || activeContext is null)
                 return Error(StatusForCode(activeCode), activeCode, "active export context was rejected");
-            if (activeContext.DestinationState != InstantEditImportContext.ReadyDestination)
-                return Error(409, "destination_not_ready", "create the Penumbra mod before creating a mashup");
+            if (!IsMashupActiveState(activeContext, mashup.Destination!))
+                return Error(409, "destination_not_ready", "the active Context is not ready for this mashup destination");
 
             var contributors = new List<MashupContributor>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -650,12 +730,13 @@ public sealed class ExportServer : IDisposable
                         mashup.PluginInstanceId!, contributor.ContextId!, contributor.Capability!,
                         out var contributorContext, out var contributorCode) || contributorContext is null)
                     return Error(StatusForCode(contributorCode), contributorCode, "a contributor context was rejected");
-                if (contributorContext.DestinationState != InstantEditImportContext.ReadyDestination)
-                    return Error(409, "destination_not_ready", "create every contributor's Penumbra mod before making a mashup");
+                if (!IsMashupContributorState(contributorContext))
+                    return Error(409, "destination_not_ready", "a contributor Context is not ready for mashup export");
                 contributors.Add(new MashupContributor(contributorContext, contributor.Materials!));
             }
 
-            var plan = PenumbraService.BuildMashupPlan(activeContext, contributors);
+            var plan = PenumbraService.BuildMashupPlan(
+                activeContext, contributors, mashup.BundleExternalDependencies);
             if (!plan.Success)
                 return Error(StatusForCode(plan.Code), plan.Code, plan.Message);
             if (!string.Equals(plan.Fingerprint, mashup.PlanFingerprint, StringComparison.OrdinalIgnoreCase))
@@ -664,6 +745,7 @@ public sealed class ExportServer : IDisposable
             var fingerprintSource = JsonSerializer.Serialize(new
             {
                 mashup.Destination,
+                mashup.BundleExternalDependencies,
                 mashup.Name,
                 mashup.PlanFingerprint,
                 contributors = mashup.Contributors!.Select(item => new
@@ -701,7 +783,8 @@ public sealed class ExportServer : IDisposable
                         staged!.FilePath,
                         mashup.ExportId!,
                         mashup.Destination!,
-                        mashup.Name!).ConfigureAwait(false);
+                        mashup.Name!,
+                        mashup.BundleExternalDependencies).ConfigureAwait(false);
                     if (result.Success && result.PathRemap is { } pathRemap)
                         _contexts.RemapModPaths(
                             pathRemap.ModDirectory,
@@ -713,7 +796,8 @@ public sealed class ExportServer : IDisposable
                         result.Message,
                         result.WarningList,
                         result.TargetFilePath,
-                        result.DestinationName);
+                        result.DestinationName,
+                        RequiredExternalMods: result.RequiredExternalMods);
                 }
             }
             catch (Exception e)
@@ -966,7 +1050,7 @@ public sealed class ExportServer : IDisposable
             !IsSafeId(request.ExportId) || string.IsNullOrWhiteSpace(request.Capability) ||
             string.IsNullOrWhiteSpace(request.FilePath) || string.IsNullOrWhiteSpace(request.Sha256) ||
             string.IsNullOrWhiteSpace(request.PlanFingerprint) ||
-            request.Destination is not ("active_mod" or "new_mod") ||
+            (request.Destination is not null && request.Destination is not ("active_mod" or "new_mod")) ||
             !PenumbraService.IsSafeVariantGroupName(request.Name))
             return "missing_field";
         if (request.Size <= 0 || request.Size > MaxExportBytes || request.Sha256.Length != 64 ||
@@ -993,6 +1077,7 @@ public sealed class ExportServer : IDisposable
             return "unsupported_version";
         if (string.IsNullOrWhiteSpace(request.PluginInstanceId) || !IsSafeId(request.ContextId) ||
             string.IsNullOrWhiteSpace(request.Capability) ||
+            request.Destination is not ("active_mod" or "new_mod") ||
             request.Contributors is not { Count: >= 1 and <= 16 })
             return "invalid_contributors";
         foreach (var contributor in request.Contributors)
@@ -1003,6 +1088,39 @@ public sealed class ExportServer : IDisposable
                 return "invalid_contributors";
         }
         return null;
+    }
+
+    private static bool IsMashupActiveState(InstantEditImportContext context, string destination)
+        => destination == "active_mod"
+            ? context.DestinationState == InstantEditImportContext.ReadyDestination
+            : destination == "new_mod" && IsMashupContributorState(context);
+
+    private static bool IsMashupContributorState(InstantEditImportContext context)
+        => context.DestinationState is InstantEditImportContext.ReadyDestination or
+            InstantEditImportContext.NewModRequiredDestination;
+
+    private static string? ValidateMaterialCoverageEnvelope(MaterialCoverageRequest request)
+    {
+        if (!string.Equals(request.Schema, "instant-edit.material-coverage", StringComparison.Ordinal))
+            return request.Version == 1 ? "unsupported_schema" : "unsupported_version";
+        if (request.Version != 1)
+            return "unsupported_version";
+        if (string.IsNullOrWhiteSpace(request.PluginInstanceId) || request.PluginInstanceId.Length > 128 ||
+            !IsSafeId(request.ContextId) || string.IsNullOrWhiteSpace(request.Capability) ||
+            request.Capability.Length > 512 ||
+            request.Contributors is not { Count: >= 1 and <= 16 })
+            return "invalid_contributors";
+        var materialCount = 0;
+        foreach (var contributor in request.Contributors)
+        {
+            if (!IsSafeId(contributor.ContextId) || string.IsNullOrWhiteSpace(contributor.Capability) ||
+                contributor.Capability.Length > 512 ||
+                contributor.Materials is not { Count: >= 1 and <= 256 } ||
+                contributor.Materials.Any(material => string.IsNullOrWhiteSpace(material) || material.Length > 512))
+                return "invalid_contributors";
+            materialCount += contributor.Materials.Count;
+        }
+        return materialCount <= 4096 ? null : "invalid_contributors";
     }
 
     private static string? ValidateBackupRestoreEnvelope(BackupRestoreRequest request)
@@ -1211,6 +1329,7 @@ public sealed class ExportServer : IDisposable
                 targetFilePath = receipt.TargetFilePath,
                 destinationName = receipt.DestinationName,
                 context = receipt.Context,
+                requiredExternalMods = receipt.RequiredExternalMods ?? Array.Empty<string>(),
             }))
             : Error(StatusForCode(receipt.Code), receipt.Code, receipt.Message);
 

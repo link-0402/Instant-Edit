@@ -126,7 +126,7 @@ class CreateLOD:
                 if bone in self.model.bones:
                     bone_table.bone_idx.append(self.model.bones.index(bone))
                 else:
-                    print(f"LOD{self.lod_level}: Couldn't find {bone}, bone table might not be accurate.")
+                    print(f"Model: Couldn't find {bone}, bone table might not be accurate.")
             
             bone_table.bone_count = len(bone_table.bone_idx)
             self.model.bone_tables.append(bone_table)
@@ -170,7 +170,7 @@ class CreateLOD:
                 submesh.idx_offset += padding
 
         if self.logger:
-            self.logger.last_item = f"LOD{lod_level} buffers"
+            self.logger.last_item = "Model buffers"
 
         header = self.model.header
         current_offset = len(self.model.buffers)

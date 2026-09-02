@@ -619,10 +619,11 @@ public sealed class MaterialPreviewBundleBuilder
         IReadOnlyDictionary<string, List<string>> resources,
         long maxBytes,
         Dictionary<string, ResolvedResource?>? resourceCache,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowGameData = true)
     {
         gamePath = NormaliseGamePath(gamePath);
-        var cacheKey = $"{maxBytes}:{gamePath}";
+        var cacheKey = $"{maxBytes}:{allowGameData}:{gamePath}";
         if (resourceCache is not null && resourceCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
@@ -643,7 +644,7 @@ public sealed class MaterialPreviewBundleBuilder
             }
         }
 
-        if (resolved is null)
+        if (resolved is null && allowGameData)
         {
             try
             {
@@ -922,7 +923,7 @@ public sealed class MaterialPreviewBundleBuilder
     private static string FileName(string path)
         => NormaliseGamePath(path).Split('/').LastOrDefault() ?? string.Empty;
 
-    private static bool IsBodyOrGeneralMaterial(string materialName)
+    internal static bool IsBodyOrGeneralMaterial(string materialName)
     {
         var fileName = FileName(materialName);
         return StandardBodyMaterial.IsMatch(fileName) ||

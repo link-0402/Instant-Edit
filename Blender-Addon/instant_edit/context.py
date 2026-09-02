@@ -71,7 +71,7 @@ def mesh_name_info(obj) -> MeshNameInfo:
         lod = int(lod_match.group(1))
         name = name[:lod_match.start()].rstrip()
     if lod > 2:
-        raise ContextValidationError(f"{obj.name}: LOD must be 0, 1, or 2")
+        raise ContextValidationError(f"{obj.name}: invalid mesh name")
 
     prefix = _MESH_ID_PREFIX.match(name)
     if prefix:
@@ -421,9 +421,7 @@ def validate_context(context_id: str, scene=None) -> ContextRef:
 
         key = mesh_ids_from_name(obj)
         if key in ids:
-            raise ContextValidationError(
-                f"duplicate mesh part {key[0]}.{key[1]} at LOD{key[2]}"
-            )
+            raise ContextValidationError(f"duplicate mesh part {key[0]}.{key[1]}")
         ids.add(key)
         mesh_objects.append(obj)
 
