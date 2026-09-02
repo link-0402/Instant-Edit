@@ -38,16 +38,16 @@ Note that you will not receive automatic feature and compatibility updates this 
 
 1. Type /ie to open the plugin interface ingame. Click Refresh character list.
 2. Start Blender. Verify The plugin shows Blender as "Online".
-2. Verify import options, then click "Edit" on the model you want to import to Blender.
-3. Do whatever you wanna do with the model in Blender.
-4. Pick an export context from the list
-- In-place overwrites the exact model that you imported.
-- New Group sets up a new option group in the mod you imported from and automatically configures the paths for you.
-- (Existing group) creates a new option in an existing option group.
-- (Option in existing group) overwrites the model file that is mapped to this option.
-- Create Mashup creates a new mod or group in an existing mod containing the combined model + all required textures and materials. Only visible with 2+ mods imported into the scene, otherwise switches to "Create as new mod".
-The context dropdown controls which mod structure is being shown.
-5. Hit export. Immediately see the result ingame.
+3. Verify import options, then click "Edit" on the model you want to import to Blender.
+4. Do whatever you wanna do with the model in Blender.
+5. Pick an export context from the list
+   - In-place overwrites the exact model that you imported.
+   - New Group sets up a new option group in the mod you imported from and automatically configures the paths for you.
+   - (Existing group) creates a new option in an existing option group.
+   - (Option in existing group) overwrites the model file that is mapped to this option.
+   - Create Mashup creates a new mod or group in an existing mod containing the combined model + all required textures and materials. Only visible with 2+ mods imported into the scene, otherwise switches to "Create as new mod".
+   The context dropdown controls which mod structure is being shown.
+6. Hit export. Immediately see the result ingame.
 Creating new options on existing mods requires you to refresh the view in Penumbra by navigating to a different mod and back.
 
 ## Additional notes
